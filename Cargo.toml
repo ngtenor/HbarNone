@@ -1,0 +1,6 @@
+﻿[workspace]
+members = [
+    "crates/wallet-core"
+]
+
+resolver = "2"
