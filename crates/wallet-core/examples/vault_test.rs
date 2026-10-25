@@ -6,68 +6,39 @@ fn main() {
 
     println!("Creating wallet...\n");
 
-    let original_wallet =
-        Wallet::generate();
+    let original_wallet = Wallet::generate();
 
-    println!(
-        "Original Public Key:"
-    );
-    println!(
-        "{}",
-        original_wallet.public_key
-    );
+    println!("Original Public Key:");
+    println!("{}", original_wallet.public_key);
 
-    let vault = VaultFile::encrypt(
-        &original_wallet.mnemonic,
-        password,
-    );
+    let vault = VaultFile::encrypt(&original_wallet.mnemonic, password)
+        .expect("Failed to encrypt wallet");
 
-    let json = serde_json::to_string_pretty(
-        &vault,
-    )
-    .expect(
-        "Failed to serialize vault",
-    );
+    let json = serde_json::to_string_pretty(&vault)
+        .expect("Failed to serialize vault");
 
     println!("\nVault JSON:");
     println!("{}", json);
 
-    let loaded_vault: VaultFile =
-        serde_json::from_str(&json)
-            .expect(
-                "Failed to deserialize vault",
-            );
+    let loaded_vault: VaultFile = serde_json::from_str(&json)
+        .expect("Failed to deserialize vault");
 
-    let mnemonic =
-        loaded_vault.decrypt(password);
+    let mnemonic = loaded_vault.decrypt(password)
+        .expect("Failed to decrypt wallet");
 
     println!("\nRecovered Mnemonic:");
     println!("{}", mnemonic);
 
-    let restored_wallet =
-        Wallet::from_mnemonic(
-            &mnemonic,
-        );
+    let restored_wallet = Wallet::from_mnemonic(&mnemonic);
 
-    println!(
-        "\nRestored Public Key:"
-    );
-    println!(
-        "{}",
-        restored_wallet.public_key
-    );
+    println!("\nRestored Public Key:");
+    println!("{}", restored_wallet.public_key);
 
     println!("\nVerification:");
 
-    if original_wallet.public_key
-        == restored_wallet.public_key
-    {
-        println!(
-            "SUCCESS: Public keys match"
-        );
+    if original_wallet.public_key == restored_wallet.public_key {
+        println!("SUCCESS: Public keys match");
     } else {
-        println!(
-            "ERROR: Public keys differ"
-        );
+        println!("ERROR: Public keys differ");
     }
 }
