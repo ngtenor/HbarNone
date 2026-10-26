@@ -11,20 +11,21 @@
 - [x] Manually verify disposable wallet creation, listing, and persistence after app restart
 - [x] Add password-gated recovery-phrase reveal with explicit screen and malware warnings; clear the view on close or focus loss
 - [x] Require a write-down acknowledgment to complete the reveal flow, without implying that the backup was verified
+- [x] Explain that a forgotten vault password cannot currently be reset
 
 ## Next priorities
-1. **Wallet recovery and backup**
-   - Add mnemonic import with validation and encryption into a new wallet record.
-   - Explain that a forgotten vault password cannot currently be reset.
-   - Keep mnemonic/private-key material out of normal commands and logs.
-2. **Security and reliability review**
+1. **Security and reliability review**
    - Review vault format/versioning, KDF parameter validation, cryptographic input validation, and secret lifetime/zeroization.
    - Verify app-data directory and wallet-file permissions on supported platforms.
    - Review error handling and ensure failures never appear as successful wallet operations.
    - Keep the development-only warning until the review is complete.
-3. **Automated desktop verification**
+2. **Desktop verification**
+   - Manually verify recovery-phrase reveal, wrong-password rejection, acknowledgment gating, and hide-on-close/focus-loss in the Tauri app using a disposable wallet.
    - Add an end-to-end test for creating a disposable wallet, listing it, restarting the app, and confirming persistence.
-   - Keep the existing manual restart check as a documented smoke test, not a substitute for automation.
+   - The browser smoke test uses mocked Tauri commands; it does not replace real-app verification.
+3. **Wallet recovery and backup**
+   - Add mnemonic import with validation and encryption into a new wallet record.
+   - Keep mnemonic/private-key material out of normal commands and logs.
 
 ## Later roadmap
 - [ ] Integrate Hedera network access and Testnet account support
