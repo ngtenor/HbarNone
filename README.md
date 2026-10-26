@@ -4,6 +4,17 @@ HederaVault is an early-stage, open-source self-custody wallet project for the
 Hedera network. It begins as a desktop wallet and may later grow into an
 offline-signing application and open hardware reference design.
 
+## Two complementary wallet experiences
+
+HederaVault is intended to support two complementary use cases:
+
+- **Desktop wallet:** A convenient way to create and manage a Hedera wallet from a desktop app, for users who want to keep a modest amount of HBAR available for everyday network use and transaction fees. A small balance does not eliminate the risks of storing keys on a general-purpose computer; malware or a compromised device could still expose wallet material.
+- **Offline signer:** The long-term security-focused goal is a Seedsigner-like device for Hedera, designed to generate and use keys in an air-gapped environment. The device is intended to keep private keys off network-connected computers.
+
+These experiences have different threat models and should not be understood as offering the same level of protection. Wallets created on a desktop inherit the risks of that computer; transferring a desktop-created recovery phrase to an offline device does not undo its prior exposure. The offline device should be able to create its own wallet.
+
+HederaVault is experimental and unaudited. The desktop wallet is not currently recommended for real funds.
+
 ## Security status
 
 HederaVault is experimental software and has not received an independent
@@ -19,13 +30,18 @@ Treat development wallet material as compromised.
 - Wallet-store persistence in the desktop app's operating-system data directory
 - Initial Tauri 2 and React desktop interface for creating and listing wallets
 
-The desktop commands do not return mnemonic or private-key material to the UI.
-Wallet recovery, network access, account management, and transaction creation
-are not yet implemented.
+Normal desktop commands do not return mnemonic or private-key material to the
+UI. The user can explicitly reveal a wallet's recovery phrase after re-entering
+the vault password. Wallet import, network access, account management, and
+transaction creation are not yet implemented.
 
 The current interface is a development scaffold. It creates and lists encrypted
-wallet records, but does not yet provide a way to back up or recover the
-mnemonic. Do not create a wallet containing real funds or rely on this app for
+wallet records and can display the recovery phrase on request, but does not yet
+provide wallet import or a complete recovery workflow. Revealing the phrase
+exposes it on screen and in application memory; malware may capture the phrase,
+password, or screen contents. Write it down privately, never share it, and only
+reveal it on a device you trust. A forgotten vault password cannot currently be
+reset. Do not create a wallet containing real funds or rely on this app for
 recovery. Use a long, unique vault password and store it safely.
 
 ## Development

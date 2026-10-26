@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import './App.css'
@@ -20,6 +20,41 @@ function App() {
   const [error, setError] = useState('')
   const [isLoading, setIsLoading] = useState(true)
   const [isCreating, setIsCreating] = useState(false)
+  const [walletToReveal, setWalletToReveal] = useState<WalletSummary | null>(null)
+  const [revealPassword, setRevealPassword] = useState('')
+  const [mnemonic, setMnemonic] = useState('')
+  const [revealError, setRevealError] = useState('')
+  const [isRevealing, setIsRevealing] = useState(false)
+  const revealRequestId = useRef(0)
+
+  function closeReveal() {
+    revealRequestId.current += 1
+    setWalletToReveal(null)
+    setRevealPassword('')
+    setMnemonic('')
+    setRevealError('')
+    setIsRevealing(false)
+  }
+
+  useEffect(() => {
+    const hideOnBlur = () => closeReveal()
+    const hideWhenBackgrounded = () => {
+      if (document.visibilityState !== 'visible') closeReveal()
+    }
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') closeReveal()
+    }
+
+    window.addEventListener('blur', hideOnBlur)
+    document.addEventListener('visibilitychange', hideWhenBackgrounded)
+    window.addEventListener('keydown', closeOnEscape)
+
+    return () => {
+      window.removeEventListener('blur', hideOnBlur)
+      document.removeEventListener('visibilitychange', hideWhenBackgrounded)
+      window.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -59,6 +94,32 @@ function App() {
     }
   }
 
+  async function handleReveal(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!walletToReveal) return
+
+    setRevealError('')
+    setIsRevealing(true)
+    const requestId = ++revealRequestId.current
+    try {
+      const recoveredMnemonic = await invoke<string>('reveal_wallet_mnemonic', {
+        walletId: walletToReveal.id,
+        password: revealPassword,
+      })
+      if (requestId === revealRequestId.current) {
+        setMnemonic(recoveredMnemonic)
+        setRevealPassword('')
+      }
+    } catch (revealFailure) {
+      if (requestId === revealRequestId.current) {
+        setRevealError(errorMessage(revealFailure))
+        setRevealPassword('')
+      }
+    } finally {
+      if (requestId === revealRequestId.current) setIsRevealing(false)
+    }
+  }
+
   return (
     <main className="app-shell">
       <header className="topbar">
@@ -76,8 +137,8 @@ function App() {
         <p className="eyebrow">SELF-CUSTODY STARTS HERE</p>
         <h1>Your keys.<br />Your responsibility.</h1>
         <p className="welcome-copy">
-          Create an encrypted wallet to get started. Your recovery phrase stays
-          in the local vault and is never sent to the interface.
+          Create an encrypted wallet to get started. The recovery phrase stays
+          encrypted unless you explicitly reveal it with your password.
         </p>
       </section>
 
@@ -114,7 +175,7 @@ function App() {
           />
           <p className="field-hint">
             Use a long, unique password and store it safely. Password recovery
-            and wallet backup are not available yet.
+            is not available if you forget it.
           </p>
 
           <button className="primary-button" type="submit" disabled={isCreating}>
@@ -151,7 +212,16 @@ function App() {
                     <strong>{wallet.name}</strong>
                     <span>Added {new Date(wallet.created_at).toLocaleDateString()}</span>
                   </span>
-                  <span className="encrypted-badge">ENCRYPTED</span>
+                  <button
+                    className="reveal-button"
+                    type="button"
+                    onClick={() => {
+                      closeReveal()
+                      setWalletToReveal(wallet)
+                    }}
+                  >
+                    Show recovery phrase
+                  </button>
                 </li>
               ))}
             </ul>
@@ -161,8 +231,93 @@ function App() {
 
       <footer className="security-note">
         <span aria-hidden="true">!</span>
-        Wallet backup is not available yet. Development only; do not use real funds.
+        A displayed phrase may be captured by malware or screenshots. Development only; do not use real funds.
       </footer>
+
+      {walletToReveal && (
+        <div
+          className="modal-backdrop"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) closeReveal()
+          }}
+        >
+          <section
+            className="recovery-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="recovery-title"
+          >
+            <div className="panel-heading">
+              <div>
+                <p className="eyebrow">SENSITIVE WALLET DATA</p>
+                <h2 id="recovery-title">Recovery phrase</h2>
+              </div>
+              <button
+                className="close-button"
+                type="button"
+                aria-label="Close and hide recovery phrase"
+                onClick={closeReveal}
+              >
+                ×
+              </button>
+            </div>
+
+            {mnemonic ? (
+              <>
+                <p className="recovery-warning" role="alert">
+                  Anyone who sees this phrase can take this wallet. Write it
+                  down privately and store it securely. Never share it or enter
+                  it on a device you do not trust.
+                </p>
+                <ol className="mnemonic-grid">
+                  {mnemonic.split(' ').map((word, index) => (
+                    <li key={`${index}-${word}`}>
+                      <span>{index + 1}</span>
+                      <strong>{word}</strong>
+                    </li>
+                  ))}
+                </ol>
+                <p className="recovery-warning secondary-warning">
+                  Malware may capture passwords or screen contents. This reveal
+                  does not make a compromised computer safe.
+                </p>
+                <button className="primary-button" type="button" onClick={closeReveal}>
+                  Hide recovery phrase
+                </button>
+              </>
+            ) : (
+              <form onSubmit={handleReveal}>
+                <p className="dialog-copy">
+                  Re-enter this wallet’s password to reveal its 24-word
+                  recovery phrase. The phrase will be visible on screen.
+                </p>
+                <label htmlFor="reveal-password">Vault password</label>
+                <input
+                  id="reveal-password"
+                  type="password"
+                  autoComplete="current-password"
+                  maxLength={1024}
+                  required
+                  autoFocus
+                  value={revealPassword}
+                  onChange={(event) => setRevealPassword(event.target.value)}
+                />
+                {revealError && (
+                  <p className="error-message" role="alert">{revealError}</p>
+                )}
+                <div className="dialog-actions">
+                  <button className="secondary-button" type="button" onClick={closeReveal}>
+                    Cancel
+                  </button>
+                  <button className="primary-button" type="submit" disabled={isRevealing}>
+                    {isRevealing ? 'Checking password...' : 'Reveal phrase'}
+                  </button>
+                </div>
+              </form>
+            )}
+          </section>
+        </div>
+      )}
     </main>
   )
 }

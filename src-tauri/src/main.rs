@@ -74,6 +74,29 @@ fn create_wallet(
     Ok(WalletSummary::from(&record))
 }
 
+#[tauri::command]
+fn reveal_wallet_mnemonic(
+    wallet_id: String,
+    password: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    if password.is_empty() {
+        return Err("password cannot be empty".to_string());
+    }
+    if password.len() > 1024 {
+        return Err("password cannot exceed 1024 bytes".to_string());
+    }
+
+    let password = Zeroizing::new(password);
+    let service = state
+        .wallet_service
+        .lock()
+        .map_err(|_| "wallet service is unavailable".to_string())?;
+    let mnemonic = service.reveal_mnemonic(&wallet_id, password.as_str())?;
+
+    Ok(mnemonic.to_string())
+}
+
 fn main() {
     tauri::Builder::default()
         .setup(|app| {
@@ -94,7 +117,11 @@ fn main() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![create_wallet, list_wallets])
+        .invoke_handler(tauri::generate_handler![
+            create_wallet,
+            list_wallets,
+            reveal_wallet_mnemonic
+        ])
         .run(tauri::generate_context!())
         .expect("failed to run HederaVault");
 }

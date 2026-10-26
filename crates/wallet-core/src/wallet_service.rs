@@ -2,6 +2,7 @@ use crate::vault::VaultFile;
 use crate::wallet::Wallet;
 use crate::wallet_store::{WalletRecord, WalletStore};
 use rand::random;
+use zeroize::Zeroizing;
 
 pub struct WalletService {
     pub store: WalletStore,
@@ -80,10 +81,28 @@ impl WalletService {
 
         Wallet::from_mnemonic(mnemonic.as_str())
     }
+
+    pub fn reveal_mnemonic(
+        &self,
+        wallet_id: &str,
+        password: &str,
+    ) -> Result<Zeroizing<String>, String> {
+        let record = self
+            .store
+            .find_by_id(wallet_id)
+            .ok_or_else(|| format!("wallet not found: {wallet_id}"))?;
+
+        record
+            .vault
+            .decrypt(password)
+            .map_err(|e| format!("decrypt wallet failed: {e}"))
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::wallet::Wallet;
+
     use super::WalletService;
 
     #[test]
@@ -134,6 +153,24 @@ mod tests {
         assert!(
             service
                 .unlock_wallet(&created.id, "incorrect password")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn reveal_mnemonic_requires_correct_password_and_matches_wallet() {
+        let mut service = WalletService::new();
+        let password = "a sufficiently long test password";
+        let created = service.create_wallet("Primary", password).unwrap();
+
+        let mnemonic = service.reveal_mnemonic(&created.id, password).unwrap();
+        let revealed_wallet = Wallet::from_mnemonic(mnemonic.as_str()).unwrap();
+        let unlocked_wallet = service.unlock_wallet(&created.id, password).unwrap();
+
+        assert_eq!(revealed_wallet.public_key, unlocked_wallet.public_key);
+        assert!(
+            service
+                .reveal_mnemonic(&created.id, "incorrect password")
                 .is_err()
         );
     }
