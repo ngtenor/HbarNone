@@ -65,12 +65,11 @@ fn create_wallet(
         .wallet_service
         .lock()
         .map_err(|_| "wallet service is unavailable".to_string())?;
-    let record = service.create_wallet(name, password.as_str())?;
-
-    if let Err(error) = service.save_store(&state.store_path.to_string_lossy()) {
-        service.store.remove_wallet(&record.id);
-        return Err(error);
-    }
+    let record = service.create_and_save_wallet(
+        name,
+        password.as_str(),
+        &state.store_path.to_string_lossy(),
+    )?;
 
     Ok(WalletSummary::from(&record))
 }

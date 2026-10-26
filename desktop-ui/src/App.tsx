@@ -113,7 +113,8 @@ function App() {
             onChange={(event) => setPassword(event.target.value)}
           />
           <p className="field-hint">
-            This password encrypts your wallet on this device.
+            Use a long, unique password and store it safely. Password recovery
+            and wallet backup are not available yet.
           </p>
 
           <button className="primary-button" type="submit" disabled={isCreating}>

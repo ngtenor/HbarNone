@@ -23,6 +23,11 @@ The desktop commands do not return mnemonic or private-key material to the UI.
 Wallet recovery, network access, account management, and transaction creation
 are not yet implemented.
 
+The current interface is a development scaffold. It creates and lists encrypted
+wallet records, but does not yet provide a way to back up or recover the
+mnemonic. Do not create a wallet containing real funds or rely on this app for
+recovery. Use a long, unique vault password and store it safely.
+
 ## Development
 
 Prerequisites: Rust, Node.js/npm, and the platform requirements for Tauri 2.

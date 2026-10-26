@@ -40,6 +40,20 @@ impl WalletService {
         Ok(record)
     }
 
+    pub fn create_and_save_wallet(
+        &mut self,
+        name: &str,
+        password: &str,
+        path: &str,
+    ) -> Result<WalletRecord, String> {
+        let record = self.create_wallet(name, password)?;
+        if let Err(error) = self.save_store(path) {
+            self.store.remove_wallet(&record.id);
+            return Err(error);
+        }
+        Ok(record)
+    }
+
     pub fn load_store(path: &str) -> Result<Self, String> {
         let store = WalletStore::load_from_file(path)?;
         Ok(Self { store })
@@ -65,5 +79,62 @@ impl WalletService {
             .map_err(|e| format!("decrypt wallet failed: {e}"))?;
 
         Wallet::from_mnemonic(mnemonic.as_str())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::WalletService;
+
+    #[test]
+    fn create_save_reload_and_unlock_preserves_wallet() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("wallets.json");
+        let path = path.to_str().unwrap();
+        let mut service = WalletService::new();
+
+        let created = service
+            .create_and_save_wallet("Primary", "a sufficiently long test password", path)
+            .unwrap();
+        let loaded = WalletService::load_store(path).unwrap();
+        let unlocked = loaded
+            .unlock_wallet(&created.id, "a sufficiently long test password")
+            .unwrap();
+        let original = service
+            .unlock_wallet(&created.id, "a sufficiently long test password")
+            .unwrap();
+
+        assert_eq!(loaded.list_wallets().len(), 1);
+        assert_eq!(unlocked.public_key, original.public_key);
+    }
+
+    #[test]
+    fn failed_save_rolls_back_created_wallet() {
+        let directory = tempfile::tempdir().unwrap();
+        let invalid_path = directory.path().join("missing").join("wallets.json");
+        let mut service = WalletService::new();
+
+        let result = service.create_and_save_wallet(
+            "Primary",
+            "a sufficiently long test password",
+            invalid_path.to_str().unwrap(),
+        );
+
+        assert!(result.is_err());
+        assert!(service.list_wallets().is_empty());
+    }
+
+    #[test]
+    fn unlock_rejects_wrong_password() {
+        let mut service = WalletService::new();
+        let created = service
+            .create_wallet("Primary", "a sufficiently long test password")
+            .unwrap();
+
+        assert!(
+            service
+                .unlock_wallet(&created.id, "incorrect password")
+                .is_err()
+        );
     }
 }
