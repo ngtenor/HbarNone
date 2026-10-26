@@ -10,11 +10,11 @@
 - [x] Test create/save/reload/unlock, wrong-password rejection, and save-failure rollback
 - [x] Manually verify disposable wallet creation, listing, and persistence after app restart
 - [x] Add password-gated recovery-phrase reveal with explicit screen and malware warnings; clear the view on close or focus loss
+- [x] Require a write-down acknowledgment to complete the reveal flow, without implying that the backup was verified
 
 ## Next priorities
 1. **Wallet recovery and backup**
    - Add mnemonic import with validation and encryption into a new wallet record.
-   - Add a deliberate write-down confirmation flow after revealing the phrase.
    - Explain that a forgotten vault password cannot currently be reset.
    - Keep mnemonic/private-key material out of normal commands and logs.
 2. **Security and reliability review**
@@ -36,4 +36,4 @@
 - [ ] Design a reproducible hardware prototype
 
 ## Latest validation
-At commit `5a7524f`, `cargo fmt --all -- --check`, `cargo test --workspace -j 1` (13 tests), `cargo check --workspace`, frontend lint/build, and the Tauri debug build passed. A disposable wallet was manually confirmed to remain listed after restarting the app. For the recovery-phrase reveal changes, `cargo fmt --all -- --check`, `cargo check --workspace`, `cargo test --workspace --lib --tests -j 1` (14 library tests), and frontend lint/build passed. The initial Tauri debug build was blocked because Windows could not replace the running executable; after closing the app, the user rebuilt it successfully and confirmed the app works. Automated desktop UI testing and the broader security review remain outstanding.
+At commit `5a7524f`, `cargo fmt --all -- --check`, `cargo test --workspace -j 1` (13 tests), `cargo check --workspace`, frontend lint/build, and the Tauri debug build passed. A disposable wallet was manually confirmed to remain listed after restarting the app. For the recovery-phrase reveal changes, `cargo fmt --all -- --check`, `cargo check --workspace`, `cargo test --workspace --lib --tests -j 1` (14 library tests), and frontend lint/build passed. The initial Tauri debug build was blocked because Windows could not replace the running executable; after closing the app, the user rebuilt it successfully and confirmed the app works. The write-down acknowledgment UI passes frontend lint/build and the Tauri debug build. A browser smoke test with mocked Tauri commands and a fake phrase confirmed wrong-password rejection, successful reveal, acknowledgment gating, and hiding via confirmation, Hide now, Escape, and a simulated window-blur event. Actual wallet operations and platform focus changes in the Tauri desktop app still need manual confirmation. Automated desktop UI testing and the broader security review remain outstanding.

@@ -369,6 +369,39 @@ h2 {
   background: var(--surface);
 }
 
+.recovery-dialog .write-down-confirmation {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px;
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--ink);
+  background: var(--wash);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.recovery-dialog .write-down-confirmation input {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  margin: 1px 0 0;
+  accent-color: var(--purple);
+}
+
+.confirmation-hint {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.dialog-actions .primary-button:disabled {
+  cursor: not-allowed;
+}
+
 .recovery-warning {
   padding: 12px;
   margin: 0 0 16px;

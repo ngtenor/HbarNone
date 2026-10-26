@@ -25,6 +25,7 @@ function App() {
   const [mnemonic, setMnemonic] = useState('')
   const [revealError, setRevealError] = useState('')
   const [isRevealing, setIsRevealing] = useState(false)
+  const [hasConfirmedWriteDown, setHasConfirmedWriteDown] = useState(false)
   const revealRequestId = useRef(0)
 
   function closeReveal() {
@@ -34,6 +35,7 @@ function App() {
     setMnemonic('')
     setRevealError('')
     setIsRevealing(false)
+    setHasConfirmedWriteDown(false)
   }
 
   useEffect(() => {
@@ -109,6 +111,7 @@ function App() {
       if (requestId === revealRequestId.current) {
         setMnemonic(recoveredMnemonic)
         setRevealPassword('')
+        setHasConfirmedWriteDown(false)
       }
     } catch (revealFailure) {
       if (requestId === revealRequestId.current) {
@@ -281,9 +284,30 @@ function App() {
                   Malware may capture passwords or screen contents. This reveal
                   does not make a compromised computer safe.
                 </p>
-                <button className="primary-button" type="button" onClick={closeReveal}>
-                  Hide recovery phrase
-                </button>
+                <label className="write-down-confirmation">
+                  <input
+                    type="checkbox"
+                    checked={hasConfirmedWriteDown}
+                    onChange={(event) => setHasConfirmedWriteDown(event.target.checked)}
+                  />
+                  <span>I have written down this recovery phrase and stored it safely.</span>
+                </label>
+                <p className="confirmation-hint">
+                  This confirms your acknowledgment only; the app does not verify your backup.
+                </p>
+                <div className="dialog-actions">
+                  <button className="secondary-button" type="button" onClick={closeReveal}>
+                    Hide now
+                  </button>
+                  <button
+                    className="primary-button"
+                    type="button"
+                    disabled={!hasConfirmedWriteDown}
+                    onClick={closeReveal}
+                  >
+                    Confirm and hide phrase
+                  </button>
+                </div>
               </>
             ) : (
               <form onSubmit={handleReveal}>

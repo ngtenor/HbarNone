@@ -44,6 +44,11 @@ reveal it on a device you trust. A forgotten vault password cannot currently be
 reset. Do not create a wallet containing real funds or rely on this app for
 recovery. Use a long, unique vault password and store it safely.
 
+After revealing the phrase, the interface asks the user to acknowledge that it
+has been written down and stored safely before completing the flow. This is an
+acknowledgment only; the app does not check that the backup is complete or
+correct.
+
 ## Development
 
 Prerequisites: Rust, Node.js/npm, and the platform requirements for Tauri 2.
