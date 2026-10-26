@@ -1,1 +1,71 @@
-# HEDERAVAULT HederaVault is an open-source self-custody wallet for the Hedera network, designed around security, transparency, and air-gapped signing. <br><br> The project begins as a desktop wallet and evolves toward a dedicated offline signing device built from affordable, readily available components that anyone can assemble and verify. <br><br> ## Security Notice ⚠️ HederaVault is in active development and has not yet undergone independent security review or audit. <br><br> Do not use development builds to secure significant value. <br><br> Always assume test wallets and development keys are compromised. <br><br> ## VISION HederaVault aims to provide a secure and fully open ecosystem for managing Hedera accounts, assets, and transactions without relying on proprietary hardware or closed-source software. <br><br> The long-term goal is to create a purpose-built air-gapped signing platform for Hedera that gives users complete control over their private keys while remaining accessible, auditable, and easy to reproduce. <br><br> ## CORE PRINCIPLES - Open source software <br> - Open hardware <br> - Verifiable security <br> - Self-custody by default <br> - No vendor lock-in <br> - Offline-first transaction signing <br><br> ## INSPIRATION HederaVault is inspired by the ideas and philosophy behind SeedSigner, an open-source air-gapped Bitcoin signing device focused on transparent, verifiable self-custody. While HederaVault is designed specifically for the Hedera ecosystem, it shares many of the same guiding principles: <br><br> - Air-gapped security <br> - QR-based workflows <br> - Commodity hardware <br> - Open-source development <br> - User sovereignty <br><br> SeedSigner demonstrated that secure signing devices can be built using affordable, readily available components rather than proprietary hardware. HederaVault seeks to apply similar ideas to the Hedera network. <br><br> ## SECURITY PHILOSOPHY HederaVault is inspired by the security principles pioneered by SeedSigner, an open-source, air-gapped Bitcoin signing project built around transparency, verifiability, and user-controlled self-custody. <br><br> Following a similar philosophy, the future HederaVault offline signer and hardware device are intended to operate in a stateless mode by default, without persistent storage of private keys or mnemonic phrases. <br><br> The preferred workflow is: <br><br> - Import wallet material via QR codes <br> - Generate signing keys in volatile memory only <br> - Sign transactions in an air-gapped environment <br> - Return signatures via QR codes <br> - Destroy all key material when power is removed <br><br> This approach reduces the attack surface associated with long-term secret storage and allows users to verify that private keys are not being retained on the device. <br><br> Encrypted wallet storage is primarily intended for the HederaVault desktop wallet application and is not a requirement of the future offline signer hardware. <br><br> HederaVault seeks to bring these ideas to the Hedera ecosystem while remaining open-source, auditable, reproducible, and buildable from readily available components. <br><br> ## PROJECT ROADMAP ### Phase 1 – Desktop Wallet - Testnet support <br> - Account creation <br> - Secure key storage <br> - HBAR transfers <br> - Transaction history <br> - Wallet backup and recovery <br><br> ### Phase 2 – Expanded Hedera Support - HTS token support <br> - NFT support <br> - Multi-account management <br> - Smart contract interaction <br><br> ### Phase 3 – Offline Signing - Transaction freezing <br> - Offline signing workflows <br> - QR-based transaction transport <br> - Import and export of signatures <br><br> ### Phase 4 – Dedicated Signer - Standalone signing application <br> - Fully air-gapped operation <br> - Hardware reference designs <br> - DIY assembly documentation <br> - QR-based wallet import <br> - Ephemeral key handling <br> - Stateless signing mode <br><br> ### Phase 5 – Open Hardware Device - Commodity components <br> - Reproducible builds <br> - Community-manufacturable hardware <br> - Secure self-custody for the Hedera ecosystem <br><br> ## PLANNED TECHNOLOGIES - Rust <br> - Tauri <br> - React <br> - SQLite <br> - Hedera SDKs <br> - QR-based transaction transport <br><br> ## DEVELOPMENT STATUS ### Completed - Rust workspace established <br> - wallet-core library created <br> - 24-word BIP39 mnemonic generation <br> - Deterministic wallet recovery <br> - ED25519 key generation <br> - Public key generation <br><br> ### In Progress - Secure wallet storage <br> - Hedera SDK integration <br> - Testnet account creation <br><br> ## CURRENT STATUS Early development. <br><br> The initial focus is creating a robust desktop wallet on Hedera Testnet that supports: <br><br> - BIP39 wallet generation <br> - Wallet recovery from mnemonic phrases <br> - Secure encrypted wallet storage <br> - Account management <br> - Transaction creation <br> - Transaction signing <br><br> Future work will extend this foundation toward fully air-gapped signing workflows and dedicated signing hardware. <br><br> ## ACKNOWLEDGEMENTS The HederaVault project draws inspiration from SeedSigner and its approach to open-source, air-gapped self-custody. <br><br> Their work demonstrated that secure signing devices can be built using affordable, readily available components while remaining transparent and verifiable. <br><br> ## LICENSE Apache License 2.0
+# HederaVault
+
+HederaVault is an early-stage, open-source self-custody wallet project for the
+Hedera network. It begins as a desktop wallet and may later grow into an
+offline-signing application and open hardware reference design.
+
+## Security status
+
+HederaVault is experimental software and has not received an independent
+security audit. Do not use it to protect real funds or recovery phrases.
+Treat development wallet material as compromised.
+
+## Current implementation
+
+- Rust workspace with a `wallet-core` library
+- BIP39 mnemonic generation and recovery
+- Hedera ED25519 key derivation using the standard Hedera SDK derivation path
+- Argon2id key derivation and AES-256-GCM encrypted vault records
+- Wallet-store persistence in the desktop app's operating-system data directory
+- Initial Tauri 2 and React desktop interface for creating and listing wallets
+
+The desktop commands do not return mnemonic or private-key material to the UI.
+Wallet recovery, network access, account management, and transaction creation
+are not yet implemented.
+
+## Development
+
+Prerequisites: Rust, Node.js/npm, and the platform requirements for Tauri 2.
+
+Install frontend dependencies and run the desktop application:
+
+```powershell
+npm install
+Set-Location desktop-ui
+npm install
+Set-Location ..
+npm run tauri:dev
+```
+
+Run the Rust tests and check the workspace:
+
+```powershell
+cargo test --workspace
+cargo check --workspace
+```
+
+Build the frontend separately:
+
+```powershell
+Set-Location desktop-ui
+npm run build
+```
+
+See [docs/TODO.md](docs/TODO.md) for current status and next steps.
+
+## Longer-term roadmap
+
+1. Testnet support, account management, transfers, and transaction history
+2. HTS tokens, NFTs, and smart-contract interactions
+3. Offline signing and QR-based transaction transport
+4. A dedicated signer application and reproducible hardware reference design
+
+## Security philosophy
+
+The long-term signer design is intended to support air-gapped workflows with
+ephemeral key handling. Encrypted persistent storage is intended for the
+desktop wallet and is not a requirement for the future offline signer.
+
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE).

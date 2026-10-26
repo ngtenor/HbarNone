@@ -1,24 +1,26 @@
 ﻿# HederaVault TODO
 
+## Current status
+- [x] Encrypt wallet mnemonics with Argon2id and AES-256-GCM
+- [x] Derive Hedera ED25519 keys using the standard BIP39/SLIP-0010 path and an SDK test vector
+- [x] Store encrypted vault records in the operating-system app-data directory
+- [x] Add the initial Tauri 2 + React desktop shell
+- [x] Add wallet create/list commands that do not return mnemonic or private-key material
+- [ ] Add recovery/import UX with safe mnemonic confirmation and password guidance
+- [ ] Add an end-to-end desktop smoke test and verify persistence across restarts
+- [ ] Review file permissions, secret-memory handling, and error reporting before any real-value use
+
 ## Next session checkpoint
 
-Continue the project review and begin the Tauri desktop app work. The workspace tests passed on 2026-10-25 (`cargo test --workspace`: 3 tests passed).
+The initial Tauri desktop shell is implemented. `cargo check --workspace`, `cargo test --workspace -j 1` (10 tests), the React production build, frontend lint, and the Tauri debug executable build (`npm run tauri:build -- --debug --no-bundle`) have passed. The executable remained open during an 8-second startup smoke test.
 
-Suggested order:
-1. Confirm the intended Hedera ED25519 key derivation and add test vectors before relying on wallet keys.
-2. Harden wallet secret handling and vault input validation; add tests for malformed vault fields.
-3. Improve wallet-store persistence, application-data path selection, and wallet ID generation; add load/save tests.
-4. Scaffold the Tauri app and minimal UI, then expose wallet-core operations through commands that never return mnemonic or private-key material.
-5. Update examples and project documentation to reflect what is implemented; keep demo credentials and secret-printing examples clearly test-only.
+Next:
+1. Run the Tauri desktop app and verify create/list plus persistence after restart.
+2. Add automated tests for wallet-service behavior and save-failure rollback.
+3. Design wallet recovery/import UX, password guidance, and safe mnemonic confirmation.
+4. Review file permissions, secret-memory handling, and error reporting before any real-value use.
 
-At the last review, `src-tauri` contained only a placeholder Cargo manifest and `main.rs`, and `desktop-ui` was empty. Existing project changes are uncommitted; preserve them and inspect `git status` before editing.
-
-## Current
-- [ ] Implement encrypted wallet storage
-- [ ] Add Argon2id password derivation
-- [ ] Add AES-256-GCM encryption
-- [ ] Save wallet.dat
-- [ ] Load wallet.dat
+All previous user changes and commits should be preserved. `wallet_store.json` in the repository root is local test data and remains untracked; do not add it to Git.
 
 ## Future
 - [ ] Integrate Hedera SDK

@@ -1,11 +1,9 @@
-﻿use wallet_core::wallet::Wallet;
+use wallet_core::wallet::Wallet;
 
 fn main() {
-    let phrase =
-        "pupil bamboo mammal rug club bid maple december essence capable admit human rule total myself bargain receive what advice erode hundred require theme truth";
+    let phrase = "pupil bamboo mammal rug club bid maple december essence capable admit human rule total myself bargain receive what advice erode hundred require theme truth";
 
-    let wallet =
-        Wallet::from_mnemonic(phrase);
+    let wallet = Wallet::from_mnemonic(phrase).expect("failed to restore wallet");
 
     wallet.display();
 }

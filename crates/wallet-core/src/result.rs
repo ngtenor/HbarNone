@@ -1,2 +1,1 @@
-pub type WalletResult<T> =
-    Result<T, Box<dyn std::error::Error>>;
+pub type WalletResult<T> = Result<T, Box<dyn std::error::Error>>;

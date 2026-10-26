@@ -1,6 +1,7 @@
 use crate::vault::VaultFile;
 use crate::wallet::Wallet;
 use crate::wallet_store::{WalletRecord, WalletStore};
+use rand::random;
 
 pub struct WalletService {
     pub store: WalletStore,
@@ -14,20 +15,27 @@ impl WalletService {
     }
 
     pub fn create_wallet(&mut self, name: &str, password: &str) -> Result<WalletRecord, String> {
-        let wallet = Wallet::generate();
+        let wallet = Wallet::generate()?;
 
-        let vault = VaultFile::encrypt(&wallet.mnemonic, password)
+        let vault = VaultFile::encrypt(wallet.mnemonic(), password)
             .map_err(|e| format!("encrypt wallet failed: {e}"))?;
 
+        let id = loop {
+            let candidate = format!("wallet-{}", hex::encode(random::<[u8; 16]>()));
+            if self.store.find_by_id(&candidate).is_none() {
+                break candidate;
+            }
+        };
+
         let record = WalletRecord {
-            id: format!("wallet-{}", self.store.wallets.len() + 1),
+            id,
             name: name.to_string(),
             vault,
             created_at: chrono::Utc::now().to_rfc3339(),
             updated_at: chrono::Utc::now().to_rfc3339(),
         };
 
-        self.store.add_wallet(record.clone());
+        self.store.add_wallet(record.clone())?;
 
         Ok(record)
     }
@@ -56,6 +64,6 @@ impl WalletService {
             .decrypt(password)
             .map_err(|e| format!("decrypt wallet failed: {e}"))?;
 
-        Ok(Wallet::from_mnemonic(&mnemonic))
+        Wallet::from_mnemonic(mnemonic.as_str())
     }
 }
