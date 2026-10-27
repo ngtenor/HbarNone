@@ -13,19 +13,22 @@
 - [x] Require a write-down acknowledgment to complete the reveal flow, without implying that the backup was verified
 - [x] Explain that a forgotten vault password cannot currently be reset
 
-## Next priorities
+## Work before Linux testing
 1. **Security and reliability review**
    - Review vault format/versioning, KDF parameter validation, cryptographic input validation, and secret lifetime/zeroization.
-   - Verify app-data directory and wallet-file permissions on supported platforms.
+   - Verify app-data directory and wallet-file permissions on Windows now, then repeat the platform-specific checks on Linux.
    - Review error handling and ensure failures never appear as successful wallet operations.
    - Keep the development-only warning until the review is complete.
 2. **Desktop verification**
-   - Manually verify recovery-phrase reveal, wrong-password rejection, acknowledgment gating, and hide-on-close/focus-loss in the Tauri app using a disposable wallet.
-   - Add an end-to-end test for creating a disposable wallet, listing it, restarting the app, and confirming persistence.
+   - Manually verify recovery-phrase reveal in the Windows Tauri app using a disposable wallet: wrong-password rejection, acknowledgment gating, and hiding on close or focus loss.
+   - Add an end-to-end test for creating a disposable wallet, listing it, restarting the app, and confirming persistence. Persistence was manually confirmed on the Dell; the automated test is still outstanding.
    - The browser smoke test uses mocked Tauri commands; it does not replace real-app verification.
 3. **Wallet recovery and backup**
    - Add mnemonic import with validation and encryption into a new wallet record.
    - Keep mnemonic/private-key material out of normal commands and logs.
+
+On the weekend Linux machine, run the workspace tests and checks and verify the
+desktop app builds and launches. Do not use real funds or recovery phrases.
 
 ## Later roadmap
 - [ ] Integrate Hedera network access and Testnet account support
