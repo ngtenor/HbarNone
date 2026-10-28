@@ -75,6 +75,48 @@ fn create_wallet(
 }
 
 #[tauri::command]
+fn import_wallet(
+    name: String,
+    mnemonic: String,
+    password: String,
+    state: State<'_, AppState>,
+) -> Result<WalletSummary, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("wallet name cannot be empty".to_string());
+    }
+    if name.chars().count() > 64 {
+        return Err("wallet name cannot exceed 64 characters".to_string());
+    }
+    let mnemonic = Zeroizing::new(mnemonic);
+    if mnemonic.is_empty() {
+        return Err("recovery phrase cannot be empty".to_string());
+    }
+    if mnemonic.len() > 1024 {
+        return Err("recovery phrase cannot exceed 1024 bytes".to_string());
+    }
+    let password = Zeroizing::new(password);
+    if password.is_empty() {
+        return Err("password cannot be empty".to_string());
+    }
+    if password.len() > 1024 {
+        return Err("password cannot exceed 1024 bytes".to_string());
+    }
+    let mut service = state
+        .wallet_service
+        .lock()
+        .map_err(|_| "wallet service is unavailable".to_string())?;
+    let record = service.import_and_save_wallet(
+        name,
+        mnemonic.as_str(),
+        password.as_str(),
+        &state.store_path.to_string_lossy(),
+    )?;
+
+    Ok(WalletSummary::from(&record))
+}
+
+#[tauri::command]
 fn reveal_wallet_mnemonic(
     wallet_id: String,
     password: String,
@@ -119,6 +161,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             create_wallet,
+            import_wallet,
             list_wallets,
             reveal_wallet_mnemonic
         ])

@@ -25,24 +25,25 @@ Treat development wallet material as compromised.
 
 - Rust workspace with a `wallet-core` library
 - BIP39 mnemonic generation and recovery
+- Validated BIP39 mnemonic import into an encrypted wallet record
 - Hedera ED25519 key derivation using the standard Hedera SDK derivation path
 - Argon2id key derivation and AES-256-GCM encrypted vault records
 - Wallet-store persistence in the desktop app's operating-system data directory
-- Initial Tauri 2 and React desktop interface for creating and listing wallets
+- Initial Tauri 2 and React desktop interface for creating, importing, and listing wallets
 
 Normal desktop commands do not return mnemonic or private-key material to the
 UI. The user can explicitly reveal a wallet's recovery phrase after re-entering
-the vault password. Wallet import, network access, account management, and
-transaction creation are not yet implemented.
+the vault password. Hedera network access, account management, and transaction
+creation are not yet implemented.
 
-The current interface is a development scaffold. It creates and lists encrypted
-wallet records and can display the recovery phrase on request, but does not yet
-provide wallet import or a complete recovery workflow. Revealing the phrase
-exposes it on screen and in application memory; malware may capture the phrase,
-password, or screen contents. Write it down privately, never share it, and only
-reveal it on a device you trust. A forgotten vault password cannot currently be
-reset. Do not create a wallet containing real funds or rely on this app for
-recovery. Use a long, unique vault password and store it safely.
+The current interface is a development scaffold. It can create, import, and
+list encrypted wallet records and display the recovery phrase on request, but
+does not yet provide a complete recovery workflow. Importing or revealing a
+phrase exposes it on screen and in application memory; malware may capture the phrase,
+password, or screen contents. Never share a phrase; only import or reveal
+disposable phrases on a device you trust. A forgotten vault password cannot
+currently be reset. Do not create a wallet containing real funds or rely on
+this app for recovery. Use a long, unique vault password and store it safely.
 
 After revealing the phrase, the interface asks the user to acknowledge that it
 has been written down and stored safely before completing the flow. This is an

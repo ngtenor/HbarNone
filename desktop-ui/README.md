@@ -20,6 +20,7 @@ Set-Location desktop-ui
 npm run build
 ```
 
-The frontend invokes only the wallet creation and listing commands. Backend
-responses intentionally exclude mnemonics and private keys. This is early
-development software; do not use it to store real funds or recovery phrases.
+The frontend invokes wallet creation, mnemonic import, listing, and password-
+gated recovery-phrase reveal commands. Wallet summaries intentionally exclude
+mnemonics and private keys. This is early development software; do not use it
+to store real funds or import a recovery phrase for real funds.

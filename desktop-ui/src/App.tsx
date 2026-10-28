@@ -15,11 +15,13 @@ function errorMessage(error: unknown) {
 
 function App() {
   const [wallets, setWallets] = useState<WalletSummary[]>([])
+  const [walletMode, setWalletMode] = useState<'create' | 'import'>('create')
   const [name, setName] = useState('')
   const [password, setPassword] = useState('')
+  const [importMnemonic, setImportMnemonic] = useState('')
   const [error, setError] = useState('')
   const [isLoading, setIsLoading] = useState(true)
-  const [isCreating, setIsCreating] = useState(false)
+  const [isSavingWallet, setIsSavingWallet] = useState(false)
   const [walletToReveal, setWalletToReveal] = useState<WalletSummary | null>(null)
   const [revealPassword, setRevealPassword] = useState('')
   const [mnemonic, setMnemonic] = useState('')
@@ -77,22 +79,26 @@ function App() {
     }
   }, [])
 
-  async function handleCreate(event: FormEvent<HTMLFormElement>) {
+  async function handleSaveWallet(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     setError('')
-    setIsCreating(true)
+    setIsSavingWallet(true)
     try {
-      const wallet = await invoke<WalletSummary>('create_wallet', {
-        name,
-        password,
-      })
+      const wallet = walletMode === 'create'
+        ? await invoke<WalletSummary>('create_wallet', { name, password })
+        : await invoke<WalletSummary>('import_wallet', {
+          name,
+          mnemonic: importMnemonic,
+          password,
+        })
       setWallets((existing) => [...existing, wallet])
       setName('')
       setPassword('')
-    } catch (createError) {
-      setError(errorMessage(createError))
+      setImportMnemonic('')
+    } catch (saveError) {
+      setError(errorMessage(saveError))
     } finally {
-      setIsCreating(false)
+      setIsSavingWallet(false)
     }
   }
 
@@ -140,20 +146,67 @@ function App() {
         <p className="eyebrow">SELF-CUSTODY STARTS HERE</p>
         <h1>Your keys.<br />Your responsibility.</h1>
         <p className="welcome-copy">
-          Create an encrypted wallet to get started. The recovery phrase stays
-          encrypted unless you explicitly reveal it with your password.
+          Create an encrypted wallet or import a BIP39 recovery phrase. Stored
+          phrases stay encrypted unless you reveal them with your password.
         </p>
       </section>
 
       <section className="content-grid" aria-label="Wallet management">
-        <form className="panel create-panel" onSubmit={handleCreate}>
+        <form className="panel create-panel" onSubmit={handleSaveWallet}>
           <div className="panel-heading">
             <div>
-              <p className="eyebrow">NEW WALLET</p>
-              <h2>Create a wallet</h2>
+              <p className="eyebrow">{walletMode === 'create' ? 'NEW WALLET' : 'EXISTING WALLET'}</p>
+              <h2>{walletMode === 'create' ? 'Create a wallet' : 'Import a wallet'}</h2>
             </div>
             <span className="step-number" aria-hidden="true">01</span>
           </div>
+
+          <div className="mode-switch" role="group" aria-label="Wallet operation">
+            <button
+              className={walletMode === 'create' ? 'mode-button active' : 'mode-button'}
+              type="button"
+              aria-pressed={walletMode === 'create'}
+              disabled={isSavingWallet}
+              onClick={() => {
+                setWalletMode('create')
+                setImportMnemonic('')
+                setError('')
+              }}
+            >
+              Create
+            </button>
+            <button
+              className={walletMode === 'import' ? 'mode-button active' : 'mode-button'}
+              type="button"
+              aria-pressed={walletMode === 'import'}
+              disabled={isSavingWallet}
+              onClick={() => {
+                setWalletMode('import')
+                setError('')
+              }}
+            >
+              Import
+            </button>
+          </div>
+
+          {walletMode === 'import' && (
+            <>
+              <label htmlFor="import-mnemonic">English BIP39 recovery phrase</label>
+              <textarea
+                id="import-mnemonic"
+                autoComplete="off"
+                autoCapitalize="none"
+                maxLength={1024}
+                spellCheck={false}
+                required
+                value={importMnemonic}
+                onChange={(event) => setImportMnemonic(event.target.value)}
+              />
+              <p className="field-hint">
+                The phrase is validated and encrypted in this device’s local vault. Do not import a phrase for a wallet containing real funds.
+              </p>
+            </>
+          )}
 
           <label htmlFor="wallet-name">Wallet name</label>
           <input
@@ -181,9 +234,11 @@ function App() {
             is not available if you forget it.
           </p>
 
-          <button className="primary-button" type="submit" disabled={isCreating}>
-            {isCreating ? 'Creating securely...' : 'Create encrypted wallet'}
-            {!isCreating && <span aria-hidden="true">-&gt;</span>}
+          <button className="primary-button" type="submit" disabled={isSavingWallet}>
+            {isSavingWallet
+              ? 'Saving securely...'
+              : walletMode === 'create' ? 'Create encrypted wallet' : 'Import encrypted wallet'}
+            {!isSavingWallet && <span aria-hidden="true">-&gt;</span>}
           </button>
         </form>
 

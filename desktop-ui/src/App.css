@@ -147,11 +147,11 @@ h2 {
   font-weight: 600;
 }
 
-.create-panel input {
+.create-panel input,
+.create-panel textarea {
   box-sizing: border-box;
   width: 100%;
-  height: 42px;
-  padding: 0 12px;
+  padding: 12px;
   border: 1px solid var(--line);
   border-radius: 7px;
   outline: none;
@@ -161,9 +161,52 @@ h2 {
   font-size: 13px;
 }
 
-.create-panel input:focus {
+.create-panel input {
+  height: 42px;
+  padding: 0 12px;
+}
+
+.create-panel textarea {
+  min-height: 92px;
+  resize: vertical;
+}
+
+.create-panel input:focus,
+.create-panel textarea:focus {
   border-color: var(--purple);
   box-shadow: 0 0 0 3px var(--purple-soft);
+}
+
+.mode-switch {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  margin: -8px 0 18px;
+  padding: 4px;
+  border-radius: 8px;
+  background: var(--wash);
+}
+
+.mode-button {
+  height: 34px;
+  border: 0;
+  border-radius: 6px;
+  color: var(--muted);
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.mode-button.active {
+  color: var(--purple);
+  background: #fff;
+  box-shadow: 0 1px 3px #26124412;
+}
+
+.mode-button:disabled {
+  cursor: wait;
 }
 
 .field-hint {
