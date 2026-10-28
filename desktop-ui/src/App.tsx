@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { invoke } from '@tauri-apps/api/core'
+import { generatePassphrase } from './passphrase'
 import './App.css'
 
 type WalletSummary = {
@@ -18,11 +19,15 @@ function App() {
   const [walletMode, setWalletMode] = useState<'create' | 'import'>('create')
   const [name, setName] = useState('')
   const [password, setPassword] = useState('')
+  const [isPasswordVisible, setIsPasswordVisible] = useState(false)
   const [importMnemonic, setImportMnemonic] = useState('')
   const [error, setError] = useState('')
   const [isLoading, setIsLoading] = useState(true)
   const [isSavingWallet, setIsSavingWallet] = useState(false)
   const [walletToReveal, setWalletToReveal] = useState<WalletSummary | null>(null)
+  const [walletToDelete, setWalletToDelete] = useState<WalletSummary | null>(null)
+  const [isDeletingWallet, setIsDeletingWallet] = useState(false)
+  const [deleteError, setDeleteError] = useState('')
   const [revealPassword, setRevealPassword] = useState('')
   const [mnemonic, setMnemonic] = useState('')
   const [revealError, setRevealError] = useState('')
@@ -40,13 +45,27 @@ function App() {
     setHasConfirmedWriteDown(false)
   }
 
+  function closeDelete() {
+    setWalletToDelete(null)
+    setDeleteError('')
+  }
+
   useEffect(() => {
-    const hideOnBlur = () => closeReveal()
+    const hideOnBlur = () => {
+      closeReveal()
+      closeDelete()
+    }
     const hideWhenBackgrounded = () => {
-      if (document.visibilityState !== 'visible') closeReveal()
+      if (document.visibilityState !== 'visible') {
+        closeReveal()
+        closeDelete()
+      }
     }
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') closeReveal()
+      if (event.key === 'Escape') {
+        closeReveal()
+        closeDelete()
+      }
     }
 
     window.addEventListener('blur', hideOnBlur)
@@ -94,11 +113,22 @@ function App() {
       setWallets((existing) => [...existing, wallet])
       setName('')
       setPassword('')
+      setIsPasswordVisible(false)
       setImportMnemonic('')
     } catch (saveError) {
       setError(errorMessage(saveError))
     } finally {
       setIsSavingWallet(false)
+    }
+  }
+
+  function handleGeneratePassphrase() {
+    try {
+      setPassword(generatePassphrase())
+      setIsPasswordVisible(false)
+      setError('')
+    } catch {
+      setError('Could not generate a secure passphrase on this device.')
     }
   }
 
@@ -126,6 +156,26 @@ function App() {
       }
     } finally {
       if (requestId === revealRequestId.current) setIsRevealing(false)
+    }
+  }
+
+  async function handleDeleteWallet() {
+    if (!walletToDelete || isDeletingWallet) return
+
+    const walletId = walletToDelete.id
+    setError('')
+    setDeleteError('')
+    setIsDeletingWallet(true)
+    try {
+      await invoke('delete_wallet', { walletId })
+      setWallets((existing) => existing.filter((wallet) => wallet.id !== walletId))
+      setWalletToDelete(null)
+    } catch (deleteError) {
+      const message = errorMessage(deleteError)
+      setDeleteError(message)
+      setError(message)
+    } finally {
+      setIsDeletingWallet(false)
     }
   }
 
@@ -220,18 +270,39 @@ function App() {
           />
 
           <label htmlFor="wallet-password">Vault password</label>
-          <input
-            id="wallet-password"
-            type="password"
-            autoComplete="new-password"
-            maxLength={1024}
-            required
-            value={password}
-            onChange={(event) => setPassword(event.target.value)}
-          />
+          <div className="password-input-row">
+            <input
+              id="wallet-password"
+              type={isPasswordVisible ? 'text' : 'password'}
+              autoComplete="new-password"
+              maxLength={1024}
+              required
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+            />
+            <button
+              className="password-toggle"
+              type="button"
+              aria-label={isPasswordVisible ? 'Hide vault password' : 'Show vault password'}
+              aria-pressed={isPasswordVisible}
+              onClick={() => setIsPasswordVisible((visible) => !visible)}
+            >
+              {isPasswordVisible ? 'Hide' : 'Show'}
+            </button>
+          </div>
+          <button
+            className="secondary-button generate-passphrase"
+            type="button"
+            disabled={isSavingWallet}
+            onClick={handleGeneratePassphrase}
+          >
+            Generate six-word passphrase
+          </button>
           <p className="field-hint">
-            Use a long, unique password and store it safely. Password recovery
-            is not available if you forget it.
+            Six words are chosen locally using this device’s secure random
+            generator (about 77.5 bits of entropy). Store the passphrase safely;
+            a forgotten vault password cannot be reset. Never use a recovery
+            phrase as your vault password.
           </p>
 
           <button className="primary-button" type="submit" disabled={isSavingWallet}>
@@ -270,16 +341,32 @@ function App() {
                     <strong>{wallet.name}</strong>
                     <span>Added {new Date(wallet.created_at).toLocaleDateString()}</span>
                   </span>
-                  <button
-                    className="reveal-button"
-                    type="button"
-                    onClick={() => {
-                      closeReveal()
-                      setWalletToReveal(wallet)
-                    }}
-                  >
-                    Show recovery phrase
-                  </button>
+                  <div className="wallet-actions">
+                    <button
+                      className="reveal-button"
+                      type="button"
+                      onClick={() => {
+                        closeReveal()
+                        setWalletToDelete(null)
+                        setWalletToReveal(wallet)
+                      }}
+                    >
+                      Show recovery phrase
+                    </button>
+                    <button
+                      className="delete-wallet-button"
+                      type="button"
+                      aria-label={`Delete ${wallet.name}`}
+                      onClick={() => {
+                        closeReveal()
+                        setError('')
+                        setDeleteError('')
+                        setWalletToDelete(wallet)
+                      }}
+                    >
+                      Delete
+                    </button>
+                  </div>
                 </li>
               ))}
             </ul>
@@ -394,6 +481,70 @@ function App() {
                 </div>
               </form>
             )}
+          </section>
+        </div>
+      )}
+
+      {walletToDelete && (
+        <div
+          className="modal-backdrop"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) closeDelete()
+          }}
+        >
+          <section
+            className="recovery-dialog delete-dialog"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="delete-title"
+            aria-describedby="delete-warning"
+          >
+            <div className="panel-heading">
+              <div>
+                <p className="eyebrow">IRREVERSIBLE ACTION</p>
+                <h2 id="delete-title">Delete {walletToDelete.name}?</h2>
+              </div>
+              <button
+                className="close-button"
+                type="button"
+                aria-label="Cancel wallet deletion"
+                onClick={closeDelete}
+              >
+                ×
+              </button>
+            </div>
+            <p id="delete-warning" className="delete-warning" role="alert">
+              This removes the wallet from this device’s local vault without
+              asking for its password. If you have forgotten that password, you
+              will not be able to recover the wallet unless its recovery phrase
+              is backed up elsewhere. This does not delete a Hedera network
+              account or securely erase older storage copies or backups.
+            </p>
+            <p className="dialog-copy">
+              Confirm deletion of <strong>{walletToDelete.name}</strong>. This
+              action cannot be undone.
+            </p>
+            {deleteError && (
+              <p className="error-message" role="alert">{deleteError}</p>
+            )}
+            <div className="dialog-actions">
+              <button
+                className="secondary-button"
+                type="button"
+                disabled={isDeletingWallet}
+                onClick={closeDelete}
+              >
+                Cancel
+              </button>
+              <button
+                className="danger-button"
+                type="button"
+                disabled={isDeletingWallet}
+                onClick={() => void handleDeleteWallet()}
+              >
+                {isDeletingWallet ? 'Deleting...' : 'Delete wallet'}
+              </button>
+            </div>
           </section>
         </div>
       )}

@@ -12,6 +12,8 @@
 - [x] Add password-gated recovery-phrase reveal with explicit screen and malware warnings; clear the view on close or focus loss
 - [x] Require a write-down acknowledgment to complete the reveal flow, without implying that the backup was verified
 - [x] Explain that a forgotten vault password cannot currently be reset
+- [x] Generate six-word vault passphrases locally from the EFF long list using the device's cryptographic random-number generator
+- [x] Delete a wallet from the local vault without requiring its password, with explicit irreversible-action confirmation
 
 ## Work before Linux testing
 1. **Security and reliability review**
@@ -19,6 +21,9 @@
    - [ ] Verify app-data directory and wallet-file permissions on Windows and Linux.
    - Keep the development-only warning until the review and platform checks are complete.
 2. **Desktop verification**
+   - [ ] Manually verify the passphrase button generates six EFF words, accepts the passphrase for a disposable wallet, and leaves the password field masked by default.
+   - [x] Add wallet-core tests for password-free wallet deletion, persistence after reload, unknown wallet IDs, and restoring the in-memory store when saving fails.
+   - [ ] Manually test wallet deletion with a disposable wallet: cancel the warning, confirm deletion without a password, and verify it remains absent after restarting the app.
    - [x] Manually verify wrong-password rejection when revealing a disposable wallet's recovery phrase in the standalone Windows app; the phrase was not revealed.
    - [x] Manually verify acknowledgment gating and hiding the phrase with Escape and when switching away from the Windows app.
    - [x] Add a wallet-core persistence integration test for creating, listing, reloading, and unlocking a disposable wallet; it also checks the phrase is not stored in plaintext.
@@ -34,6 +39,12 @@
 On the weekend Linux machine, run the workspace tests and checks and verify the
 desktop app builds and launches, and verify Linux app-data permissions. Do not
 use real funds or recovery phrases.
+
+## Wallet lifecycle and encrypted backups
+- [ ] Add wallet password change by verifying the current password and
+  requiring confirmation of the new password before re-encrypting the wallet.
+- [ ] Export a restorable backup containing the encrypted seed, protected by
+  the wallet's current password. Never write seed words to a plaintext file.
 
 ## Later roadmap
 - [ ] Integrate Hedera network access and Testnet account support
@@ -53,7 +64,10 @@ persistence after app restart, acknowledgment gating, hiding the phrase with
 Escape and on app focus-loss, and invalid mnemonic import.
 
 Current code validation passed: `cargo fmt --all -- --check`, `cargo test
---workspace -j 1` (15 wallet-core unit tests and 1 persistence integration
+--workspace -j 1` (18 wallet-core unit tests and 1 persistence integration
 test), frontend lint/build, and the standalone Tauri release build with NSIS/MSI
-installers. Windows and Linux app-data permission checks and an automated
-desktop-app restart test remain outstanding.
+installers. The deletion tests cover persistence, unknown IDs, and rollback on
+save failure. The six-word passphrase generator uses unbiased sampling from the
+bundled 7,776-word EFF list. Manual verification of passphrase generation and
+wallet deletion remains outstanding. Windows and Linux app-data permission
+checks and an automated desktop-app restart test remain outstanding.

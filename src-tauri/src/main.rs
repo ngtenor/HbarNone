@@ -42,6 +42,19 @@ fn list_wallets(state: State<'_, AppState>) -> Result<Vec<WalletSummary>, String
 }
 
 #[tauri::command]
+fn delete_wallet(wallet_id: String, state: State<'_, AppState>) -> Result<(), String> {
+    if wallet_id.trim().is_empty() {
+        return Err("wallet ID cannot be empty".to_string());
+    }
+
+    let mut service = state
+        .wallet_service
+        .lock()
+        .map_err(|_| "wallet service is unavailable".to_string())?;
+    service.delete_wallet_and_save(&wallet_id, &state.store_path.to_string_lossy())
+}
+
+#[tauri::command]
 fn create_wallet(
     name: String,
     password: String,
@@ -160,6 +173,7 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            delete_wallet,
             create_wallet,
             import_wallet,
             list_wallets,

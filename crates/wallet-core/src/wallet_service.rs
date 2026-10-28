@@ -107,6 +107,21 @@ impl WalletService {
         self.store.save_to_file(path)
     }
 
+    pub fn delete_wallet_and_save(&mut self, wallet_id: &str, path: &str) -> Result<(), String> {
+        if self.store.find_by_id(wallet_id).is_none() {
+            return Err(format!("wallet not found: {wallet_id}"));
+        }
+        let original_store = self.store.clone();
+        self.store.remove_wallet(wallet_id);
+
+        if let Err(error) = self.save_store(path) {
+            self.store = original_store;
+            return Err(error);
+        }
+
+        Ok(())
+    }
+
     pub fn list_wallets(&self) -> &[WalletRecord] {
         self.store.list_wallets()
     }
@@ -248,5 +263,62 @@ mod tests {
         assert_eq!(loaded.list_wallets().len(), 1);
         assert_eq!(loaded.list_wallets()[0].name, "Imported");
         assert_eq!(revealed.as_str(), phrase);
+    }
+
+    #[test]
+    fn delete_wallet_persists_without_password() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("wallets.json");
+        let path = path.to_str().unwrap();
+        let mut service = WalletService::new();
+        let created = service
+            .create_and_save_wallet("Disposable", "test password", path)
+            .unwrap();
+        let retained = service
+            .create_and_save_wallet("Keep", "test password", path)
+            .unwrap();
+
+        service.delete_wallet_and_save(&created.id, path).unwrap();
+        let reloaded = WalletService::load_store(path).unwrap();
+
+        assert_eq!(service.list_wallets().len(), 1);
+        assert_eq!(service.list_wallets()[0].id, retained.id);
+        assert_eq!(reloaded.list_wallets().len(), 1);
+        assert_eq!(reloaded.list_wallets()[0].id, retained.id);
+    }
+
+    #[test]
+    fn delete_wallet_rolls_back_when_save_fails() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("wallets.json");
+        let mut service = WalletService::new();
+        let created = service
+            .create_and_save_wallet("Disposable", "test password", path.to_str().unwrap())
+            .unwrap();
+        let invalid_path = directory.path().join("missing").join("wallets.json");
+
+        let result = service.delete_wallet_and_save(&created.id, invalid_path.to_str().unwrap());
+
+        assert!(result.is_err());
+        assert_eq!(service.list_wallets().len(), 1);
+        assert_eq!(service.list_wallets()[0].id, created.id);
+        let persisted = WalletService::load_store(path.to_str().unwrap()).unwrap();
+        assert_eq!(persisted.list_wallets().len(), 1);
+        assert_eq!(persisted.list_wallets()[0].id, created.id);
+    }
+
+    #[test]
+    fn delete_wallet_rejects_unknown_id() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("wallets.json");
+        let mut service = WalletService::new();
+
+        assert!(
+            service
+                .delete_wallet_and_save("missing-wallet", path.to_str().unwrap())
+                .is_err()
+        );
+        assert!(service.list_wallets().is_empty());
+        assert!(!path.exists());
     }
 }

@@ -166,6 +166,43 @@ h2 {
   padding: 0 12px;
 }
 
+.password-input-row {
+  display: flex;
+  gap: 8px;
+}
+
+.password-input-row input {
+  min-width: 0;
+  flex: 1;
+}
+
+.password-toggle {
+  min-width: 60px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  color: var(--ink);
+  background: var(--surface);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+}
+
+.password-toggle:hover {
+  border-color: var(--purple);
+}
+
+.create-panel .generate-passphrase {
+  width: 100%;
+  min-width: 0;
+  margin-top: 9px;
+}
+
+.secondary-button:disabled {
+  cursor: wait;
+  opacity: 0.72;
+}
+
 .create-panel textarea {
   min-height: 92px;
   resize: vertical;
@@ -306,6 +343,12 @@ h2 {
   font-size: 10px;
 }
 
+.wallet-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 6px;
+}
+
 .reveal-button,
 .secondary-button,
 .close-button {
@@ -328,6 +371,24 @@ h2 {
 .secondary-button:hover,
 .close-button:hover {
   border-color: var(--purple);
+}
+
+.delete-wallet-button {
+  flex: 0 0 auto;
+  padding: 8px 10px;
+  border: 1px solid #f1c7c7;
+  border-radius: 7px;
+  color: #a82d2d;
+  background: #fff4f4;
+  cursor: pointer;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.delete-wallet-button:hover {
+  border-color: #d97171;
+  background: #ffebeb;
 }
 
 .modal-backdrop {
@@ -363,6 +424,17 @@ h2 {
   color: var(--muted);
   font-size: 13px;
   line-height: 1.6;
+}
+
+.delete-warning {
+  padding: 12px;
+  margin: 0 0 16px;
+  border: 1px solid #f1c7c7;
+  border-radius: 8px;
+  color: #8e2525;
+  background: #fff4f4;
+  font-size: 12px;
+  line-height: 1.55;
 }
 
 .recovery-dialog label {
@@ -410,6 +482,32 @@ h2 {
 
 .secondary-button {
   background: var(--surface);
+}
+
+.danger-button {
+  width: auto;
+  min-width: 120px;
+  height: 42px;
+  padding: 0 14px;
+  border: 1px solid #a82d2d;
+  border-radius: 7px;
+  color: #fff;
+  background: #a82d2d;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.danger-button:hover:not(:disabled) {
+  border-color: #842020;
+  background: #842020;
+}
+
+.danger-button:disabled,
+.secondary-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
 }
 
 .recovery-dialog .write-down-confirmation {
@@ -556,5 +654,16 @@ h2 {
 
   .mnemonic-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 430px) {
+  .wallet-item {
+    flex-wrap: wrap;
+  }
+
+  .wallet-actions {
+    width: 100%;
+    justify-content: flex-end;
   }
 }

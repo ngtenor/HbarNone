@@ -36,11 +36,30 @@ UI. The user can explicitly reveal a wallet's recovery phrase after re-entering
 the vault password. Hedera network access, account management, and transaction
 creation are not yet implemented.
 
+Wallets can be removed from this device's local vault without the vault
+password, after explicit confirmation. This does not delete a Hedera network
+account or securely erase older storage copies or backups. If the password is
+forgotten, the recovery phrase must be backed up elsewhere to restore the
+wallet.
+
+The vault-password form can generate a six-word passphrase locally using the
+device's cryptographic random-number generator. Six uniformly selected words
+from the 7,776-word EFF long list provide about 77.5 bits of entropy. Save the
+passphrase safely: a forgotten vault password cannot be reset. This passphrase
+is separate from, and must never be confused with, the wallet's recovery phrase.
+
+The bundled EFF long word list is based on the
+[EFF Dice-Generated Passphrases wordlist](https://www.eff.org/files/2016/07/18/eff_large_wordlist.txt),
+published in [EFF's article on random passphrases](https://www.eff.org/deeplinks/2016/07/new-wordlists-random-passphrases).
+The list is included under the
+[Creative Commons Attribution 4.0 International License](https://creativecommons.org/licenses/by/4.0/);
+the five-dice codes were removed for use by the generator.
+
 The current interface is a development scaffold. It can create, import, and
 list encrypted wallet records and display the recovery phrase on request, but
 does not yet provide a complete recovery workflow. Importing or revealing a
-phrase exposes it on screen and in application memory; malware may capture the phrase,
-password, or screen contents. Never share a phrase; only import or reveal
+phrase exposes it on screen and in application memory; malware may capture the
+phrase, password, or screen contents. Never share a phrase; only import or reveal
 disposable phrases on a device you trust. A forgotten vault password cannot
 currently be reset. Do not create a wallet containing real funds or rely on
 this app for recovery. Use a long, unique vault password and store it safely.
