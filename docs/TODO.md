@@ -26,6 +26,10 @@
 1. **Security and reliability review**
    - [x] Review vault format/versioning, KDF parameter validation, cryptographic input validation, secret lifetime/zeroization, and error handling; the source review found no substantiated vulnerabilities.
    - [ ] Verify app-data directory and wallet-file permissions on Windows and Linux.
+   - [ ] Explicitly set restrictive permissions on the app-data directory and `wallets.json` (Windows ACLs; Linux `0700` directory and `0600` file) if the defaults are not restrictive enough.
+   - [ ] Add brute-force friction to unlock, such as a short delay after repeated failed attempts.
+   - [ ] Confirm sensitive state is cleared on window blur/minimize and that the clipboard is never used for secrets.
+   - [ ] Review the Tauri CSP and capabilities; remove the dev-server `ws://` origin from release builds if it is not needed.
    - Keep the development-only warning until the review and platform checks are complete.
 2. **Desktop verification**
    - [ ] Manually verify vault creation with a generated six-word passphrase, masked-by-default entry, unlock, wrong-password rejection, and manual lock.
@@ -44,16 +48,33 @@
 3. **Wallet recovery and backup**
    - [x] Add English BIP39 mnemonic import with validation and encryption into a new wallet record.
    - [x] Keep imported mnemonic/private-key material out of normal command responses and logs.
+   - [ ] Add vault password change: verify the current password and re-wrap the master key with the new password.
+   - [ ] Add an encrypted, restorable backup export and restore, protected by the vault password, so a vault can be moved between machines. Never write seed words to a plaintext file.
+   - [ ] Detect duplicate imports of the same recovery phrase and warn or block.
+   - [ ] Add wallet rename.
+4. **Automated testing and CI**
+   - [ ] Add frontend component tests (Vitest and React Testing Library) with a mocked `invoke`, covering tab logic, auto-lock, and the reveal and delete flows.
+   - [x] Add a GitHub Actions workflow (`.github/workflows/ci.yml`) running `cargo fmt --check`, `cargo test --workspace`, `cargo check --workspace`, frontend lint and frontend build on both Windows and Ubuntu. Written but not yet run on GitHub; confirm the first run passes after pushing.
+5. **Linux readiness**
+   - [x] Document the Ubuntu packages Tauri 2 needs: they are installed by `scripts/linux-test.sh` (build-essential, libssl-dev, libwebkit2gtk-4.1-dev, libgtk-3-dev, librsvg2-dev, libayatana-appindicator3-dev, libxdo-dev).
+   - [x] Write a Linux test script, `scripts/linux-test.sh`: installs packages, checks toolchains and entropy, runs `cargo fmt`/`test`/`check`, builds and lints the frontend, runs `npm run tauri:build`, and checks app-data permissions with `stat`. It writes a timestamped `linux-test-*.log`. Options: `--skip-apt`, `--skip-bundle`. Untested on Linux; the CI Ubuntu job will exercise the same steps.
+   - [ ] Run the script on Ubuntu, launch the built app, and complete the manual checks with disposable wallets.
+   - [ ] Decide the Linux test environment: Ubuntu 24.04 LTS on an external NVMe/SSD (at least 256 GB, USB 3.2 Gen 2 or Thunderbolt/USB4 enclosure), or a partition on the Dell.
+6. **Housekeeping**
+   - [ ] Open a pull request from `feature/wallet-generation` to `main`.
+   - [x] Add a `.gitattributes` file to settle the LF/CRLF warnings.
+   - [ ] Add a screenshot or short walkthrough to the README.
+
+Suggested order: manual Windows testing, CI with an Ubuntu job, file permissions,
+then password change and backup.
 
 On the weekend Linux machine, run the workspace tests and checks and verify the
 desktop app builds and launches, and verify Linux app-data permissions. Do not
 use real funds or recovery phrases.
 
 ## Vault lifecycle and encrypted backups
-- [ ] Add vault password change by verifying the current password and
-  re-wrapping the master key with the new password.
-- [ ] Export a restorable backup containing the encrypted seed, protected by
-  the vault password. Never write seed words to a plaintext file.
+Password change and encrypted backup export/restore are now tracked under
+"Wallet recovery and backup" in the pre-Linux work above.
 
 ## Later roadmap
 - [ ] Integrate Hedera network access and Testnet account support
