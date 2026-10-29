@@ -116,6 +116,21 @@ fn migrate_legacy_vault(
 }
 
 #[tauri::command]
+fn change_vault_password(
+    current_password: String,
+    new_password: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let current_password = Zeroizing::new(current_password);
+    let new_password = Zeroizing::new(new_password);
+    lock_service(&state)?.change_vault_password(
+        current_password.as_str(),
+        new_password.as_str(),
+        &state.store_path.to_string_lossy(),
+    )
+}
+
+#[tauri::command]
 fn set_auto_lock_seconds(seconds: u32, state: State<'_, AppState>) -> Result<u32, String> {
     let mut service = lock_service(&state)?;
     service.set_auto_lock_seconds(seconds, &state.store_path.to_string_lossy())?;
@@ -198,6 +213,11 @@ fn main() {
         .setup(|app| {
             let app_data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&app_data_dir)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&app_data_dir, std::fs::Permissions::from_mode(0o700))?;
+            }
             let store_path = app_data_dir.join("wallets.json");
             let wallet_service = WalletService::load_store(&store_path.to_string_lossy())
                 .map_err(std::io::Error::other)?;
@@ -221,6 +241,7 @@ fn main() {
             unlock_vault,
             migrate_legacy_vault,
             set_auto_lock_seconds,
+            change_vault_password,
             record_activity,
             lock_vault,
             create_wallet,

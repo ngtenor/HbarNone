@@ -137,6 +137,32 @@ impl WalletService {
             .unwrap_or_default()
     }
 
+    pub fn change_vault_password(
+        &mut self,
+        current_password: &str,
+        new_password: &str,
+        path: &str,
+    ) -> Result<(), String> {
+        self.ensure_unlocked()?;
+        if current_password.is_empty() || current_password.len() > 1024 {
+            return Err("vault password must contain between 1 and 1024 bytes".to_string());
+        }
+        if new_password.is_empty() || new_password.len() > 1024 {
+            return Err("new vault password must contain between 1 and 1024 bytes".to_string());
+        }
+        if new_password == current_password {
+            return Err("the new password must differ from the current password".to_string());
+        }
+        let updated = self
+            .container
+            .as_ref()
+            .ok_or_else(|| "vault has not been created".to_string())?
+            .with_changed_password(current_password, new_password)?;
+        updated.save_to_file(path)?;
+        self.container = Some(updated);
+        Ok(())
+    }
+
     pub fn set_auto_lock_seconds(&mut self, seconds: u32, path: &str) -> Result<(), String> {
         validate_auto_lock_seconds(seconds)?;
         if self.container.is_some() {
@@ -562,6 +588,81 @@ mod tests {
         service.unlock_vault("vault password").unwrap();
         assert_eq!(service.failed_unlock_attempts, 0);
         assert!(service.unlock_blocked_until.is_none());
+    }
+
+    #[test]
+    fn changing_the_password_rewraps_the_key_and_keeps_wallets() {
+        let (_directory, path) = temp_path();
+        let path = path.to_str().unwrap();
+        let mut service = WalletService::new();
+        service.create_vault("old password", path).unwrap();
+        let created = service.create_and_save_wallet("Keep", path).unwrap();
+        let phrase = service.reveal_mnemonic(&created.id).unwrap().to_string();
+        let before = std::fs::read_to_string(path).unwrap();
+
+        assert!(
+            service
+                .change_vault_password("wrong password", "new password", path)
+                .is_err()
+        );
+        assert!(
+            service
+                .change_vault_password("old password", "old password", path)
+                .is_err()
+        );
+        assert!(
+            service
+                .change_vault_password("old password", "", path)
+                .is_err()
+        );
+        let invalid_path = format!("{path}.missing/vault.json");
+        assert!(
+            service
+                .change_vault_password("old password", "new password", &invalid_path)
+                .is_err()
+        );
+        assert_eq!(std::fs::read_to_string(path).unwrap(), before);
+
+        service
+            .change_vault_password("old password", "new password", path)
+            .unwrap();
+        assert_ne!(std::fs::read_to_string(path).unwrap(), before);
+        service.lock();
+
+        let mut reloaded = WalletService::load_store(path).unwrap();
+        assert!(reloaded.unlock_vault("old password").is_err());
+        reloaded.unlock_vault("new password").unwrap();
+        assert_eq!(reloaded.list_wallets().unwrap()[0].id, created.id);
+        assert_eq!(
+            reloaded.reveal_mnemonic(&created.id).unwrap().as_str(),
+            phrase
+        );
+    }
+
+    #[test]
+    fn changing_the_password_requires_an_unlocked_vault() {
+        let (_directory, path) = temp_path();
+        let path = path.to_str().unwrap();
+        let mut service = WalletService::new();
+        service.create_vault("old password", path).unwrap();
+        service.lock();
+        assert!(
+            service
+                .change_vault_password("old password", "new password", path)
+                .is_err()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn saved_vault_file_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_directory, path) = temp_path();
+        let path = path.to_str().unwrap();
+        let mut service = WalletService::new();
+        service.create_vault("vault password", path).unwrap();
+        let mode = std::fs::metadata(path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
     }
 
     #[test]

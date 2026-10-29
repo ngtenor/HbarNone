@@ -78,6 +78,12 @@ function App() {
   const [legacyPasswords, setLegacyPasswords] = useState<Record<string, string>>({})
   const [autoLockSeconds, setAutoLockSeconds] = useState(DEFAULT_AUTO_LOCK_SECONDS)
   const [isSubmittingVault, setIsSubmittingVault] = useState(false)
+  const [currentPassword, setCurrentPassword] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [newPasswordConfirmation, setNewPasswordConfirmation] = useState('')
+  const [passwordChangeError, setPasswordChangeError] = useState('')
+  const [passwordChangeSuccess, setPasswordChangeSuccess] = useState(false)
+  const [isChangingPassword, setIsChangingPassword] = useState(false)
   const [walletMode, setWalletMode] = useState<'create' | 'import'>('create')
   const [name, setName] = useState('')
   const [importMnemonic, setImportMnemonic] = useState('')
@@ -111,11 +117,20 @@ function App() {
     setDeleteError('')
   }, [])
 
+  const clearPasswordChange = useCallback(() => {
+    setCurrentPassword('')
+    setNewPassword('')
+    setNewPasswordConfirmation('')
+    setPasswordChangeError('')
+    setPasswordChangeSuccess(false)
+  }, [])
+
   const lockVault = useCallback(async () => {
     if (lockRequestActive.current || vaultView !== 'unlocked') return
     lockRequestActive.current = true
     closeReveal()
     closeDelete()
+    clearPasswordChange()
     setMnemonic('')
     setVaultPassword('')
     setVaultPasswordConfirmation('')
@@ -133,7 +148,7 @@ function App() {
       setVaultView('locked')
       lockRequestActive.current = false
     }
-  }, [closeDelete, closeReveal, vaultView])
+  }, [clearPasswordChange, closeDelete, closeReveal, vaultView])
 
   useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent) => {
@@ -158,6 +173,7 @@ function App() {
       setVaultPasswordConfirmation('')
       setLegacyPasswords({})
       setIsVaultPasswordVisible(false)
+      clearPasswordChange()
     }
     const hideWhenBackgrounded = () => {
       if (document.visibilityState !== 'visible') hideSensitiveDialog()
@@ -168,7 +184,7 @@ function App() {
       window.removeEventListener('blur', hideSensitiveDialog)
       document.removeEventListener('visibilitychange', hideWhenBackgrounded)
     }
-  }, [closeDelete, closeReveal])
+  }, [clearPasswordChange, closeDelete, closeReveal])
 
   useEffect(() => {
     let cancelled = false
@@ -362,6 +378,40 @@ function App() {
     }
   }
 
+  function handleGeneratePasswordChangePassphrase() {
+    try {
+      const passphrase = generatePassphrase()
+      setNewPassword(passphrase)
+      setNewPasswordConfirmation(passphrase)
+      setPasswordChangeError('')
+      setPasswordChangeSuccess(false)
+    } catch {
+      setPasswordChangeError('Could not generate a secure passphrase on this device.')
+    }
+  }
+
+  async function handleChangePassword(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setPasswordChangeSuccess(false)
+    if (newPassword !== newPasswordConfirmation) {
+      setPasswordChangeError('New vault passwords do not match.')
+      return
+    }
+    setPasswordChangeError('')
+    setIsChangingPassword(true)
+    try {
+      await invoke('change_vault_password', { currentPassword, newPassword })
+      setCurrentPassword('')
+      setNewPassword('')
+      setNewPasswordConfirmation('')
+      setPasswordChangeSuccess(true)
+    } catch (changeError) {
+      setPasswordChangeError(errorMessage(changeError))
+    } finally {
+      setIsChangingPassword(false)
+    }
+  }
+
   async function handleReveal() {
     if (!walletToReveal) return
 
@@ -459,6 +509,7 @@ function App() {
 
   function closeSettingsTab() {
     setIsSettingsTabOpen(false)
+    clearPasswordChange()
     if (activeTab === 'settings') setActiveTab('home')
   }
 
@@ -837,6 +888,72 @@ function App() {
                   Activity in the app resets the timer.
                 </p>
                 <AutoLockSlider seconds={autoLockSeconds} onChange={handleAutoLockChange} />
+              </section>
+              <section className="panel settings-panel create-panel" aria-labelledby="change-password-heading">
+                <div className="panel-heading">
+                  <div>
+                    <p className="eyebrow">SECURITY</p>
+                    <h2 id="change-password-heading">Change vault password</h2>
+                  </div>
+                </div>
+                <p className="dialog-copy">
+                  Your wallets are not re-encrypted; only the key protecting
+                  them is re-wrapped with the new password. A forgotten vault
+                  password still cannot be reset.
+                </p>
+                <form onSubmit={handleChangePassword}>
+                  <label htmlFor="current-vault-password">Current vault password</label>
+                  <input
+                    id="current-vault-password"
+                    type="password"
+                    autoComplete="current-password"
+                    maxLength={1024}
+                    required
+                    value={currentPassword}
+                    onChange={(event) => setCurrentPassword(event.target.value)}
+                  />
+                  <label htmlFor="new-vault-password">New vault password</label>
+                  <input
+                    id="new-vault-password"
+                    type="password"
+                    autoComplete="new-password"
+                    maxLength={1024}
+                    required
+                    value={newPassword}
+                    onChange={(event) => setNewPassword(event.target.value)}
+                  />
+                  <label htmlFor="new-vault-password-confirmation">Confirm new vault password</label>
+                  <input
+                    id="new-vault-password-confirmation"
+                    type="password"
+                    autoComplete="new-password"
+                    maxLength={1024}
+                    required
+                    value={newPasswordConfirmation}
+                    onChange={(event) => setNewPasswordConfirmation(event.target.value)}
+                  />
+                  <button
+                    className="secondary-button generate-passphrase"
+                    type="button"
+                    disabled={isChangingPassword}
+                    onClick={handleGeneratePasswordChangePassphrase}
+                  >
+                    Generate six-word passphrase
+                  </button>
+                  <p className="field-hint">
+                    A generated passphrase is hidden. Write it down before
+                    submitting; you cannot view it afterwards.
+                  </p>
+                  {passwordChangeError && (
+                    <p className="error-message" role="alert">{passwordChangeError}</p>
+                  )}
+                  {passwordChangeSuccess && (
+                    <p className="field-hint" role="status">Vault password changed.</p>
+                  )}
+                  <button className="primary-button" type="submit" disabled={isChangingPassword}>
+                    {isChangingPassword ? 'Changing password...' : 'Change password'}
+                  </button>
+                </form>
               </section>
             </section>
           )}
