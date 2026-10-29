@@ -627,7 +627,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(path).unwrap(), original_file);
         assert_eq!(service.vault_status(), "legacy");
 
-        let invalid_path = format!("{path}.missing\\vault.json");
+        let invalid_path = format!("{path}.missing/vault.json");
         assert!(
             service
                 .migrate_legacy_vault(
@@ -674,7 +674,7 @@ mod tests {
         let mut service = WalletService::new();
         service.create_vault("vault password", path).unwrap();
         let created = service.create_and_save_wallet("Keep", path).unwrap();
-        let invalid_path = format!("{path}.missing\\vault.json");
+        let invalid_path = format!("{path}.missing/vault.json");
 
         assert!(
             service
