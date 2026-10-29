@@ -14,6 +14,21 @@ use std::{
 };
 use zeroize::Zeroizing;
 
+const MAX_BACKUP_BYTES: usize = 10 * 1024 * 1024;
+const FREE_UNLOCK_ATTEMPTS: u32 = 3;
+const BASE_UNLOCK_DELAY_SECONDS: u64 = 5;
+const MAX_UNLOCK_DELAY_SECONDS: u64 = 300;
+
+// Delay doubles with each failure beyond the free attempts, up to a cap.
+fn unlock_delay(failed_attempts: u32) -> Option<Duration> {
+    let excess = failed_attempts.checked_sub(FREE_UNLOCK_ATTEMPTS)?;
+    let seconds = BASE_UNLOCK_DELAY_SECONDS
+        .checked_shl(excess.min(16))
+        .unwrap_or(MAX_UNLOCK_DELAY_SECONDS)
+        .min(MAX_UNLOCK_DELAY_SECONDS);
+    Some(Duration::from_secs(seconds))
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct WalletSummary {
     pub id: String,
@@ -33,6 +48,8 @@ pub struct WalletService {
     payload: Option<VaultPayload>,
     last_activity: Option<Instant>,
     auto_lock_seconds: u32,
+    failed_unlock_attempts: u32,
+    unlock_blocked_until: Option<Instant>,
 }
 
 impl WalletService {
@@ -44,6 +61,8 @@ impl WalletService {
             payload: None,
             last_activity: None,
             auto_lock_seconds: DEFAULT_AUTO_LOCK_SECONDS,
+            failed_unlock_attempts: 0,
+            unlock_blocked_until: None,
         }
     }
 
@@ -155,7 +174,26 @@ impl WalletService {
             .container
             .as_ref()
             .ok_or_else(|| "vault has not been created".to_string())?;
-        let (master_key, payload) = container.unlock(password)?;
+        if let Some(blocked_until) = self.unlock_blocked_until {
+            let remaining = blocked_until.saturating_duration_since(Instant::now());
+            if !remaining.is_zero() {
+                return Err(format!(
+                    "too many failed unlock attempts; try again in {} seconds",
+                    remaining.as_secs() + 1
+                ));
+            }
+        }
+        let (master_key, payload) = match container.unlock(password) {
+            Ok(unlocked) => unlocked,
+            Err(error) => {
+                self.failed_unlock_attempts = self.failed_unlock_attempts.saturating_add(1);
+                self.unlock_blocked_until =
+                    unlock_delay(self.failed_unlock_attempts).map(|delay| Instant::now() + delay);
+                return Err(error);
+            }
+        };
+        self.failed_unlock_attempts = 0;
+        self.unlock_blocked_until = None;
         let summaries = summarize(&payload);
         self.auto_lock_seconds = payload.auto_lock_seconds;
         self.master_key = Some(master_key);
@@ -228,6 +266,71 @@ impl WalletService {
         self.payload = Some(payload);
         self.last_activity = Some(Instant::now());
         self.auto_lock_seconds = auto_lock_seconds;
+        Ok(summaries)
+    }
+
+    /// Returns the encrypted vault file contents. It is protected by the vault
+    /// password and contains no plaintext wallet data.
+    pub fn export_backup(&mut self) -> Result<String, String> {
+        self.ensure_unlocked()?;
+        let container = self
+            .container
+            .as_ref()
+            .ok_or_else(|| "vault has not been created".to_string())?;
+        serde_json::to_string_pretty(container).map_err(|e| format!("serialize backup failed: {e}"))
+    }
+
+    /// Replaces the current vault with a verified backup. The previous vault
+    /// file is kept beside it as `<path>.pre-restore`.
+    pub fn restore_backup(
+        &mut self,
+        backup_json: &str,
+        backup_password: &str,
+        path: &str,
+    ) -> Result<Vec<WalletSummary>, String> {
+        self.ensure_unlocked()?;
+        if backup_password.is_empty() || backup_password.len() > 1024 {
+            return Err("backup password must contain between 1 and 1024 bytes".to_string());
+        }
+        if backup_json.len() > MAX_BACKUP_BYTES {
+            return Err("backup file is too large".to_string());
+        }
+        let json: serde_json::Value = serde_json::from_str(backup_json)
+            .map_err(|_| "the selected file is not a HederaVault backup".to_string())?;
+        if json.get("wrapped_key").is_none() {
+            return Err("the selected file is not a HederaVault backup".to_string());
+        }
+        let container: VaultContainer = serde_json::from_value(json)
+            .map_err(|_| "the selected file is not a HederaVault backup".to_string())?;
+        let (master_key, payload) = container
+            .unlock(backup_password)
+            .map_err(|_| "incorrect backup password or damaged backup".to_string())?;
+
+        let mut ids = HashSet::with_capacity(payload.wallets.len());
+        for wallet in &payload.wallets {
+            if wallet.id.trim().is_empty() || !ids.insert(wallet.id.as_str()) {
+                return Err("backup contains an empty or duplicate wallet ID".to_string());
+            }
+            let mnemonic = decrypt_wallet_secret(&master_key, &wallet.nonce, &wallet.ciphertext)
+                .map_err(|_| "backup contains a damaged wallet".to_string())?;
+            Wallet::from_mnemonic(mnemonic.as_str())
+                .map_err(|_| "backup contains an invalid recovery phrase".to_string())?;
+        }
+
+        let previous = std::path::PathBuf::from(format!("{path}.pre-restore"));
+        if std::path::Path::new(path).exists() {
+            std::fs::copy(path, &previous)
+                .map_err(|e| format!("could not keep a copy of the current vault: {e}"))?;
+        }
+        container.save_to_file(path)?;
+
+        let summaries = summarize(&payload);
+        self.auto_lock_seconds = payload.auto_lock_seconds;
+        self.container = Some(container);
+        self.legacy_store = None;
+        self.master_key = Some(master_key);
+        self.payload = Some(payload);
+        self.last_activity = Some(Instant::now());
         Ok(summaries)
     }
 
@@ -437,6 +540,38 @@ mod tests {
             id: id.to_string(),
             password: Zeroizing::new(password.to_string()),
         }
+    }
+
+    #[test]
+    fn repeated_failed_unlocks_are_delayed_and_success_resets_the_counter() {
+        let (_directory, path) = temp_path();
+        let path = path.to_str().unwrap();
+        let mut service = WalletService::new();
+        service.create_vault("vault password", path).unwrap();
+        service.lock();
+
+        for _ in 0..3 {
+            assert!(service.unlock_vault("wrong").is_err());
+        }
+        assert!(service.unlock_blocked_until.is_some());
+        let error = service.unlock_vault("vault password").unwrap_err();
+        assert!(error.contains("too many failed unlock attempts"));
+        assert_eq!(service.vault_status(), "locked");
+
+        service.unlock_blocked_until = Some(Instant::now() - Duration::from_secs(1));
+        service.unlock_vault("vault password").unwrap();
+        assert_eq!(service.failed_unlock_attempts, 0);
+        assert!(service.unlock_blocked_until.is_none());
+    }
+
+    #[test]
+    fn unlock_delay_grows_and_is_capped() {
+        use super::unlock_delay;
+        assert_eq!(unlock_delay(2), None);
+        assert_eq!(unlock_delay(3), Some(Duration::from_secs(5)));
+        assert_eq!(unlock_delay(4), Some(Duration::from_secs(10)));
+        assert_eq!(unlock_delay(100), Some(Duration::from_secs(300)));
+        assert_eq!(unlock_delay(u32::MAX), Some(Duration::from_secs(300)));
     }
 
     #[test]

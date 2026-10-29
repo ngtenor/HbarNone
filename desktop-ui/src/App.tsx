@@ -1015,7 +1015,13 @@ function App() {
                   down privately and store it securely. Never share it or enter
                   it on a device you do not trust.
                 </p>
-                <ol className="mnemonic-grid">
+                <ol
+                  className="mnemonic-grid"
+                  onCopy={(event) => event.preventDefault()}
+                  onCut={(event) => event.preventDefault()}
+                  onContextMenu={(event) => event.preventDefault()}
+                  onDragStart={(event) => event.preventDefault()}
+                >
                   {mnemonic.split(' ').map((word, index) => (
                     <li key={`${index}-${word}`}>
                       <span>{index + 1}</span>

@@ -25,24 +25,26 @@
 ## Work before Linux testing
 1. **Security and reliability review**
    - [x] Review vault format/versioning, KDF parameter validation, cryptographic input validation, secret lifetime/zeroization, and error handling; the source review found no substantiated vulnerabilities.
-   - [ ] Verify app-data directory and wallet-file permissions on Windows and Linux.
-   - [ ] Explicitly set restrictive permissions on the app-data directory and `wallets.json` (Windows ACLs; Linux `0700` directory and `0600` file) if the defaults are not restrictive enough.
-   - [ ] Add brute-force friction to unlock, such as a short delay after repeated failed attempts.
-   - [ ] Confirm sensitive state is cleared on window blur/minimize and that the clipboard is never used for secrets.
-   - [ ] Review the Tauri CSP and capabilities; remove the dev-server `ws://` origin from release builds if it is not needed.
+   - [x] Verify app-data directory and wallet-file permissions on Windows: `%APPDATA%\org.hederavault.desktop` and `wallets.json` inherit ACLs granting access only to SYSTEM, Administrators and the owning user, so the defaults are restrictive. Linux remains to be verified.
+   - [ ] Verify app-data directory and wallet-file permissions on Linux.
+   - [ ] Explicitly set restrictive permissions on the app-data directory and `wallets.json` (Linux `0700` directory and `0600` file) if the defaults are not restrictive enough. Not needed on Windows.
+   - [x] Add brute-force friction to unlock: after 3 consecutive failed attempts, further attempts are rejected for 5 seconds, doubling per failure up to 5 minutes; a successful unlock resets it. The counter is in memory only, so restarting the app resets it; the Argon2id cost remains the main defence against offline guessing. Covered by wallet-core unit tests and manually verified in the release app.
+   - [x] Confirm sensitive state is cleared on window minimise (manually verified) and that the clipboard is never used for secrets. The app has no clipboard API calls or Tauri clipboard permission, and the revealed phrase now blocks selection, copy, cut, drag and the context menu (friction only; screenshots and malware are unaffected). The copy blocking was manually verified in the rebuilt release app.
+   - [x] Review the Tauri CSP and capabilities: the capability grants only `core:default` and no plugins are installed. The release CSP no longer allows the dev-server `http`/`ws` origins, `unsafe-inline` styles or `asset:` images (those moved to `devCsp`), and adds `object-src 'none'`, `base-uri`, `form-action` and `frame-ancestors` restrictions.
+   - [x] Rebuild the release app and confirm the UI still renders and styles correctly under the stricter CSP (manually verified).
    - Keep the development-only warning until the review and platform checks are complete.
 2. **Desktop verification**
-   - [ ] Manually verify vault creation with a generated six-word passphrase, masked-by-default entry, unlock, wrong-password rejection, and manual lock.
+   - [x] Manually verify vault creation with a generated six-word passphrase, masked-by-default entry, unlock, wrong-password rejection, and manual lock.
    - [ ] Manually verify migration of existing wallets with multiple old passwords; confirm a wrong password leaves the original wallets intact.
-   - [ ] Manually verify auto-lock slider bounds/default, timer reset after activity, lock after inactivity, and locked state after closing and reopening the app.
-   - [ ] Manually verify wallet deletion confirmation and persistence after an app restart.
-   - [ ] Manually verify HOME remains first, create/import opens in a closeable tab, wallets open in distinct switchable tabs, and closing or deleting a wallet tab returns to HOME as expected.
-   - [ ] Manually verify the HOME Settings button opens its tab and auto-lock settings can be changed and retained there.
+   - [x] Manually verify auto-lock slider bounds/default, timer reset after activity, lock after inactivity, and locked state after closing and reopening the app.
+   - [x] Manually verify wallet deletion confirmation and persistence after an app restart.
+   - [x] Manually verify HOME remains first, create/import opens in a closeable tab, wallets open in distinct switchable tabs, and closing or deleting a wallet tab returns to HOME as expected.
+   - [x] Manually verify the HOME Settings button opens its tab and auto-lock settings can be changed and retained there.
    - [x] Add wallet-core tests for vault persistence, encrypted metadata and recovery phrases, wrong-password rejection, old-wallet migration, migration rollback, auto-lock bounds/expiry, and wallet mutation rollback.
    - [x] Add a wallet-core persistence integration test for creating, listing, locking, reloading, unlocking, and revealing a disposable wallet; it checks that the phrase is not stored in plaintext.
    - [ ] Add an automated desktop-app end-to-end test that verifies persistence across an actual app restart.
    - [x] Build the updated standalone Windows production app and NSIS/MSI installers without overwriting the running app; the latest build includes the HOME, wallet, create/import, and Settings tabs.
-   - [ ] Manually launch and test the updated Windows app without the Vite development server; use only disposable wallets.
+   - [x] Manually launch and test the updated Windows app without the Vite development server; use only disposable wallets.
    - Use the release executable or installed app for standalone testing. A debug executable requires the Vite server and is expected to show a connection error if launched without it.
    - The browser smoke test uses mocked Tauri commands; it does not replace real-app verification.
 3. **Wallet recovery and backup**
