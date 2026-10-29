@@ -1,6 +1,6 @@
-﻿[workspace]
+[workspace]
 members = [
     "crates/wallet-core"
-]
+, "src-tauri"]
 
 resolver = "2"

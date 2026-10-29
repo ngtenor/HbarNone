@@ -1,2 +1,6 @@
 ﻿target/
 .vscode/
+node_modules/
+desktop-ui/node_modules/
+desktop-ui/dist/
+/src-tauri/gen/
