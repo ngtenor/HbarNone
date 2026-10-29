@@ -81,6 +81,7 @@ function App() {
   const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
   const [newPasswordConfirmation, setNewPasswordConfirmation] = useState('')
+  const [isNewPasswordVisible, setIsNewPasswordVisible] = useState(false)
   const [passwordChangeError, setPasswordChangeError] = useState('')
   const [passwordChangeSuccess, setPasswordChangeSuccess] = useState(false)
   const [isChangingPassword, setIsChangingPassword] = useState(false)
@@ -121,6 +122,7 @@ function App() {
     setCurrentPassword('')
     setNewPassword('')
     setNewPasswordConfirmation('')
+    setIsNewPasswordVisible(false)
     setPasswordChangeError('')
     setPasswordChangeSuccess(false)
   }, [])
@@ -913,19 +915,30 @@ function App() {
                     onChange={(event) => setCurrentPassword(event.target.value)}
                   />
                   <label htmlFor="new-vault-password">New vault password</label>
-                  <input
-                    id="new-vault-password"
-                    type="password"
-                    autoComplete="new-password"
-                    maxLength={1024}
-                    required
-                    value={newPassword}
-                    onChange={(event) => setNewPassword(event.target.value)}
-                  />
+                  <div className="password-input-row">
+                    <input
+                      id="new-vault-password"
+                      type={isNewPasswordVisible ? 'text' : 'password'}
+                      autoComplete="new-password"
+                      maxLength={1024}
+                      required
+                      value={newPassword}
+                      onChange={(event) => setNewPassword(event.target.value)}
+                    />
+                    <button
+                      className="password-toggle"
+                      type="button"
+                      aria-label={isNewPasswordVisible ? 'Hide new vault password' : 'Show new vault password'}
+                      aria-pressed={isNewPasswordVisible}
+                      onClick={() => setIsNewPasswordVisible((visible) => !visible)}
+                    >
+                      {isNewPasswordVisible ? 'Hide' : 'Show'}
+                    </button>
+                  </div>
                   <label htmlFor="new-vault-password-confirmation">Confirm new vault password</label>
                   <input
                     id="new-vault-password-confirmation"
-                    type="password"
+                    type={isNewPasswordVisible ? 'text' : 'password'}
                     autoComplete="new-password"
                     maxLength={1024}
                     required
@@ -941,8 +954,9 @@ function App() {
                     Generate six-word passphrase
                   </button>
                   <p className="field-hint">
-                    A generated passphrase is hidden. Write it down before
-                    submitting; you cannot view it afterwards.
+                    Use Show to read a generated passphrase and write it down
+                    before submitting. It is cleared if you leave this window
+                    or close this tab.
                   </p>
                   {passwordChangeError && (
                     <p className="error-message" role="alert">{passwordChangeError}</p>

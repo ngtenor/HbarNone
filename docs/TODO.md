@@ -55,7 +55,7 @@
 3. **Wallet recovery and backup**
    - [x] Add English BIP39 mnemonic import with validation and encryption into a new wallet record.
    - [x] Keep imported mnemonic/private-key material out of normal command responses and logs.
-   - [x] Add vault password change in Settings: verifies the current password and re-wraps the master key under a new salt and password, saving atomically and leaving the vault unchanged if the save fails. Unit-tested; not yet manually verified in the app.
+   - [x] Add vault password change in Settings: verifies the current password and re-wraps the master key under a new salt and password, saving atomically and leaving the vault unchanged if the save fails. Unit-tested and manually verified in the release app. The new-password field has a Show/Hide toggle so a generated passphrase can be read and written down before submitting.
    - [ ] Add an encrypted, restorable backup export and restore, protected by the vault password, so a vault can be moved between machines. Never write seed words to a plaintext file.
    - [ ] Detect duplicate imports of the same recovery phrase and warn or block.
    - [ ] Add wallet rename.
@@ -72,7 +72,7 @@
    - [x] Add a `.gitattributes` file to settle the LF/CRLF warnings.
    - [ ] Add a screenshot or short walkthrough to the README.
 
-Suggested order: manually verify password change, run the Linux checks, then
+Suggested order: run the Linux checks, then
 encrypted backup and the remaining recovery items.
 
 On the weekend Linux machine, run the workspace tests and checks and verify the
@@ -109,8 +109,8 @@ password change.
 
 Manually verified on Windows: vault creation/unlock/lock, auto-lock, tabs,
 Settings, wallet deletion and persistence, standalone launch, clearing on
-minimise, copy blocking, CSP rendering, unlock delay, and app-data permissions.
-Still outstanding: manual verification of vault password change, Linux
+minimise, copy blocking, CSP rendering, unlock delay, app-data permissions, and
+vault password change. Still outstanding: Linux
 permission checks and app testing, and an automated desktop-app restart test.
 Build note: this ARM64 Windows machine needs the x64 Rust toolchain
 (`RUSTUP_TOOLCHAIN=stable-x86_64-pc-windows-msvc`) and the x64 Visual Studio
