@@ -27,26 +27,40 @@ Treat development wallet material as compromised.
 - BIP39 mnemonic generation and recovery
 - Validated BIP39 mnemonic import into an encrypted wallet record
 - Hedera ED25519 key derivation using the standard Hedera SDK derivation path
-- Argon2id key derivation and AES-256-GCM encrypted vault records
+- A shared vault master key wrapped by an Argon2id-derived password key
+- AES-256-GCM encryption for wallet metadata and recovery phrases under the master key
+- Migration of existing per-wallet encrypted records into the shared-password vault
+- Configurable inactivity auto-lock from 30 seconds to 30 minutes (5-minute default)
+- A tabbed vault interface with a persistent HOME tab, wallet-specific tabs, and a Settings tab for auto-lock preferences
+- Wallet deletion and recovery-phrase reveal from the selected wallet's tab
 - Wallet-store persistence in the desktop app's operating-system data directory
-- Initial Tauri 2 and React desktop interface for creating, importing, and listing wallets
+- Tauri 2 and React desktop interface for creating, importing, listing, revealing, and deleting wallets
 
-Normal desktop commands do not return mnemonic or private-key material to the
-UI. The user can explicitly reveal a wallet's recovery phrase after re-entering
-the vault password. Hedera network access, account management, and transaction
-creation are not yet implemented.
+The vault password unlocks all wallets in the vault. The app creates a random
+master key, wraps it with a key derived from the vault password, and uses the
+master key to encrypt vault contents and wallet recovery phrases. Normal
+commands do not return mnemonic or private-key material to the UI; a user must
+explicitly reveal a wallet's phrase while the vault is unlocked. The app locks
+after the selected inactivity period and when it closes. The auto-lock setting
+is encrypted as part of the vault contents. Hedera network access,
+account management, and transaction creation are not yet implemented.
 
-Wallets can be removed from this device's local vault without the vault
-password, after explicit confirmation. This does not delete a Hedera network
-account or securely erase older storage copies or backups. If the password is
-forgotten, the recovery phrase must be backed up elsewhere to restore the
-wallet.
+Existing records encrypted with separate wallet passwords are migrated by
+asking for each wallet's current password once and a new vault password. The
+old vault file is replaced only after all records are decrypted and validated
+and the new encrypted vault is saved successfully.
 
-The vault-password form can generate a six-word passphrase locally using the
+Wallets can be removed from this device's local vault without re-entering the
+vault password, after explicit confirmation while the vault is unlocked. This
+does not delete a Hedera network account or securely erase older storage
+copies or backups. If the vault password is forgotten, recovery phrases must
+be backed up elsewhere to restore the wallets.
+
+The vault setup form can generate a six-word passphrase locally using the
 device's cryptographic random-number generator. Six uniformly selected words
 from the 7,776-word EFF long list provide about 77.5 bits of entropy. Save the
 passphrase safely: a forgotten vault password cannot be reset. This passphrase
-is separate from, and must never be confused with, the wallet's recovery phrase.
+is separate from, and must never be confused with, a wallet's recovery phrase.
 
 The bundled EFF long word list is based on the
 [EFF Dice-Generated Passphrases wordlist](https://www.eff.org/files/2016/07/18/eff_large_wordlist.txt),
@@ -55,11 +69,10 @@ The list is included under the
 [Creative Commons Attribution 4.0 International License](https://creativecommons.org/licenses/by/4.0/);
 the five-dice codes were removed for use by the generator.
 
-The current interface is a development scaffold. It can create, import, and
-list encrypted wallet records and display the recovery phrase on request, but
-does not yet provide a complete recovery workflow. Importing or revealing a
-phrase exposes it on screen and in application memory; malware may capture the
-phrase, password, or screen contents. Never share a phrase; only import or reveal
+The current interface is a development scaffold and does not yet provide a
+complete recovery workflow. Importing or revealing a phrase exposes it on
+screen and in application memory; malware may capture the phrase, vault
+password, or screen contents. Never share a phrase; only import or reveal
 disposable phrases on a device you trust. A forgotten vault password cannot
 currently be reset. Do not create a wallet containing real funds or rely on
 this app for recovery. Use a long, unique vault password and store it safely.

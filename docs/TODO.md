@@ -8,12 +8,19 @@
 - [x] Add wallet create/list commands that do not return mnemonic or private-key material
 - [x] Add password guidance and roll back wallet creation if saving fails
 - [x] Test create/save/reload/unlock, wrong-password rejection, and save-failure rollback
-- [x] Manually verify disposable wallet creation, listing, and persistence after app restart
-- [x] Add password-gated recovery-phrase reveal with explicit screen and malware warnings; clear the view on close or focus loss
+- [x] Add vault-unlock-gated recovery-phrase reveal with explicit screen and malware warnings; clear the view on close or focus loss
 - [x] Require a write-down acknowledgment to complete the reveal flow, without implying that the backup was verified
 - [x] Explain that a forgotten vault password cannot currently be reset
 - [x] Generate six-word vault passphrases locally from the EFF long list using the device's cryptographic random-number generator
 - [x] Delete a wallet from the local vault without requiring its password, with explicit irreversible-action confirmation
+- [x] Protect all wallet records with a single vault password that wraps a random master key
+- [x] Migrate legacy wallets by verifying each old wallet password before replacing the old store
+- [x] Add an inactivity auto-lock slider from 30 seconds to 30 minutes, defaulting to 5 minutes
+- [x] Lock the vault on app close and provide a manual lock action
+- [x] Organize the unlocked vault into a persistent HOME tab, a create/import tab, and separate closable wallet tabs
+- [x] Keep wallet actions, including recovery-phrase reveal and deletion, within each wallet tab
+- [x] Add a Settings tab opened from HOME and move auto-lock controls into it
+- [x] Build the latest x64 Windows standalone app and NSIS/MSI installers with the tabbed vault and Settings UI
 
 ## Work before Linux testing
 1. **Security and reliability review**
@@ -21,15 +28,17 @@
    - [ ] Verify app-data directory and wallet-file permissions on Windows and Linux.
    - Keep the development-only warning until the review and platform checks are complete.
 2. **Desktop verification**
-   - [ ] Manually verify the passphrase button generates six EFF words, accepts the passphrase for a disposable wallet, and leaves the password field masked by default.
-   - [x] Add wallet-core tests for password-free wallet deletion, persistence after reload, unknown wallet IDs, and restoring the in-memory store when saving fails.
-   - [ ] Manually test wallet deletion with a disposable wallet: cancel the warning, confirm deletion without a password, and verify it remains absent after restarting the app.
-   - [x] Manually verify wrong-password rejection when revealing a disposable wallet's recovery phrase in the standalone Windows app; the phrase was not revealed.
-   - [x] Manually verify acknowledgment gating and hiding the phrase with Escape and when switching away from the Windows app.
-   - [x] Add a wallet-core persistence integration test for creating, listing, reloading, and unlocking a disposable wallet; it also checks the phrase is not stored in plaintext.
-   - [x] Manually verify in the Windows app that the disposable wallet remains listed after closing and reopening the app.
+   - [ ] Manually verify vault creation with a generated six-word passphrase, masked-by-default entry, unlock, wrong-password rejection, and manual lock.
+   - [ ] Manually verify migration of existing wallets with multiple old passwords; confirm a wrong password leaves the original wallets intact.
+   - [ ] Manually verify auto-lock slider bounds/default, timer reset after activity, lock after inactivity, and locked state after closing and reopening the app.
+   - [ ] Manually verify wallet deletion confirmation and persistence after an app restart.
+   - [ ] Manually verify HOME remains first, create/import opens in a closeable tab, wallets open in distinct switchable tabs, and closing or deleting a wallet tab returns to HOME as expected.
+   - [ ] Manually verify the HOME Settings button opens its tab and auto-lock settings can be changed and retained there.
+   - [x] Add wallet-core tests for vault persistence, encrypted metadata and recovery phrases, wrong-password rejection, old-wallet migration, migration rollback, auto-lock bounds/expiry, and wallet mutation rollback.
+   - [x] Add a wallet-core persistence integration test for creating, listing, locking, reloading, unlocking, and revealing a disposable wallet; it checks that the phrase is not stored in plaintext.
    - [ ] Add an automated desktop-app end-to-end test that verifies persistence across an actual app restart.
-   - [x] Build and launch the standalone Windows production app without the Vite development server; create and use an installer.
+   - [x] Build the updated standalone Windows production app and NSIS/MSI installers without overwriting the running app; the latest build includes the HOME, wallet, create/import, and Settings tabs.
+   - [ ] Manually launch and test the updated Windows app without the Vite development server; use only disposable wallets.
    - Use the release executable or installed app for standalone testing. A debug executable requires the Vite server and is expected to show a connection error if launched without it.
    - The browser smoke test uses mocked Tauri commands; it does not replace real-app verification.
 3. **Wallet recovery and backup**
@@ -40,11 +49,11 @@ On the weekend Linux machine, run the workspace tests and checks and verify the
 desktop app builds and launches, and verify Linux app-data permissions. Do not
 use real funds or recovery phrases.
 
-## Wallet lifecycle and encrypted backups
-- [ ] Add wallet password change by verifying the current password and
-  requiring confirmation of the new password before re-encrypting the wallet.
+## Vault lifecycle and encrypted backups
+- [ ] Add vault password change by verifying the current password and
+  re-wrapping the master key with the new password.
 - [ ] Export a restorable backup containing the encrypted seed, protected by
-  the wallet's current password. Never write seed words to a plaintext file.
+  the vault password. Never write seed words to a plaintext file.
 
 ## Later roadmap
 - [ ] Integrate Hedera network access and Testnet account support
@@ -57,17 +66,14 @@ use real funds or recovery phrases.
 
 ## Validation status
 The source security reviews found no substantiated vulnerabilities. The
-standalone Windows x64 production app and NSIS/MSI installers built successfully
-on the ARM Surface and the release executable was verified to launch with Vite
-stopped. The manual Windows tests passed for wrong-password rejection,
-persistence after app restart, acknowledgment gating, hiding the phrase with
-Escape and on app focus-loss, and invalid mnemonic import.
-
-Current code validation passed: `cargo fmt --all -- --check`, `cargo test
---workspace -j 1` (18 wallet-core unit tests and 1 persistence integration
-test), frontend lint/build, and the standalone Tauri release build with NSIS/MSI
-installers. The deletion tests cover persistence, unknown IDs, and rollback on
-save failure. The six-word passphrase generator uses unbiased sampling from the
-bundled 7,776-word EFF list. Manual verification of passphrase generation and
-wallet deletion remains outstanding. Windows and Linux app-data permission
-checks and an automated desktop-app restart test remain outstanding.
+shared-vault architecture, legacy-wallet migration, inactivity auto-lock,
+HOME/wallet/create-import tabs, wallet-specific reveal/delete actions, and
+Settings tab are implemented. The latest standalone x64 Windows app and
+NSIS/MSI installers were built with these UI changes. `cargo fmt --all -- --check`,
+`cargo test --workspace -j 1` (15 wallet-core unit tests and 1 persistence
+integration test), frontend lint/build, and `cargo check --workspace -j 1`
+passed. Tests cover encryption, legacy migration and failure
+preservation, locked persistence, auto-lock bounds/expiry/activity reset, and
+wallet mutation rollback. Manual testing of the current desktop screens and
+inactivity timer remains outstanding, as do Windows/Linux app-data permission
+checks and an automated desktop-app restart test.

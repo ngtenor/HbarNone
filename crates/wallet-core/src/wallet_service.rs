@@ -1,31 +1,282 @@
-use crate::vault::VaultFile;
-use crate::wallet::Wallet;
-use crate::wallet_store::{WalletRecord, WalletStore};
+use crate::{
+    vault_container::{
+        DEFAULT_AUTO_LOCK_SECONDS, VaultContainer, VaultPayload, VaultWallet,
+        decrypt_wallet_secret, encrypt_wallet_secret, validate_auto_lock_seconds,
+    },
+    wallet::Wallet,
+    wallet_store::WalletStore,
+};
 use rand::random;
+use serde::Serialize;
+use std::{
+    collections::HashSet,
+    time::{Duration, Instant},
+};
 use zeroize::Zeroizing;
 
+#[derive(Debug, Clone, Serialize)]
+pub struct WalletSummary {
+    pub id: String,
+    pub name: String,
+    pub created_at: String,
+}
+
+pub struct LegacyWalletPassword {
+    pub id: String,
+    pub password: Zeroizing<String>,
+}
+
 pub struct WalletService {
-    pub store: WalletStore,
+    container: Option<VaultContainer>,
+    legacy_store: Option<WalletStore>,
+    master_key: Option<Zeroizing<[u8; 32]>>,
+    payload: Option<VaultPayload>,
+    last_activity: Option<Instant>,
+    auto_lock_seconds: u32,
 }
 
 impl WalletService {
     pub fn new() -> Self {
         Self {
-            store: WalletStore::new(),
+            container: None,
+            legacy_store: None,
+            master_key: None,
+            payload: None,
+            last_activity: None,
+            auto_lock_seconds: DEFAULT_AUTO_LOCK_SECONDS,
         }
     }
 
-    pub fn create_wallet(&mut self, name: &str, password: &str) -> Result<WalletRecord, String> {
-        let wallet = Wallet::generate()?;
-        self.store_wallet(name, password, &wallet)
+    pub fn load_store(path: &str) -> Result<Self, String> {
+        if !std::path::Path::new(path).exists() {
+            return Ok(Self::new());
+        }
+
+        let contents =
+            std::fs::read_to_string(path).map_err(|e| format!("read wallet store failed: {e}"))?;
+        let json: serde_json::Value = serde_json::from_str(&contents)
+            .map_err(|e| format!("deserialize wallet store failed: {e}"))?;
+
+        if json.get("wrapped_key").is_some() {
+            let container: VaultContainer = serde_json::from_value(json)
+                .map_err(|e| format!("deserialize vault failed: {e}"))?;
+            Ok(Self {
+                container: Some(container),
+                ..Self::new()
+            })
+        } else {
+            let legacy_store: WalletStore = serde_json::from_value(json)
+                .map_err(|e| format!("deserialize legacy wallet store failed: {e}"))?;
+            Self::validate_legacy_store(&legacy_store)?;
+            Ok(Self {
+                legacy_store: Some(legacy_store),
+                ..Self::new()
+            })
+        }
     }
 
-    pub fn import_wallet(
+    fn validate_legacy_store(store: &WalletStore) -> Result<(), String> {
+        let mut ids = HashSet::with_capacity(store.wallets.len());
+        for wallet in &store.wallets {
+            if wallet.id.trim().is_empty() || !ids.insert(&wallet.id) {
+                return Err("wallet store contains an empty or duplicate wallet ID".to_string());
+            }
+        }
+        Ok(())
+    }
+
+    pub fn vault_status(&self) -> &'static str {
+        if self.master_key.is_some() {
+            "unlocked"
+        } else if self.legacy_store.is_some() {
+            "legacy"
+        } else if self.container.is_some() {
+            "locked"
+        } else {
+            "uninitialized"
+        }
+    }
+
+    pub fn auto_lock_seconds(&self) -> u32 {
+        self.auto_lock_seconds
+    }
+
+    pub fn legacy_wallets(&self) -> Vec<WalletSummary> {
+        self.legacy_store
+            .as_ref()
+            .map(|store| {
+                store
+                    .list_wallets()
+                    .iter()
+                    .map(|wallet| WalletSummary {
+                        id: wallet.id.clone(),
+                        name: wallet.name.clone(),
+                        created_at: wallet.created_at.clone(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    pub fn set_auto_lock_seconds(&mut self, seconds: u32, path: &str) -> Result<(), String> {
+        validate_auto_lock_seconds(seconds)?;
+        if self.container.is_some() {
+            self.ensure_unlocked()?;
+            let mut updated_payload = self.payload.as_ref().expect("checked unlocked").clone();
+            updated_payload.auto_lock_seconds = seconds;
+            self.persist_payload(updated_payload, path)?;
+        }
+        self.auto_lock_seconds = seconds;
+        Ok(())
+    }
+
+    pub fn create_vault(&mut self, password: &str, path: &str) -> Result<(), String> {
+        if self.container.is_some() || self.legacy_store.is_some() {
+            return Err("a vault already exists".to_string());
+        }
+        if password.is_empty() || password.len() > 1024 {
+            return Err("vault password must contain between 1 and 1024 bytes".to_string());
+        }
+
+        let (container, master_key) = VaultContainer::create(password, self.auto_lock_seconds)?;
+        container.save_to_file(path)?;
+        self.container = Some(container);
+        self.master_key = Some(master_key);
+        self.payload = Some(VaultPayload::default());
+        self.last_activity = Some(Instant::now());
+        Ok(())
+    }
+
+    pub fn unlock_vault(&mut self, password: &str) -> Result<Vec<WalletSummary>, String> {
+        if password.is_empty() || password.len() > 1024 {
+            return Err("vault password must contain between 1 and 1024 bytes".to_string());
+        }
+        let container = self
+            .container
+            .as_ref()
+            .ok_or_else(|| "vault has not been created".to_string())?;
+        let (master_key, payload) = container.unlock(password)?;
+        let summaries = summarize(&payload);
+        self.auto_lock_seconds = payload.auto_lock_seconds;
+        self.master_key = Some(master_key);
+        self.payload = Some(payload);
+        self.last_activity = Some(Instant::now());
+        Ok(summaries)
+    }
+
+    pub fn migrate_legacy_vault(
+        &mut self,
+        vault_password: &str,
+        legacy_passwords: &[LegacyWalletPassword],
+        auto_lock_seconds: u32,
+        path: &str,
+    ) -> Result<Vec<WalletSummary>, String> {
+        if vault_password.is_empty() || vault_password.len() > 1024 {
+            return Err("vault password must contain between 1 and 1024 bytes".to_string());
+        }
+        validate_auto_lock_seconds(auto_lock_seconds)?;
+        let legacy = self
+            .legacy_store
+            .as_ref()
+            .ok_or_else(|| "there are no legacy wallets to migrate".to_string())?;
+        if legacy_passwords.len() != legacy.wallets.len() {
+            return Err("enter the current password for every existing wallet".to_string());
+        }
+        let mut credential_ids = HashSet::with_capacity(legacy_passwords.len());
+        if legacy_passwords
+            .iter()
+            .any(|credential| !credential_ids.insert(credential.id.as_str()))
+        {
+            return Err("duplicate legacy wallet credentials were provided".to_string());
+        }
+
+        let (mut container, master_key) =
+            VaultContainer::create(vault_password, auto_lock_seconds)?;
+        let mut payload = VaultPayload::default();
+        for legacy_wallet in legacy.list_wallets() {
+            let credential = legacy_passwords
+                .iter()
+                .find(|credential| credential.id == legacy_wallet.id)
+                .ok_or_else(|| format!("missing password for wallet '{}'", legacy_wallet.name))?;
+            let mnemonic = legacy_wallet
+                .vault
+                .decrypt(credential.password.as_str())
+                .map_err(|_| format!("incorrect password for wallet '{}'", legacy_wallet.name))?;
+            Wallet::from_mnemonic(mnemonic.as_str()).map_err(|_| {
+                format!(
+                    "wallet '{}' contains an invalid recovery phrase",
+                    legacy_wallet.name
+                )
+            })?;
+            let (nonce, ciphertext) = encrypt_wallet_secret(&master_key, mnemonic.as_str())?;
+            payload.wallets.push(VaultWallet {
+                id: legacy_wallet.id.clone(),
+                name: legacy_wallet.name.clone(),
+                created_at: legacy_wallet.created_at.clone(),
+                updated_at: legacy_wallet.updated_at.clone(),
+                nonce,
+                ciphertext,
+            });
+        }
+        container.encrypt_payload(&master_key, &payload)?;
+        container.save_to_file(path)?;
+
+        let summaries = summarize(&payload);
+        self.container = Some(container);
+        self.legacy_store = None;
+        self.master_key = Some(master_key);
+        self.payload = Some(payload);
+        self.last_activity = Some(Instant::now());
+        self.auto_lock_seconds = auto_lock_seconds;
+        Ok(summaries)
+    }
+
+    pub fn record_activity(&mut self) -> Result<(), String> {
+        self.ensure_unlocked()?;
+        self.last_activity = Some(Instant::now());
+        Ok(())
+    }
+
+    pub fn lock(&mut self) {
+        self.master_key = None;
+        self.payload = None;
+        self.last_activity = None;
+    }
+
+    fn ensure_unlocked(&mut self) -> Result<(), String> {
+        if self.master_key.is_none() || self.payload.is_none() {
+            return Err("vault is locked".to_string());
+        }
+        if self.last_activity.is_some_and(|last| {
+            last.elapsed() >= Duration::from_secs(self.auto_lock_seconds.into())
+        }) {
+            self.lock();
+            return Err("vault locked after inactivity".to_string());
+        }
+        self.last_activity = Some(Instant::now());
+        Ok(())
+    }
+
+    pub fn list_wallets(&mut self) -> Result<Vec<WalletSummary>, String> {
+        self.ensure_unlocked()?;
+        Ok(summarize(self.payload.as_ref().expect("checked unlocked")))
+    }
+
+    pub fn create_and_save_wallet(
+        &mut self,
+        name: &str,
+        path: &str,
+    ) -> Result<WalletSummary, String> {
+        let wallet = Wallet::generate()?;
+        self.store_wallet(name, wallet.mnemonic(), path)
+    }
+
+    pub fn import_and_save_wallet(
         &mut self,
         name: &str,
         mnemonic: &str,
-        password: &str,
-    ) -> Result<WalletRecord, String> {
+        path: &str,
+    ) -> Result<WalletSummary, String> {
         if mnemonic.is_empty() {
             return Err("recovery phrase cannot be empty".to_string());
         }
@@ -33,292 +284,307 @@ impl WalletService {
             return Err("recovery phrase cannot exceed 1024 bytes".to_string());
         }
         let wallet = Wallet::from_mnemonic(mnemonic)?;
-        self.store_wallet(name, password, &wallet)
+        self.store_wallet(name, wallet.mnemonic(), path)
     }
 
     fn store_wallet(
         &mut self,
         name: &str,
-        password: &str,
-        wallet: &Wallet,
-    ) -> Result<WalletRecord, String> {
-        let vault = VaultFile::encrypt(wallet.mnemonic(), password)
-            .map_err(|e| format!("encrypt wallet failed: {e}"))?;
-
+        mnemonic: &str,
+        path: &str,
+    ) -> Result<WalletSummary, String> {
+        self.ensure_unlocked()?;
+        let master_key = self.master_key.as_ref().expect("checked unlocked");
+        let current_payload = self.payload.as_ref().expect("checked unlocked");
+        let mut next_payload = current_payload.clone();
         let id = loop {
             let candidate = format!("wallet-{}", hex::encode(random::<[u8; 16]>()));
-            if self.store.find_by_id(&candidate).is_none() {
+            if !next_payload
+                .wallets
+                .iter()
+                .any(|wallet| wallet.id == candidate)
+            {
                 break candidate;
             }
         };
-
-        let record = WalletRecord {
+        let now = chrono::Utc::now().to_rfc3339();
+        let (nonce, ciphertext) = encrypt_wallet_secret(master_key, mnemonic)?;
+        let wallet = VaultWallet {
             id,
             name: name.to_string(),
-            vault,
-            created_at: chrono::Utc::now().to_rfc3339(),
-            updated_at: chrono::Utc::now().to_rfc3339(),
+            created_at: now.clone(),
+            updated_at: now,
+            nonce,
+            ciphertext,
         };
-
-        self.store.add_wallet(record.clone())?;
-
-        Ok(record)
-    }
-
-    pub fn create_and_save_wallet(
-        &mut self,
-        name: &str,
-        password: &str,
-        path: &str,
-    ) -> Result<WalletRecord, String> {
-        let record = self.create_wallet(name, password)?;
-        self.save_new_wallet(record, path)
-    }
-
-    pub fn import_and_save_wallet(
-        &mut self,
-        name: &str,
-        mnemonic: &str,
-        password: &str,
-        path: &str,
-    ) -> Result<WalletRecord, String> {
-        let record = self.import_wallet(name, mnemonic, password)?;
-        self.save_new_wallet(record, path)
-    }
-
-    fn save_new_wallet(
-        &mut self,
-        record: WalletRecord,
-        path: &str,
-    ) -> Result<WalletRecord, String> {
-        if let Err(error) = self.save_store(path) {
-            self.store.remove_wallet(&record.id);
-            return Err(error);
-        }
-        Ok(record)
-    }
-
-    pub fn load_store(path: &str) -> Result<Self, String> {
-        let store = WalletStore::load_from_file(path)?;
-        Ok(Self { store })
-    }
-
-    pub fn save_store(&self, path: &str) -> Result<(), String> {
-        self.store.save_to_file(path)
+        let summary = WalletSummary {
+            id: wallet.id.clone(),
+            name: wallet.name.clone(),
+            created_at: wallet.created_at.clone(),
+        };
+        next_payload.wallets.push(wallet);
+        self.persist_payload(next_payload, path)?;
+        Ok(summary)
     }
 
     pub fn delete_wallet_and_save(&mut self, wallet_id: &str, path: &str) -> Result<(), String> {
-        if self.store.find_by_id(wallet_id).is_none() {
-            return Err(format!("wallet not found: {wallet_id}"));
-        }
-        let original_store = self.store.clone();
-        self.store.remove_wallet(wallet_id);
+        self.ensure_unlocked()?;
+        let mut next_payload = self.payload.as_ref().expect("checked unlocked").clone();
+        let index = next_payload
+            .wallets
+            .iter()
+            .position(|wallet| wallet.id == wallet_id)
+            .ok_or_else(|| format!("wallet not found: {wallet_id}"))?;
+        next_payload.wallets.remove(index);
+        self.persist_payload(next_payload, path)
+    }
 
-        if let Err(error) = self.save_store(path) {
-            self.store = original_store;
-            return Err(error);
-        }
+    pub fn reveal_mnemonic(&mut self, wallet_id: &str) -> Result<Zeroizing<String>, String> {
+        self.ensure_unlocked()?;
+        let wallet = self
+            .payload
+            .as_ref()
+            .expect("checked unlocked")
+            .wallets
+            .iter()
+            .find(|wallet| wallet.id == wallet_id)
+            .ok_or_else(|| format!("wallet not found: {wallet_id}"))?;
+        decrypt_wallet_secret(
+            self.master_key.as_ref().expect("checked unlocked"),
+            &wallet.nonce,
+            &wallet.ciphertext,
+        )
+    }
 
+    fn persist_payload(&mut self, payload: VaultPayload, path: &str) -> Result<(), String> {
+        let mut container = self
+            .container
+            .as_ref()
+            .ok_or_else(|| "vault has not been created".to_string())?
+            .clone();
+        container.encrypt_payload(
+            self.master_key
+                .as_ref()
+                .ok_or_else(|| "vault is locked".to_string())?,
+            &payload,
+        )?;
+        container.save_to_file(path)?;
+        self.container = Some(container);
+        self.payload = Some(payload);
+        self.last_activity = Some(Instant::now());
         Ok(())
     }
 
-    pub fn list_wallets(&self) -> &[WalletRecord] {
-        self.store.list_wallets()
+    #[cfg(test)]
+    fn expire_for_test(&mut self) {
+        self.last_activity =
+            Some(Instant::now() - Duration::from_secs(self.auto_lock_seconds.into()));
     }
+}
 
-    pub fn unlock_wallet(&self, wallet_id: &str, password: &str) -> Result<Wallet, String> {
-        let record = self
-            .store
-            .find_by_id(wallet_id)
-            .ok_or_else(|| format!("wallet not found: {wallet_id}"))?;
-
-        let mnemonic = record
-            .vault
-            .decrypt(password)
-            .map_err(|e| format!("decrypt wallet failed: {e}"))?;
-
-        Wallet::from_mnemonic(mnemonic.as_str())
+impl Default for WalletService {
+    fn default() -> Self {
+        Self::new()
     }
+}
 
-    pub fn reveal_mnemonic(
-        &self,
-        wallet_id: &str,
-        password: &str,
-    ) -> Result<Zeroizing<String>, String> {
-        let record = self
-            .store
-            .find_by_id(wallet_id)
-            .ok_or_else(|| format!("wallet not found: {wallet_id}"))?;
-
-        record
-            .vault
-            .decrypt(password)
-            .map_err(|e| format!("decrypt wallet failed: {e}"))
-    }
+fn summarize(payload: &VaultPayload) -> Vec<WalletSummary> {
+    payload
+        .wallets
+        .iter()
+        .map(|wallet| WalletSummary {
+            id: wallet.id.clone(),
+            name: wallet.name.clone(),
+            created_at: wallet.created_at.clone(),
+        })
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::wallet::Wallet;
+    use super::{LegacyWalletPassword, WalletService};
+    use crate::{vault::VaultFile, wallet::Wallet, wallet_store::WalletStore};
+    use std::time::{Duration, Instant};
+    use zeroize::Zeroizing;
 
-    use super::WalletService;
+    fn temp_path() -> (tempfile::TempDir, std::path::PathBuf) {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("vault.json");
+        (directory, path)
+    }
+
+    fn legacy_store(path: &str, old_password: &str) -> String {
+        let wallet = Wallet::from_mnemonic(
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        )
+        .unwrap();
+        let mut store = WalletStore::new();
+        store
+            .add_wallet(crate::wallet_store::WalletRecord {
+                id: "legacy-wallet".to_string(),
+                name: "Legacy".to_string(),
+                vault: VaultFile::encrypt(wallet.mnemonic(), old_password).unwrap(),
+                created_at: "2026-01-01T00:00:00Z".to_string(),
+                updated_at: "2026-01-01T00:00:00Z".to_string(),
+            })
+            .unwrap();
+        store.save_to_file(path).unwrap();
+        wallet.public_key
+    }
+
+    fn credential(id: &str, password: &str) -> LegacyWalletPassword {
+        LegacyWalletPassword {
+            id: id.to_string(),
+            password: Zeroizing::new(password.to_string()),
+        }
+    }
 
     #[test]
-    fn create_save_reload_and_unlock_preserves_wallet() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("wallets.json");
+    fn shared_vault_password_protects_all_wallets_and_reloads_locked() {
+        let (_directory, path) = temp_path();
         let path = path.to_str().unwrap();
         let mut service = WalletService::new();
+        service.create_vault("vault password", path).unwrap();
+        let created = service.create_and_save_wallet("Primary", path).unwrap();
+        let second = service.create_and_save_wallet("Savings", path).unwrap();
+        let phrase = service.reveal_mnemonic(&created.id).unwrap();
+        let serialized = std::fs::read_to_string(path).unwrap();
+        assert!(!serialized.contains(phrase.as_str()));
+        assert!(!serialized.contains("Primary"));
+        assert!(!serialized.contains("Savings"));
+        service.lock();
+        assert!(service.list_wallets().is_err());
+        assert_eq!(service.vault_status(), "locked");
 
-        let created = service
-            .create_and_save_wallet("Primary", "a sufficiently long test password", path)
-            .unwrap();
-        let loaded = WalletService::load_store(path).unwrap();
-        let unlocked = loaded
-            .unlock_wallet(&created.id, "a sufficiently long test password")
-            .unwrap();
-        let original = service
-            .unlock_wallet(&created.id, "a sufficiently long test password")
-            .unwrap();
-
-        assert_eq!(loaded.list_wallets().len(), 1);
-        assert_eq!(unlocked.public_key, original.public_key);
-    }
-
-    #[test]
-    fn failed_save_rolls_back_created_wallet() {
-        let directory = tempfile::tempdir().unwrap();
-        let invalid_path = directory.path().join("missing").join("wallets.json");
-        let mut service = WalletService::new();
-
-        let result = service.create_and_save_wallet(
-            "Primary",
-            "a sufficiently long test password",
-            invalid_path.to_str().unwrap(),
-        );
-
-        assert!(result.is_err());
-        assert!(service.list_wallets().is_empty());
-    }
-
-    #[test]
-    fn unlock_rejects_wrong_password() {
-        let mut service = WalletService::new();
-        let created = service
-            .create_wallet("Primary", "a sufficiently long test password")
-            .unwrap();
-
-        assert!(
-            service
-                .unlock_wallet(&created.id, "incorrect password")
-                .is_err()
+        let mut reloaded = WalletService::load_store(path).unwrap();
+        assert!(reloaded.unlock_vault("wrong password").is_err());
+        assert!(reloaded.list_wallets().is_err());
+        reloaded.unlock_vault("vault password").unwrap();
+        let reloaded_wallets = reloaded.list_wallets().unwrap();
+        assert_eq!(reloaded_wallets.len(), 2);
+        assert_eq!(reloaded_wallets[0].id, created.id);
+        assert_eq!(reloaded_wallets[1].id, second.id);
+        assert_eq!(
+            reloaded.reveal_mnemonic(&created.id).unwrap().as_str(),
+            phrase.as_str()
         );
     }
 
     #[test]
-    fn reveal_mnemonic_requires_correct_password_and_matches_wallet() {
-        let mut service = WalletService::new();
-        let password = "a sufficiently long test password";
-        let created = service.create_wallet("Primary", password).unwrap();
-
-        let mnemonic = service.reveal_mnemonic(&created.id, password).unwrap();
-        let revealed_wallet = Wallet::from_mnemonic(mnemonic.as_str()).unwrap();
-        let unlocked_wallet = service.unlock_wallet(&created.id, password).unwrap();
-
-        assert_eq!(revealed_wallet.public_key, unlocked_wallet.public_key);
-        assert!(
-            service
-                .reveal_mnemonic(&created.id, "incorrect password")
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn import_wallet_validates_phrase_and_saves_encrypted_record() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("wallets.json");
+    fn legacy_migration_requires_every_old_password_and_preserves_original_on_failure() {
+        let (_directory, path) = temp_path();
         let path = path.to_str().unwrap();
-        let phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
-        let password = "a sufficiently long test password";
-        let mut service = WalletService::new();
+        let expected_key = legacy_store(path, "old wallet password");
+        let original_file = std::fs::read_to_string(path).unwrap();
+        let mut service = WalletService::load_store(path).unwrap();
+        assert_eq!(service.vault_status(), "legacy");
 
         assert!(
             service
-                .import_and_save_wallet("Imported", "not a valid phrase", password, path)
+                .migrate_legacy_vault(
+                    "new vault password",
+                    &[credential("legacy-wallet", "wrong password")],
+                    300,
+                    path,
+                )
                 .is_err()
         );
+        assert_eq!(std::fs::read_to_string(path).unwrap(), original_file);
+        assert_eq!(service.vault_status(), "legacy");
+
+        let invalid_path = format!("{path}.missing\\vault.json");
         assert!(
             service
-                .import_and_save_wallet("Imported", &"x".repeat(1025), password, path)
+                .migrate_legacy_vault(
+                    "new vault password",
+                    &[credential("legacy-wallet", "old wallet password")],
+                    300,
+                    &invalid_path,
+                )
                 .is_err()
         );
-        assert!(service.list_wallets().is_empty());
+        assert_eq!(std::fs::read_to_string(path).unwrap(), original_file);
+        assert_eq!(service.vault_status(), "legacy");
 
-        let imported = service
-            .import_and_save_wallet("Imported", phrase, password, path)
+        let migrated = service
+            .migrate_legacy_vault(
+                "new vault password",
+                &[credential("legacy-wallet", "old wallet password")],
+                300,
+                path,
+            )
             .unwrap();
-        let loaded = WalletService::load_store(path).unwrap();
-        let revealed = loaded.reveal_mnemonic(&imported.id, password).unwrap();
+        assert_eq!(migrated.len(), 1);
+        assert_eq!(service.vault_status(), "unlocked");
+        let wallet =
+            Wallet::from_mnemonic(service.reveal_mnemonic("legacy-wallet").unwrap().as_str())
+                .unwrap();
+        assert_eq!(wallet.public_key, expected_key);
+        assert!(
+            !std::fs::read_to_string(path)
+                .unwrap()
+                .contains("abandon abandon")
+        );
 
-        assert_eq!(loaded.list_wallets().len(), 1);
-        assert_eq!(loaded.list_wallets()[0].name, "Imported");
-        assert_eq!(revealed.as_str(), phrase);
+        let mut loaded = WalletService::load_store(path).unwrap();
+        assert_eq!(loaded.vault_status(), "locked");
+        loaded.unlock_vault("new vault password").unwrap();
+        assert_eq!(loaded.list_wallets().unwrap()[0].name, "Legacy");
     }
 
     #[test]
-    fn delete_wallet_persists_without_password() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("wallets.json");
+    fn wallet_mutations_are_rollback_safe_on_save_failure() {
+        let (_directory, path) = temp_path();
         let path = path.to_str().unwrap();
         let mut service = WalletService::new();
-        let created = service
-            .create_and_save_wallet("Disposable", "test password", path)
-            .unwrap();
-        let retained = service
-            .create_and_save_wallet("Keep", "test password", path)
-            .unwrap();
-
-        service.delete_wallet_and_save(&created.id, path).unwrap();
-        let reloaded = WalletService::load_store(path).unwrap();
-
-        assert_eq!(service.list_wallets().len(), 1);
-        assert_eq!(service.list_wallets()[0].id, retained.id);
-        assert_eq!(reloaded.list_wallets().len(), 1);
-        assert_eq!(reloaded.list_wallets()[0].id, retained.id);
-    }
-
-    #[test]
-    fn delete_wallet_rolls_back_when_save_fails() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("wallets.json");
-        let mut service = WalletService::new();
-        let created = service
-            .create_and_save_wallet("Disposable", "test password", path.to_str().unwrap())
-            .unwrap();
-        let invalid_path = directory.path().join("missing").join("wallets.json");
-
-        let result = service.delete_wallet_and_save(&created.id, invalid_path.to_str().unwrap());
-
-        assert!(result.is_err());
-        assert_eq!(service.list_wallets().len(), 1);
-        assert_eq!(service.list_wallets()[0].id, created.id);
-        let persisted = WalletService::load_store(path.to_str().unwrap()).unwrap();
-        assert_eq!(persisted.list_wallets().len(), 1);
-        assert_eq!(persisted.list_wallets()[0].id, created.id);
-    }
-
-    #[test]
-    fn delete_wallet_rejects_unknown_id() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("wallets.json");
-        let mut service = WalletService::new();
+        service.create_vault("vault password", path).unwrap();
+        let created = service.create_and_save_wallet("Keep", path).unwrap();
+        let invalid_path = format!("{path}.missing\\vault.json");
 
         assert!(
             service
-                .delete_wallet_and_save("missing-wallet", path.to_str().unwrap())
+                .delete_wallet_and_save(&created.id, &invalid_path)
                 .is_err()
         );
-        assert!(service.list_wallets().is_empty());
-        assert!(!path.exists());
+        assert_eq!(service.list_wallets().unwrap()[0].id, created.id);
+        let persisted = WalletService::load_store(path).unwrap();
+        assert_eq!(persisted.vault_status(), "locked");
+    }
+
+    #[test]
+    fn auto_lock_range_is_validated_and_idle_vault_locks() {
+        let (_directory, path) = temp_path();
+        let path = path.to_str().unwrap();
+        let mut service = WalletService::new();
+        assert!(service.set_auto_lock_seconds(29, path).is_err());
+        assert!(service.set_auto_lock_seconds(1801, path).is_err());
+        service.set_auto_lock_seconds(30, path).unwrap();
+        service.create_vault("vault password", path).unwrap();
+        service.lock();
+        assert!(service.set_auto_lock_seconds(60, path).is_err());
+        service.unlock_vault("vault password").unwrap();
+        assert_eq!(service.auto_lock_seconds(), 30);
+        service.expire_for_test();
+
+        assert_eq!(
+            service.list_wallets().unwrap_err(),
+            "vault locked after inactivity"
+        );
+        assert_eq!(service.vault_status(), "locked");
+    }
+
+    #[test]
+    fn recorded_activity_resets_the_inactivity_deadline() {
+        let (_directory, path) = temp_path();
+        let path = path.to_str().unwrap();
+        let mut service = WalletService::new();
+        service.set_auto_lock_seconds(30, path).unwrap();
+        service.create_vault("vault password", path).unwrap();
+        service.last_activity = Some(Instant::now() - Duration::from_secs(10));
+
+        service.record_activity().unwrap();
+
+        assert_eq!(service.vault_status(), "unlocked");
+        assert!(service.last_activity.unwrap().elapsed() < Duration::from_secs(1));
     }
 }
