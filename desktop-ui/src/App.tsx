@@ -64,6 +64,44 @@ function AutoLockSlider({
   )
 }
 
+const iconProps = {
+  width: 26,
+  height: 26,
+  viewBox: '0 0 24 24',
+  fill: 'none',
+  stroke: 'currentColor',
+  strokeWidth: 2,
+  strokeLinecap: 'round',
+  strokeLinejoin: 'round',
+  'aria-hidden': true,
+} as const
+
+function PlusIcon() {
+  return (
+    <svg {...iconProps}>
+      <path d="M12 5v14M5 12h14" />
+    </svg>
+  )
+}
+
+function CogIcon() {
+  return (
+    <svg {...iconProps}>
+      <circle cx="12" cy="12" r="3" />
+      <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3h0a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9v0a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" />
+    </svg>
+  )
+}
+
+function PadlockIcon({ locked }: { locked: boolean }) {
+  return (
+    <svg {...iconProps}>
+      <rect x="4" y="11" width="16" height="10" rx="2" />
+      <path d={locked ? 'M8 11V7a4 4 0 0 1 8 0v4' : 'M8 11V7a4 4 0 0 1 7.5-1.9'} />
+    </svg>
+  )
+}
+
 function App() {
   const [wallets, setWallets] = useState<WalletSummary[]>([])
   const [activeTab, setActiveTab] = useState('home')
@@ -670,15 +708,44 @@ function App() {
           <span className="brand-mark" aria-hidden="true">H</span>
           <span>HederaVault</span>
         </a>
-        <span className="network-label">
-          <span className="status-dot" aria-hidden="true" />
-          {vaultView === 'unlocked' ? 'Vault unlocked' : 'Local vault'}
-        </span>
-        {vaultView === 'unlocked' && (
-          <button className="secondary-button lock-button" type="button" onClick={() => void lockVault()}>
-            Lock vault
-          </button>
-        )}
+        <div className="topbar-actions">
+          {vaultView === 'locked' && (
+            <span className="topbar-icon locked-indicator" role="img" aria-label="Vault locked">
+              <PadlockIcon locked />
+            </span>
+          )}
+          {vaultView === 'unlocked' && (
+            <>
+              <button
+                className="topbar-icon"
+                type="button"
+                aria-label="Create / import wallet"
+                title="Create / import wallet"
+                onClick={openCreateTab}
+              >
+                <PlusIcon />
+              </button>
+              <button
+                className="topbar-icon"
+                type="button"
+                aria-label="Settings"
+                title="Settings"
+                onClick={openSettingsTab}
+              >
+                <CogIcon />
+              </button>
+              <button
+                className="topbar-icon"
+                type="button"
+                aria-label="Lock vault"
+                title="Lock vault"
+                onClick={() => void lockVault()}
+              >
+                <PadlockIcon locked={false} />
+              </button>
+            </>
+          )}
+        </div>
       </header>
 
       {vaultView === 'loading' && (
@@ -752,9 +819,7 @@ function App() {
       )}
 
       {vaultView === 'locked' && (
-        <section className="panel vault-gate">
-          <p className="eyebrow">VAULT LOCKED</p>
-          <h2>Unlock your vault</h2>
+        <section className="panel vault-gate unlock-gate" aria-label="Unlock vault">
           <form onSubmit={handleUnlockVault}>
             <label htmlFor="unlock-vault-password">Vault password</label>
             <input
@@ -768,7 +833,7 @@ function App() {
               onChange={(event) => setVaultPassword(event.target.value)}
             />
             {error && <p className="error-message" role="alert">{error}</p>}
-            <button className="primary-button" type="submit" disabled={isSubmittingVault}>
+            <button className="primary-button unlock-button" type="submit" disabled={isSubmittingVault}>
               {isSubmittingVault ? 'Unlocking...' : 'Unlock vault'}
             </button>
           </form>
@@ -963,25 +1028,10 @@ function App() {
               role="tabpanel"
               aria-labelledby="tab-home"
             >
-              <div className="home-heading">
-                <div>
-                  <p className="eyebrow">YOUR VAULT</p>
-                  <h1>Welcome home</h1>
-                </div>
-                <div className="home-actions">
-                  <button className="primary-button create-wallet-cta" type="button" onClick={openCreateTab}>
-                    Create / import wallet <span aria-hidden="true">+</span>
-                  </button>
-                  <button className="secondary-button settings-cta" type="button" onClick={openSettingsTab}>
-                    Settings
-                  </button>
-                </div>
-              </div>
               {error && <p className="error-message" role="alert">{error}</p>}
               <section className="home-wallets" aria-labelledby="home-wallets-heading">
                 <div className="panel-heading">
                   <div>
-                    <p className="eyebrow">IN THIS VAULT</p>
                     <h2 id="home-wallets-heading">Wallets</h2>
                   </div>
                   <span className="wallet-count">{wallets.length}</span>

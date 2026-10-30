@@ -119,6 +119,26 @@ describe('vault gates', () => {
     expect(screen.queryByRole('tab', { name: 'HOME' })).not.toBeInTheDocument()
   })
 
+  it('shows a locked padlock instead of unlock headings, then icon buttons once unlocked', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+    await screen.findByLabelText('Vault password')
+    expect(screen.getByRole('img', { name: 'Vault locked' })).toBeInTheDocument()
+    expect(screen.queryByText('VAULT LOCKED')).not.toBeInTheDocument()
+    expect(screen.queryByText('Unlock your vault')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Settings' })).not.toBeInTheDocument()
+
+    await unlock(user)
+    expect(screen.queryByRole('img', { name: 'Vault locked' })).not.toBeInTheDocument()
+    const actions = ['Create / import wallet', 'Settings', 'Lock vault']
+    const buttons = actions.map((name) => screen.getByRole('button', { name }))
+    const header = buttons[0].parentElement!
+    expect(Array.from(header.children)).toEqual(buttons)
+    expect(screen.queryByText('Welcome home')).not.toBeInTheDocument()
+    expect(screen.queryByText('IN THIS VAULT')).not.toBeInTheDocument()
+    expect(screen.queryByText('Vault unlocked')).not.toBeInTheDocument()
+  })
+
   it('lists wallets after unlocking and locks again from the header', async () => {
     const user = userEvent.setup()
     render(<App />)
