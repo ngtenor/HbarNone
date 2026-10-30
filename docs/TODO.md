@@ -60,8 +60,8 @@
    - [x] Block duplicate imports of the same recovery phrase (checked against the decrypted phrases in memory; the error names the existing wallet, never the phrase). Unit-tested and manually verified.
    - [x] Add wallet rename, with names required to be non-empty, at most 40 characters, free of control characters, and unique within the vault ignoring capitalisation (enforced for create, import and rename). Rename is saved atomically and rolled back on failure. Unit-tested and manually verified.
 4. **Automated testing and CI**
-   - [ ] Add frontend component tests (Vitest and React Testing Library) with a mocked `invoke`, covering tab logic, auto-lock, and the reveal and delete flows.
-   - [x] Add a GitHub Actions workflow (`.github/workflows/ci.yml`) running `cargo fmt --check`, `cargo test --workspace`, `cargo check --workspace`, frontend lint and frontend build on both Windows and Ubuntu. Passed on GitHub (Windows and Ubuntu) in the first run on PR #1.
+   - [x] Add frontend component tests (Vitest and React Testing Library, jsdom) in `desktop-ui/src/App.test.tsx` with a stateful fake `invoke`: 25 tests covering the unlock/lock gates, tab logic and keyboard navigation, auto-lock (fake timers: expiry, activity reset, closing an open phrase), the reveal flow (copy blocking, acknowledgment, clearing on blur/Escape), delete, rename, backup/restore and the password-change form. Run with `npm test` in `desktop-ui`; also run in CI and `scripts/linux-test.sh`.
+   - [x] Add a GitHub Actions workflow (`.github/workflows/ci.yml`) running `cargo fmt --check`, `cargo test --workspace`, `cargo check --workspace`, frontend lint, frontend tests and frontend build on both Windows and Ubuntu. Passed on GitHub (Windows and Ubuntu) in the first run on PR #1.
 5. **Linux readiness**
    - [x] Document the Ubuntu packages Tauri 2 needs: they are installed by `scripts/linux-test.sh` (build-essential, libssl-dev, libwebkit2gtk-4.1-dev, libgtk-3-dev, librsvg2-dev, libayatana-appindicator3-dev, libxdo-dev).
    - [x] Write a Linux test script, `scripts/linux-test.sh`: installs packages, checks toolchains and entropy, runs `cargo fmt`/`test`/`check`, builds and lints the frontend, runs `npm run tauri:build`, and checks app-data permissions with `stat`. It writes a timestamped `linux-test-*.log`. Options: `--skip-apt`, `--skip-bundle`. Untested on Linux; the CI Ubuntu job will exercise the same steps.
@@ -102,7 +102,7 @@ display, and Settings tab are implemented, with a stricter release CSP and
 Linux `0700`/`0600` permission hardening. The latest standalone x64 Windows
 app and NSIS/MSI installers include these changes. `cargo fmt --all -- --check`,
 `cargo test --workspace` (26 wallet-core unit tests and 1 persistence
-integration test), frontend lint/build, and `cargo check --workspace` passed
+integration test), 25 frontend component tests, frontend lint/build, and `cargo check --workspace` passed
 locally, and CI passed on Windows and Ubuntu for PR #1. Tests cover encryption,
 legacy migration and failure preservation, locked persistence, auto-lock
 bounds/expiry/activity reset, wallet mutation rollback, unlock delay, and

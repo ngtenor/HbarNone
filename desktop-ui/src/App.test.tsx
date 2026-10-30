@@ -1,0 +1,495 @@
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import App from './App'
+
+type Wallet = { id: string; name: string; created_at: string }
+
+type Backend = {
+  status: 'uninitialized' | 'locked' | 'unlocked'
+  wallets: Wallet[]
+  autoLockSeconds: number
+  backupWallets: Wallet[]
+  exportSaved: boolean
+  restoreCancelled: boolean
+  calls: { cmd: string; args?: Record<string, unknown> }[]
+}
+
+const PHRASE = 'alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima'
+
+const invokeMock = vi.hoisted(() => vi.fn())
+vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }))
+
+function wallet(id: string, name: string): Wallet {
+  return { id, name, created_at: '2026-01-01T00:00:00Z' }
+}
+
+let backend: Backend
+
+function vaultState() {
+  return {
+    status: backend.status,
+    wallets: backend.status === 'unlocked' ? backend.wallets : [],
+    legacyWallets: [],
+    autoLockSeconds: backend.autoLockSeconds,
+  }
+}
+
+function installBackend(overrides: Partial<Backend> = {}) {
+  backend = {
+    status: 'locked',
+    wallets: [wallet('w1', 'Savings'), wallet('w2', 'Trading')],
+    autoLockSeconds: 300,
+    backupWallets: [wallet('b1', 'Restored')],
+    exportSaved: true,
+    restoreCancelled: false,
+    calls: [],
+    ...overrides,
+  }
+  invokeMock.mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
+    backend.calls.push({ cmd, args })
+    switch (cmd) {
+      case 'get_vault_state':
+        return vaultState()
+      case 'unlock_vault':
+        if (args?.vaultPassword !== 'correct password') throw new Error('incorrect vault password')
+        backend.status = 'unlocked'
+        return vaultState()
+      case 'lock_vault':
+        backend.status = 'locked'
+        return undefined
+      case 'record_activity':
+      case 'set_auto_lock_seconds':
+        return args?.seconds ?? undefined
+      case 'reveal_wallet_mnemonic':
+        return PHRASE
+      case 'delete_wallet':
+        backend.wallets = backend.wallets.filter((item) => item.id !== args?.walletId)
+        return undefined
+      case 'rename_wallet': {
+        const name = String(args?.name).trim()
+        if (backend.wallets.some((item) => item.id !== args?.walletId
+          && item.name.toLowerCase() === name.toLowerCase())) {
+          throw new Error(`a wallet named '${name}' already exists`)
+        }
+        const target = backend.wallets.find((item) => item.id === args?.walletId)!
+        target.name = name
+        return { ...target }
+      }
+      case 'export_vault_backup':
+        return backend.exportSaved
+      case 'restore_vault_backup':
+        if (backend.restoreCancelled) return null
+        if (args?.backupPassword !== 'backup password') {
+          throw new Error('incorrect backup password or damaged backup')
+        }
+        backend.wallets = backend.backupWallets
+        backend.status = 'unlocked'
+        return vaultState()
+      default:
+        throw new Error(`unexpected command: ${cmd}`)
+    }
+  })
+}
+
+function commandsCalled(cmd: string) {
+  return backend.calls.filter((call) => call.cmd === cmd)
+}
+
+async function unlock(user: ReturnType<typeof userEvent.setup>) {
+  await user.type(await screen.findByLabelText('Vault password'), 'correct password')
+  await user.click(screen.getByRole('button', { name: 'Unlock vault' }))
+  await screen.findByRole('tab', { name: 'HOME' })
+}
+
+async function openWalletTab(user: ReturnType<typeof userEvent.setup>, name: string) {
+  await user.click(await screen.findByRole('button', { name: new RegExp(name) }))
+  await screen.findByRole('heading', { level: 1, name })
+}
+
+describe('vault gates', () => {
+  beforeEach(() => installBackend())
+
+  it('shows the unlock form for a locked vault and reports a wrong password', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+    await user.type(await screen.findByLabelText('Vault password'), 'wrong')
+    await user.click(screen.getByRole('button', { name: 'Unlock vault' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('incorrect vault password')
+    expect(screen.queryByRole('tab', { name: 'HOME' })).not.toBeInTheDocument()
+  })
+
+  it('lists wallets after unlocking and locks again from the header', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+    await unlock(user)
+    expect(screen.getByRole('button', { name: /Savings/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Trading/ })).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Lock vault' }))
+    expect(await screen.findByRole('button', { name: 'Unlock vault' })).toBeInTheDocument()
+    expect(screen.queryByText('Savings')).not.toBeInTheDocument()
+    expect(commandsCalled('lock_vault')).toHaveLength(1)
+  })
+})
+
+describe('tabs', () => {
+  beforeEach(() => installBackend())
+
+  it('opens wallet, settings and create tabs and keeps HOME persistent', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+    await unlock(user)
+
+    await openWalletTab(user, 'Savings')
+    expect(screen.getByRole('tab', { name: 'Savings' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('tab', { name: 'HOME' })).toHaveAttribute('aria-selected', 'false')
+
+    await user.click(screen.getByRole('tab', { name: 'HOME' }))
+    await user.click(screen.getByRole('button', { name: /Settings/ }))
+    expect(await screen.findByRole('tab', { name: 'Settings' })).toHaveAttribute('aria-selected', 'true')
+
+    await user.click(screen.getByRole('tab', { name: 'HOME' }))
+    await user.click(screen.getByRole('button', { name: /Create \/ import wallet/ }))
+    expect(await screen.findByRole('tab', { name: 'Create / import' })).toBeInTheDocument()
+    expect(screen.getAllByRole('tab')).toHaveLength(4)
+  })
+
+  it('closes a tab and falls back to HOME, which cannot be closed', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+    await unlock(user)
+    await openWalletTab(user, 'Trading')
+
+    await user.click(screen.getByRole('button', { name: 'Close Trading tab' }))
+    expect(screen.queryByRole('tab', { name: 'Trading' })).not.toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'HOME' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.queryByRole('button', { name: /Close HOME/ })).not.toBeInTheDocument()
+  })
+
+  it('moves between tabs with the arrow keys', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+    await unlock(user)
+    await openWalletTab(user, 'Savings')
+
+    screen.getByRole('tab', { name: 'Savings' }).focus()
+    await user.keyboard('{ArrowLeft}')
+    expect(screen.getByRole('tab', { name: 'HOME' })).toHaveFocus()
+  })
+})
+
+describe('reveal flow', () => {
+  beforeEach(() => installBackend({ status: 'unlocked' }))
+
+  async function openReveal(user: ReturnType<typeof userEvent.setup>) {
+    render(<App />)
+    await openWalletTab(user, 'Savings')
+    await user.click(screen.getByRole('button', { name: 'Reveal recovery phrase' }))
+    await user.click(await screen.findByRole('button', { name: 'Reveal phrase' }))
+    await screen.findByText('alpha')
+  }
+
+  it('shows the phrase, blocks copying, and requires acknowledgment to confirm', async () => {
+    const user = userEvent.setup()
+    await openReveal(user)
+    expect(commandsCalled('reveal_wallet_mnemonic')[0].args).toEqual({ walletId: 'w1' })
+    expect(screen.getByText('lima')).toBeInTheDocument()
+
+    const grid = document.querySelector('.mnemonic-grid')!
+    const copy = new Event('copy', { bubbles: true, cancelable: true })
+    expect(grid.dispatchEvent(copy)).toBe(false)
+
+    const confirm = screen.getByRole('button', { name: 'Confirm and hide phrase' })
+    expect(confirm).toBeDisabled()
+    await user.click(screen.getByRole('checkbox'))
+    expect(confirm).toBeEnabled()
+    await user.click(confirm)
+    expect(screen.queryByText('alpha')).not.toBeInTheDocument()
+  })
+
+  it('clears the phrase when the window loses focus', async () => {
+    const user = userEvent.setup()
+    await openReveal(user)
+    act(() => {
+      window.dispatchEvent(new Event('blur'))
+    })
+    expect(screen.queryByText('alpha')).not.toBeInTheDocument()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+
+  it('clears the phrase on Escape', async () => {
+    const user = userEvent.setup()
+    await openReveal(user)
+    await user.keyboard('{Escape}')
+    expect(screen.queryByText('alpha')).not.toBeInTheDocument()
+  })
+
+  it('shows backend errors without displaying a phrase', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+    await openWalletTab(user, 'Savings')
+    invokeMock.mockRejectedValueOnce(new Error('vault is locked'))
+    await user.click(screen.getByRole('button', { name: 'Reveal recovery phrase' }))
+    await user.click(await screen.findByRole('button', { name: 'Reveal phrase' }))
+    expect(await screen.findByText('vault is locked')).toBeInTheDocument()
+    expect(screen.queryByText('alpha')).not.toBeInTheDocument()
+  })
+})
+
+describe('delete flow', () => {
+  beforeEach(() => installBackend({ status: 'unlocked' }))
+
+  it('does nothing when deletion is cancelled', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+    await openWalletTab(user, 'Savings')
+    await user.click(screen.getByRole('button', { name: 'Delete wallet' }))
+    const dialog = await screen.findByRole('alertdialog')
+    expect(within(dialog).getByText('Delete Savings?')).toBeInTheDocument()
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+    expect(commandsCalled('delete_wallet')).toHaveLength(0)
+    expect(screen.getByRole('tab', { name: 'Savings' })).toBeInTheDocument()
+  })
+
+  it('deletes the wallet, closes its tab and returns to HOME', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+    await openWalletTab(user, 'Savings')
+    await user.click(screen.getByRole('button', { name: 'Delete wallet' }))
+    const dialog = await screen.findByRole('alertdialog')
+    await user.click(within(dialog).getByRole('button', { name: 'Delete wallet' }))
+
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
+    expect(commandsCalled('delete_wallet')[0].args).toEqual({ walletId: 'w1' })
+    expect(screen.queryByRole('tab', { name: 'Savings' })).not.toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'HOME' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.queryByRole('button', { name: /Savings/ })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Trading/ })).toBeInTheDocument()
+  })
+
+  it('keeps the wallet and shows the error when deletion fails', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+    await openWalletTab(user, 'Savings')
+    await user.click(screen.getByRole('button', { name: 'Delete wallet' }))
+    const dialog = await screen.findByRole('alertdialog')
+    invokeMock.mockRejectedValueOnce(new Error('could not save vault'))
+    await user.click(within(dialog).getByRole('button', { name: 'Delete wallet' }))
+    expect(await within(dialog).findByText('could not save vault')).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'Savings' })).toBeInTheDocument()
+  })
+})
+
+describe('rename flow', () => {
+  beforeEach(() => installBackend({ status: 'unlocked' }))
+
+  it('renames a wallet and updates its tab and the HOME list', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+    await openWalletTab(user, 'Savings')
+    await user.click(screen.getByRole('button', { name: 'Rename wallet' }))
+    const input = screen.getByLabelText('New wallet name')
+    expect(input).toHaveValue('Savings')
+    await user.clear(input)
+    await user.type(input, 'Rainy day')
+    await user.click(screen.getByRole('button', { name: 'Save name' }))
+
+    expect(await screen.findByRole('heading', { level: 1, name: 'Rainy day' })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'Rainy day' })).toBeInTheDocument()
+    expect(commandsCalled('rename_wallet')[0].args).toEqual({ walletId: 'w1', name: 'Rainy day' })
+    expect(screen.queryByLabelText('New wallet name')).not.toBeInTheDocument()
+  })
+
+  it('shows the error for a duplicate name and keeps the old name', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+    await openWalletTab(user, 'Savings')
+    await user.click(screen.getByRole('button', { name: 'Rename wallet' }))
+    const input = screen.getByLabelText('New wallet name')
+    await user.clear(input)
+    await user.type(input, 'trading')
+    await user.click(screen.getByRole('button', { name: 'Save name' }))
+
+    expect(await screen.findByText("a wallet named 'trading' already exists")).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'Savings' })).toBeInTheDocument()
+  })
+
+  it('limits the name length to 40 characters and can be cancelled', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+    await openWalletTab(user, 'Savings')
+    await user.click(screen.getByRole('button', { name: 'Rename wallet' }))
+    expect(screen.getByLabelText('New wallet name')).toHaveAttribute('maxlength', '40')
+    await user.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(screen.queryByLabelText('New wallet name')).not.toBeInTheDocument()
+    expect(commandsCalled('rename_wallet')).toHaveLength(0)
+  })
+})
+
+describe('backup and restore', () => {
+  beforeEach(() => installBackend({ status: 'unlocked' }))
+
+  async function openSettings(user: ReturnType<typeof userEvent.setup>) {
+    render(<App />)
+    await user.click(await screen.findByRole('button', { name: /Settings/ }))
+    await screen.findByRole('heading', { level: 1, name: 'Settings' })
+  }
+
+  it('reports a saved or cancelled backup', async () => {
+    const user = userEvent.setup()
+    await openSettings(user)
+    await user.click(screen.getByRole('button', { name: 'Choose location and save backup' }))
+    expect(await screen.findByText(/Backup saved/)).toBeInTheDocument()
+
+    backend.exportSaved = false
+    await user.click(screen.getByRole('button', { name: 'Choose location and save backup' }))
+    expect(await screen.findByText('Backup cancelled.')).toBeInTheDocument()
+  })
+
+  it('requires confirmation before restoring and reports a wrong password', async () => {
+    const user = userEvent.setup()
+    await openSettings(user)
+    const restore = screen.getByRole('button', { name: 'Choose backup file and restore' })
+    expect(restore).toBeDisabled()
+
+    await user.type(screen.getByLabelText('Password of the backup file'), 'nope')
+    await user.click(screen.getByRole('checkbox', { name: /restoring replaces all wallets/ }))
+    await user.click(restore)
+    expect(await screen.findByText('incorrect backup password or damaged backup')).toBeInTheDocument()
+    expect(screen.getByLabelText('Password of the backup file')).toHaveValue('')
+  })
+
+  it('replaces the wallets after a successful restore', async () => {
+    const user = userEvent.setup()
+    await openSettings(user)
+    await user.type(screen.getByLabelText('Password of the backup file'), 'backup password')
+    await user.click(screen.getByRole('checkbox', { name: /restoring replaces all wallets/ }))
+    await user.click(screen.getByRole('button', { name: 'Choose backup file and restore' }))
+    expect(await screen.findByText('Backup restored with 1 wallet(s).')).toBeInTheDocument()
+    expect(commandsCalled('restore_vault_backup')[0].args).toEqual({ backupPassword: 'backup password' })
+
+    await user.click(screen.getByRole('tab', { name: 'HOME' }))
+    expect(screen.getByRole('button', { name: /Restored/ })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Savings/ })).not.toBeInTheDocument()
+  })
+
+  it('leaves everything unchanged when the file dialog is cancelled', async () => {
+    backend.restoreCancelled = true
+    const user = userEvent.setup()
+    await openSettings(user)
+    await user.type(screen.getByLabelText('Password of the backup file'), 'backup password')
+    await user.click(screen.getByRole('checkbox', { name: /restoring replaces all wallets/ }))
+    await user.click(screen.getByRole('button', { name: 'Choose backup file and restore' }))
+    expect(await screen.findByText('Restore cancelled.')).toBeInTheDocument()
+    expect(backend.wallets.map((item) => item.name)).toEqual(['Savings', 'Trading'])
+  })
+
+  it('offers restore on the create-vault screen without a confirmation checkbox', async () => {
+    installBackend({ status: 'uninitialized' })
+    const user = userEvent.setup()
+    render(<App />)
+    expect(await screen.findByText('Or restore from a backup')).toBeInTheDocument()
+    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument()
+    await user.type(screen.getByLabelText('Password of the backup file'), 'backup password')
+    await user.click(screen.getByRole('button', { name: 'Choose backup file and restore' }))
+    expect(await screen.findByRole('tab', { name: 'HOME' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Restored/ })).toBeInTheDocument()
+  })
+})
+
+describe('change vault password', () => {
+  beforeEach(() => installBackend({ status: 'unlocked' }))
+
+  it('rejects mismatched new passwords without calling the backend', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+    await user.click(await screen.findByRole('button', { name: /Settings/ }))
+    await user.type(await screen.findByLabelText('Current vault password'), 'correct password')
+    await user.type(screen.getByLabelText('New vault password'), 'first one')
+    await user.type(screen.getByLabelText('Confirm new vault password'), 'second one')
+    await user.click(screen.getByRole('button', { name: 'Change password' }))
+    expect(await screen.findByText('New vault passwords do not match.')).toBeInTheDocument()
+    expect(commandsCalled('change_vault_password')).toHaveLength(0)
+  })
+
+  it('clears the password fields when the window loses focus', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+    await user.click(await screen.findByRole('button', { name: /Settings/ }))
+    await user.type(await screen.findByLabelText('Current vault password'), 'correct password')
+    act(() => {
+      window.dispatchEvent(new Event('blur'))
+    })
+    expect(screen.getByLabelText('Current vault password')).toHaveValue('')
+  })
+})
+
+describe('auto-lock', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    installBackend({ status: 'unlocked', autoLockSeconds: 60 })
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  async function advance(ms: number) {
+    for (let elapsed = 0; elapsed < ms; elapsed += 250) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(250)
+      })
+    }
+  }
+
+  async function renderUnlocked() {
+    render(<App />)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(screen.getByRole('tab', { name: 'HOME' })).toBeInTheDocument()
+  }
+
+  it('locks after the inactivity period and clears wallet data', async () => {
+    await renderUnlocked()
+    await advance(59_000)
+    expect(commandsCalled('lock_vault')).toHaveLength(0)
+
+    await advance(1_500)
+    expect(commandsCalled('lock_vault')).toHaveLength(1)
+    expect(screen.getByRole('button', { name: 'Unlock vault' })).toBeInTheDocument()
+    expect(screen.queryByText('Savings')).not.toBeInTheDocument()
+  })
+
+  it('resets the timer on user activity and tells the backend', async () => {
+    await renderUnlocked()
+    await advance(50_000)
+    act(() => {
+      fireEvent.keyDown(window, { key: 'a' })
+    })
+    expect(commandsCalled('record_activity')).toHaveLength(1)
+
+    await advance(50_000)
+    expect(commandsCalled('lock_vault')).toHaveLength(0)
+
+    await advance(11_000)
+    expect(commandsCalled('lock_vault')).toHaveLength(1)
+  })
+
+  it('closes an open recovery phrase when the vault auto-locks', async () => {
+    await renderUnlocked()
+    fireEvent.click(screen.getByRole('button', { name: /Savings/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Reveal recovery phrase' }))
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Reveal phrase' }))
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(screen.getByText('alpha')).toBeInTheDocument()
+
+    await advance(61_000)
+    expect(screen.queryByText('alpha')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Unlock vault' })).toBeInTheDocument()
+  })
+})

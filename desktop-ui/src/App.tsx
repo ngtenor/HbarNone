@@ -462,7 +462,6 @@ function App() {
         setWallets(state.wallets)
         setAutoLockSeconds(state.autoLockSeconds)
         setOpenWalletTabs([])
-        setActiveTab('home')
         closeReveal()
         closeDelete()
         setVaultView('unlocked')

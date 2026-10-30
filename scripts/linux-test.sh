@@ -73,7 +73,7 @@ npm install
 (cd desktop-ui && npm install)
 
 step "Frontend lint and build"
-(cd desktop-ui && npm run lint && npm run build)
+(cd desktop-ui && npm run lint && npm test && npm run build)
 
 if [ "$SKIP_BUNDLE" -eq 0 ]; then
   step "Tauri production build"
