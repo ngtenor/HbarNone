@@ -233,15 +233,24 @@ fn delete_wallet(wallet_id: String, state: State<'_, AppState>) -> Result<(), St
 }
 
 #[tauri::command]
+fn rename_wallet(
+    wallet_id: String,
+    name: String,
+    state: State<'_, AppState>,
+) -> Result<WalletSummary, String> {
+    if wallet_id.trim().is_empty() {
+        return Err("wallet ID cannot be empty".to_string());
+    }
+    lock_service(&state)?.rename_wallet_and_save(
+        &wallet_id,
+        &name,
+        &state.store_path.to_string_lossy(),
+    )
+}
+
+#[tauri::command]
 fn create_wallet(name: String, state: State<'_, AppState>) -> Result<WalletSummary, String> {
-    let name = name.trim();
-    if name.is_empty() {
-        return Err("wallet name cannot be empty".to_string());
-    }
-    if name.chars().count() > 64 {
-        return Err("wallet name cannot exceed 64 characters".to_string());
-    }
-    lock_service(&state)?.create_and_save_wallet(name, &state.store_path.to_string_lossy())
+    lock_service(&state)?.create_and_save_wallet(&name, &state.store_path.to_string_lossy())
 }
 
 #[tauri::command]
@@ -250,13 +259,6 @@ fn import_wallet(
     mnemonic: String,
     state: State<'_, AppState>,
 ) -> Result<WalletSummary, String> {
-    let name = name.trim();
-    if name.is_empty() {
-        return Err("wallet name cannot be empty".to_string());
-    }
-    if name.chars().count() > 64 {
-        return Err("wallet name cannot exceed 64 characters".to_string());
-    }
     let mnemonic = Zeroizing::new(mnemonic);
     if mnemonic.is_empty() {
         return Err("recovery phrase cannot be empty".to_string());
@@ -265,7 +267,7 @@ fn import_wallet(
         return Err("recovery phrase cannot exceed 1024 bytes".to_string());
     }
     lock_service(&state)?.import_and_save_wallet(
-        name,
+        &name,
         mnemonic.as_str(),
         &state.store_path.to_string_lossy(),
     )
@@ -319,6 +321,7 @@ fn main() {
             lock_vault,
             create_wallet,
             delete_wallet,
+            rename_wallet,
             import_wallet,
             list_wallets,
             reveal_wallet_mnemonic,

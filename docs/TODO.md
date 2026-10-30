@@ -57,8 +57,8 @@
    - [x] Keep imported mnemonic/private-key material out of normal command responses and logs.
    - [x] Add vault password change in Settings: verifies the current password and re-wraps the master key under a new salt and password, saving atomically and leaving the vault unchanged if the save fails. Unit-tested and manually verified in the release app. The new-password field has a Show/Hide toggle so a generated passphrase can be read and written down before submitting.
    - [x] Add encrypted backup export and restore, as separate Settings panels. A backup is the encrypted vault file (no plaintext phrases), protected by the vault password in use at export time; restore replaces all wallets, keeps a `.pre-restore` copy, and also works from the create-vault screen so a vault can move between machines. Exported files are `0600` on Unix. Unit-tested (round trip, wrong password, bad/oversized files, unchanged vault on failure, `.pre-restore`, locked-vault rejection) and manually verified on Windows. Still to check on Ubuntu: GTK file dialogs, file permissions, and Windows-to-Linux restore.
-   - [ ] Detect duplicate imports of the same recovery phrase and warn or block.
-   - [ ] Add wallet rename.
+   - [x] Block duplicate imports of the same recovery phrase (checked against the decrypted phrases in memory; the error names the existing wallet, never the phrase). Unit-tested and manually verified.
+   - [x] Add wallet rename, with names required to be non-empty, at most 40 characters, free of control characters, and unique within the vault ignoring capitalisation (enforced for create, import and rename). Rename is saved atomically and rolled back on failure. Unit-tested and manually verified.
 4. **Automated testing and CI**
    - [ ] Add frontend component tests (Vitest and React Testing Library) with a mocked `invoke`, covering tab logic, auto-lock, and the reveal and delete flows.
    - [x] Add a GitHub Actions workflow (`.github/workflows/ci.yml`) running `cargo fmt --check`, `cargo test --workspace`, `cargo check --workspace`, frontend lint and frontend build on both Windows and Ubuntu. Passed on GitHub (Windows and Ubuntu) in the first run on PR #1.
@@ -101,7 +101,7 @@ tabs, wallet-specific reveal/delete actions, copy-blocked recovery-phrase
 display, and Settings tab are implemented, with a stricter release CSP and
 Linux `0700`/`0600` permission hardening. The latest standalone x64 Windows
 app and NSIS/MSI installers include these changes. `cargo fmt --all -- --check`,
-`cargo test --workspace` (23 wallet-core unit tests and 1 persistence
+`cargo test --workspace` (26 wallet-core unit tests and 1 persistence
 integration test), frontend lint/build, and `cargo check --workspace` passed
 locally, and CI passed on Windows and Ubuntu for PR #1. Tests cover encryption,
 legacy migration and failure preservation, locked persistence, auto-lock
@@ -111,7 +111,7 @@ password change.
 Manually verified on Windows: vault creation/unlock/lock, auto-lock, tabs,
 Settings, wallet deletion and persistence, standalone launch, clearing on
 minimise, copy blocking, CSP rendering, unlock delay, app-data permissions,
-vault password change, and encrypted backup/restore (release builds also no
+vault password change, encrypted backup/restore, wallet rename, and duplicate-phrase blocking (release builds also no
 longer open a console window). Still outstanding: Linux
 permission checks and app testing, and an automated desktop-app restart test.
 Build note: this ARM64 Windows machine needs the x64 Rust toolchain

@@ -95,6 +95,10 @@ function App() {
   const [isBackupBusy, setIsBackupBusy] = useState(false)
   const [isRestoreBusy, setIsRestoreBusy] = useState(false)
   const [walletMode, setWalletMode] = useState<'create' | 'import'>('create')
+  const [renamingWalletId, setRenamingWalletId] = useState<string | null>(null)
+  const [renameValue, setRenameValue] = useState('')
+  const [renameError, setRenameError] = useState('')
+  const [isRenaming, setIsRenaming] = useState(false)
   const [name, setName] = useState('')
   const [importMnemonic, setImportMnemonic] = useState('')
   const [error, setError] = useState('')
@@ -149,6 +153,7 @@ function App() {
     closeReveal()
     closeDelete()
     clearPasswordChange()
+    setRenamingWalletId(null)
     setMnemonic('')
     setVaultPassword('')
     setVaultPasswordConfirmation('')
@@ -549,6 +554,28 @@ function App() {
       }
     } finally {
       if (requestId === revealRequestId.current) setIsRevealing(false)
+    }
+  }
+
+  async function handleRenameWallet(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!renamingWalletId || isRenaming) return
+    setRenameError('')
+    setIsRenaming(true)
+    try {
+      const updated = await invoke<WalletSummary>('rename_wallet', {
+        walletId: renamingWalletId,
+        name: renameValue,
+      })
+      setWallets((existing) => existing.map((wallet) => (
+        wallet.id === updated.id ? updated : wallet
+      )))
+      setRenamingWalletId(null)
+      setRenameValue('')
+    } catch (renameFailure) {
+      setRenameError(errorMessage(renameFailure))
+    } finally {
+      setIsRenaming(false)
     }
   }
 
@@ -1197,7 +1224,7 @@ function App() {
                 <input
                   id="wallet-name"
                   autoComplete="off"
-                  maxLength={64}
+                  maxLength={40}
                   placeholder="e.g. Personal"
                   required
                   value={name}
@@ -1233,7 +1260,52 @@ function App() {
                   <span className="wallet-icon wallet-icon-large" aria-hidden="true">H</span>
                 </div>
                 {error && <p className="error-message" role="alert">{error}</p>}
+                {renamingWalletId === wallet.id && (
+                  <form className="rename-form" onSubmit={handleRenameWallet}>
+                    <label htmlFor="rename-wallet-name">New wallet name</label>
+                    <input
+                      id="rename-wallet-name"
+                      autoComplete="off"
+                      maxLength={40}
+                      required
+                      autoFocus
+                      value={renameValue}
+                      onChange={(event) => setRenameValue(event.target.value)}
+                    />
+                    <p className="field-hint">
+                      Up to 40 characters. Names must be unique within the vault, ignoring capitalisation.
+                    </p>
+                    {renameError && <p className="error-message" role="alert">{renameError}</p>}
+                    <div className="wallet-tab-actions">
+                      <button className="primary-button" type="submit" disabled={isRenaming}>
+                        {isRenaming ? 'Saving...' : 'Save name'}
+                      </button>
+                      <button
+                        className="secondary-button"
+                        type="button"
+                        disabled={isRenaming}
+                        onClick={() => {
+                          setRenamingWalletId(null)
+                          setRenameError('')
+                        }}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </form>
+                )}
                 <div className="wallet-tab-actions">
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    onClick={() => {
+                      setRenameValue(wallet.name)
+                      setRenameError('')
+                      setRenamingWalletId(wallet.id)
+                    }}
+                  >
+                    Rename wallet
+                  </button>
                   <button
                     className="reveal-button"
                     type="button"

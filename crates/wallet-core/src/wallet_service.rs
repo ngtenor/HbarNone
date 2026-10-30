@@ -426,8 +426,20 @@ impl WalletService {
         path: &str,
     ) -> Result<WalletSummary, String> {
         self.ensure_unlocked()?;
+        let name = validate_wallet_name(name)?;
         let master_key = self.master_key.as_ref().expect("checked unlocked");
         let current_payload = self.payload.as_ref().expect("checked unlocked");
+        ensure_name_available(current_payload, &name, None)?;
+        for existing in &current_payload.wallets {
+            let existing_mnemonic =
+                decrypt_wallet_secret(master_key, &existing.nonce, &existing.ciphertext)?;
+            if existing_mnemonic.as_str() == mnemonic {
+                return Err(format!(
+                    "this recovery phrase is already in the vault as '{}'",
+                    existing.name
+                ));
+            }
+        }
         let mut next_payload = current_payload.clone();
         let id = loop {
             let candidate = format!("wallet-{}", hex::encode(random::<[u8; 16]>()));
@@ -443,7 +455,7 @@ impl WalletService {
         let (nonce, ciphertext) = encrypt_wallet_secret(master_key, mnemonic)?;
         let wallet = VaultWallet {
             id,
-            name: name.to_string(),
+            name,
             created_at: now.clone(),
             updated_at: now,
             nonce,
@@ -455,6 +467,32 @@ impl WalletService {
             created_at: wallet.created_at.clone(),
         };
         next_payload.wallets.push(wallet);
+        self.persist_payload(next_payload, path)?;
+        Ok(summary)
+    }
+
+    pub fn rename_wallet_and_save(
+        &mut self,
+        wallet_id: &str,
+        name: &str,
+        path: &str,
+    ) -> Result<WalletSummary, String> {
+        self.ensure_unlocked()?;
+        let name = validate_wallet_name(name)?;
+        let mut next_payload = self.payload.as_ref().expect("checked unlocked").clone();
+        ensure_name_available(&next_payload, &name, Some(wallet_id))?;
+        let wallet = next_payload
+            .wallets
+            .iter_mut()
+            .find(|wallet| wallet.id == wallet_id)
+            .ok_or_else(|| format!("wallet not found: {wallet_id}"))?;
+        wallet.name = name;
+        wallet.updated_at = chrono::Utc::now().to_rfc3339();
+        let summary = WalletSummary {
+            id: wallet.id.clone(),
+            name: wallet.name.clone(),
+            created_at: wallet.created_at.clone(),
+        };
         self.persist_payload(next_payload, path)?;
         Ok(summary)
     }
@@ -520,6 +558,38 @@ impl Default for WalletService {
     }
 }
 
+pub const MAX_WALLET_NAME_CHARS: usize = 40;
+
+fn validate_wallet_name(name: &str) -> Result<String, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("wallet name cannot be empty".to_string());
+    }
+    if name.chars().count() > MAX_WALLET_NAME_CHARS {
+        return Err(format!(
+            "wallet name cannot exceed {MAX_WALLET_NAME_CHARS} characters"
+        ));
+    }
+    if name.chars().any(char::is_control) {
+        return Err("wallet name cannot contain control characters".to_string());
+    }
+    Ok(name.to_string())
+}
+
+fn ensure_name_available(
+    payload: &VaultPayload,
+    name: &str,
+    ignore_id: Option<&str>,
+) -> Result<(), String> {
+    let wanted = name.to_lowercase();
+    if payload.wallets.iter().any(|wallet| {
+        Some(wallet.id.as_str()) != ignore_id && wallet.name.trim().to_lowercase() == wanted
+    }) {
+        return Err(format!("a wallet named '{name}' already exists"));
+    }
+    Ok(())
+}
+
 fn summarize(payload: &VaultPayload) -> Vec<WalletSummary> {
     payload
         .wallets
@@ -534,7 +604,7 @@ fn summarize(payload: &VaultPayload) -> Vec<WalletSummary> {
 
 #[cfg(test)]
 mod tests {
-    use super::{LegacyWalletPassword, WalletService};
+    use super::{LegacyWalletPassword, MAX_WALLET_NAME_CHARS, WalletService};
     use crate::{vault::VaultFile, wallet::Wallet, wallet_store::WalletStore};
     use std::time::{Duration, Instant};
     use zeroize::Zeroizing;
@@ -666,6 +736,101 @@ mod tests {
         service.create_vault("vault password", path).unwrap();
         let mode = std::fs::metadata(path).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[test]
+    fn wallet_names_are_validated_and_unique() {
+        let (_directory, path) = temp_path();
+        let path = path.to_str().unwrap();
+        let mut service = WalletService::new();
+        service.create_vault("vault password", path).unwrap();
+        let saved = service.create_and_save_wallet("  Savings  ", path).unwrap();
+        assert_eq!(saved.name, "Savings");
+
+        assert!(service.create_and_save_wallet("savings", path).is_err());
+        assert!(service.create_and_save_wallet("   ", path).is_err());
+        assert!(service.create_and_save_wallet("bad\nname", path).is_err());
+        assert!(
+            service
+                .create_and_save_wallet(&"x".repeat(MAX_WALLET_NAME_CHARS + 1), path)
+                .is_err()
+        );
+        service
+            .create_and_save_wallet(&"x".repeat(MAX_WALLET_NAME_CHARS), path)
+            .unwrap();
+        assert_eq!(service.list_wallets().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn duplicate_recovery_phrases_are_rejected_even_after_rename() {
+        let (_directory, path) = temp_path();
+        let path = path.to_str().unwrap();
+        let phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        let mut service = WalletService::new();
+        service.create_vault("vault password", path).unwrap();
+        let imported = service
+            .import_and_save_wallet("Original", phrase, path)
+            .unwrap();
+        let error = service
+            .import_and_save_wallet("Copy", phrase, path)
+            .unwrap_err();
+        assert!(error.contains("'Original'"));
+        assert!(!error.contains("abandon"));
+
+        service
+            .rename_wallet_and_save(&imported.id, "Renamed", path)
+            .unwrap();
+        let error = service
+            .import_and_save_wallet("Another", phrase, path)
+            .unwrap_err();
+        assert!(error.contains("'Renamed'"));
+        assert_eq!(service.list_wallets().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn rename_validates_persists_and_is_rollback_safe() {
+        let (_directory, path) = temp_path();
+        let path = path.to_str().unwrap();
+        let mut service = WalletService::new();
+        service.create_vault("vault password", path).unwrap();
+        let first = service.create_and_save_wallet("First", path).unwrap();
+        let second = service.create_and_save_wallet("Second", path).unwrap();
+
+        assert!(
+            service
+                .rename_wallet_and_save(&second.id, "FIRST", path)
+                .is_err()
+        );
+        assert!(
+            service
+                .rename_wallet_and_save(&second.id, "", path)
+                .is_err()
+        );
+        assert!(
+            service
+                .rename_wallet_and_save("missing", "Name", path)
+                .is_err()
+        );
+        let invalid_path = format!("{path}.missing/vault.json");
+        assert!(
+            service
+                .rename_wallet_and_save(&second.id, "Unsaved", &invalid_path)
+                .is_err()
+        );
+        assert_eq!(service.list_wallets().unwrap()[1].name, "Second");
+
+        // Renaming to the same name with different case is allowed.
+        service
+            .rename_wallet_and_save(&first.id, "first", path)
+            .unwrap();
+        service
+            .rename_wallet_and_save(&second.id, "Third", path)
+            .unwrap();
+        service.lock();
+        let mut reloaded = WalletService::load_store(path).unwrap();
+        let wallets = reloaded.unlock_vault("vault password").unwrap();
+        assert_eq!(wallets[0].name, "first");
+        assert_eq!(wallets[1].name, "Third");
     }
 
     #[test]
