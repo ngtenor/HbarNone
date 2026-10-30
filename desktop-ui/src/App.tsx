@@ -2,13 +2,9 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { FormEvent, KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { generatePassphrase } from './passphrase'
+import { TestnetPanel } from './TestnetPanel'
+import type { WalletSummary } from './types'
 import './App.css'
-
-type WalletSummary = {
-  id: string
-  name: string
-  created_at: string
-}
 
 type VaultView = 'loading' | 'uninitialized' | 'legacy' | 'locked' | 'unlocked'
 
@@ -1379,6 +1375,13 @@ function App() {
                     Delete wallet
                   </button>
                 </div>
+                <TestnetPanel
+                  key={wallet.id}
+                  wallet={wallet}
+                  onWalletUpdated={(updated) => setWallets((existing) => existing.map((item) => (
+                    item.id === updated.id ? updated : item
+                  )))}
+                />
               </section>
             )
           })()}

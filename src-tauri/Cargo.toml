@@ -7,6 +7,7 @@ edition = "2024"
 serde = { version = "1", features = ["derive"] }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
+hedera-mirror = { path = "../crates/hedera-mirror" }
 wallet-core = { path = "../crates/wallet-core" }
 zeroize = "1.9"
 

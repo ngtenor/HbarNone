@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 
-type Wallet = { id: string; name: string; created_at: string }
+type Wallet = { id: string; name: string; created_at: string; account_id: string | null }
 
 type Backend = {
   status: 'uninitialized' | 'locked' | 'unlocked'
@@ -12,6 +12,8 @@ type Backend = {
   backupWallets: Wallet[]
   exportSaved: boolean
   restoreCancelled: boolean
+  foundAccount: string | null
+  overview: unknown
   calls: { cmd: string; args?: Record<string, unknown> }[]
 }
 
@@ -20,8 +22,8 @@ const PHRASE = 'alpha bravo charlie delta echo foxtrot golf hotel india juliet k
 const invokeMock = vi.hoisted(() => vi.fn())
 vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }))
 
-function wallet(id: string, name: string): Wallet {
-  return { id, name, created_at: '2026-01-01T00:00:00Z' }
+function wallet(id: string, name: string, account_id: string | null = null): Wallet {
+  return { id, name, created_at: '2026-01-01T00:00:00Z', account_id }
 }
 
 let backend: Backend
@@ -43,6 +45,8 @@ function installBackend(overrides: Partial<Backend> = {}) {
     backupWallets: [wallet('b1', 'Restored')],
     exportSaved: true,
     restoreCancelled: false,
+    foundAccount: null,
+    overview: null,
     calls: [],
     ...overrides,
   }
@@ -76,6 +80,23 @@ function installBackend(overrides: Partial<Backend> = {}) {
         target.name = name
         return { ...target }
       }
+      case 'link_wallet_account': {
+        const target = backend.wallets.find((item) => item.id === args?.walletId)!
+        const accountId = args?.accountId as string | null
+        if (accountId !== null && !/^0\.0\.[1-9]\d*$/.test(accountId.trim())) {
+          throw new Error('account ID must look like 0.0.12345')
+        }
+        target.account_id = accountId === null ? null : accountId.trim()
+        return { ...target }
+      }
+      case 'find_wallet_account': {
+        if (!backend.foundAccount) throw new Error('no Testnet account uses this wallet\'s key yet')
+        const target = backend.wallets.find((item) => item.id === args?.walletId)!
+        target.account_id = backend.foundAccount
+        return { ...target }
+      }
+      case 'get_account_overview':
+        return backend.overview
       case 'export_vault_backup':
         return backend.exportSaved
       case 'restore_vault_backup':
@@ -150,6 +171,93 @@ describe('vault gates', () => {
     expect(await screen.findByRole('button', { name: 'Unlock vault' })).toBeInTheDocument()
     expect(screen.queryByText('Savings')).not.toBeInTheDocument()
     expect(commandsCalled('lock_vault')).toHaveLength(1)
+  })
+})
+
+describe('hedera testnet panel', () => {
+  beforeEach(() => installBackend())
+
+  it('contacts the network only when a button is clicked', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+    await unlock(user)
+    await openWalletTab(user, 'Savings')
+    expect(screen.getByText(/only when you click a button here/)).toBeInTheDocument()
+    expect(commandsCalled('find_wallet_account')).toHaveLength(0)
+    expect(commandsCalled('get_account_overview')).toHaveLength(0)
+  })
+
+  it('links an account ID, rejects a malformed one, and unlinks', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+    await unlock(user)
+    await openWalletTab(user, 'Savings')
+
+    await user.type(screen.getByLabelText('Or link an account ID'), 'nonsense')
+    await user.click(screen.getByRole('button', { name: 'Link account' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('account ID must look like')
+
+    await user.clear(screen.getByLabelText('Or link an account ID'))
+    await user.type(screen.getByLabelText('Or link an account ID'), '0.0.1001')
+    await user.click(screen.getByRole('button', { name: 'Link account' }))
+    expect(await screen.findByText('0.0.1001')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Unlink account' }))
+    expect(await screen.findByLabelText('Or link an account ID')).toBeInTheDocument()
+  })
+
+  it('finds the account from the wallet key, or explains when none exists', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+    await unlock(user)
+    await openWalletTab(user, 'Savings')
+
+    const find = 'Find account from this wallet’s key'
+    await user.click(screen.getByRole('button', { name: find }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('no Testnet account')
+
+    backend.foundAccount = '0.0.2002'
+    await user.click(screen.getByRole('button', { name: find }))
+    expect(await screen.findByText('0.0.2002')).toBeInTheDocument()
+  })
+
+  it('shows the balance and recent transactions after Refresh', async () => {
+    const user = userEvent.setup()
+    installBackend({
+      wallets: [wallet('w1', 'Savings', '0.0.1001')],
+      overview: {
+        account_id: '0.0.1001',
+        balance_tinybars: 250_000_000,
+        transactions: [
+          {
+            transaction_id: '0.0.1001-1-1',
+            kind: 'CRYPTOTRANSFER',
+            result: 'SUCCESS',
+            consensus_time: '2026-01-01T00:00:00+00:00',
+            net_tinybars: -100_100_000,
+          },
+        ],
+      },
+    })
+    render(<App />)
+    await unlock(user)
+    await openWalletTab(user, 'Savings')
+    await user.click(screen.getByRole('button', { name: 'Refresh balance' }))
+    expect(await screen.findByText(/2\.50 ℏ/)).toBeInTheDocument()
+    const list = screen.getByRole('list', { name: 'Recent transactions' })
+    expect(within(list).getByText('CRYPTOTRANSFER')).toBeInTheDocument()
+    expect(within(list).getByText(/-1\.001 ℏ/)).toBeInTheDocument()
+  })
+
+  it('says so when the account is not found on Testnet', async () => {
+    const user = userEvent.setup()
+    installBackend({ wallets: [wallet('w1', 'Savings', '0.0.1001')], overview: null })
+    render(<App />)
+    await unlock(user)
+    await openWalletTab(user, 'Savings')
+    await user.click(screen.getByRole('button', { name: 'Refresh balance' }))
+    expect(await screen.findByRole('status')).toHaveTextContent('not found on Hedera Testnet')
   })
 })
 

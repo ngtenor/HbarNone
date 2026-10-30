@@ -2,6 +2,7 @@
 
 use std::{path::PathBuf, sync::Mutex};
 
+use hedera_mirror::{AccountOverview, MirrorClient};
 use serde::{Deserialize, Serialize};
 use tauri::{Manager, State};
 use tauri_plugin_dialog::DialogExt;
@@ -233,6 +234,56 @@ fn delete_wallet(wallet_id: String, state: State<'_, AppState>) -> Result<(), St
 }
 
 #[tauri::command]
+fn link_wallet_account(
+    wallet_id: String,
+    account_id: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<WalletSummary, String> {
+    lock_service(&state)?.set_wallet_account_id_and_save(
+        &wallet_id,
+        account_id.as_deref(),
+        &state.store_path.to_string_lossy(),
+    )
+}
+
+// Network commands run only when the user clicks; the webview never sees the
+// mirror URL, and only the public key or account ID leaves the app.
+#[tauri::command]
+async fn find_wallet_account(
+    wallet_id: String,
+    state: State<'_, AppState>,
+) -> Result<WalletSummary, String> {
+    let public_key = lock_service(&state)?.wallet_public_key(&wallet_id)?;
+    let matches = MirrorClient::testnet()?
+        .find_accounts_by_public_key(&public_key)
+        .await?;
+    match matches.as_slice() {
+        [] => Err("no Testnet account uses this wallet's key yet; an account is created when the key's address first receives HBAR".to_string()),
+        [account_id] => lock_service(&state)?.set_wallet_account_id_and_save(
+            &wallet_id,
+            Some(account_id),
+            &state.store_path.to_string_lossy(),
+        ),
+        _ => Err("several Testnet accounts use this key; link the one you want by its account ID".to_string()),
+    }
+}
+
+#[tauri::command]
+async fn get_account_overview(
+    wallet_id: String,
+    state: State<'_, AppState>,
+) -> Result<Option<AccountOverview>, String> {
+    let account_id = lock_service(&state)?
+        .list_wallets()?
+        .into_iter()
+        .find(|wallet| wallet.id == wallet_id)
+        .ok_or_else(|| format!("wallet not found: {wallet_id}"))?
+        .account_id
+        .ok_or_else(|| "link a Hedera account to this wallet first".to_string())?;
+    MirrorClient::testnet()?.account_overview(&account_id).await
+}
+
+#[tauri::command]
 fn rename_wallet(
     wallet_id: String,
     name: String,
@@ -322,6 +373,9 @@ fn main() {
             create_wallet,
             delete_wallet,
             rename_wallet,
+            link_wallet_account,
+            find_wallet_account,
+            get_account_overview,
             import_wallet,
             list_wallets,
             reveal_wallet_mnemonic,
