@@ -47,7 +47,7 @@
    - [x] Manually verify the HOME Settings button opens its tab and auto-lock settings can be changed and retained there.
    - [x] Add wallet-core tests for vault persistence, encrypted metadata and recovery phrases, wrong-password rejection, old-wallet migration, migration rollback, auto-lock bounds/expiry, and wallet mutation rollback.
    - [x] Add a wallet-core persistence integration test for creating, listing, locking, reloading, unlocking, and revealing a disposable wallet; it checks that the phrase is not stored in plaintext.
-   - [ ] Add an automated desktop-app end-to-end test that verifies persistence across an actual app restart.
+   - [x] Verify persistence across restarts automatically with a Rust integration test (`crates/wallet-core/tests/wallet_persistence.rs`): it drops and reloads the service from disk across five sessions, checking auto-lock, rename, delete, re-import, password change (old password rejected, keys unchanged) and export followed by restore into a fresh store. A true GUI end-to-end test of the packaged app (e.g. `tauri-driver`/WebDriver) is deferred as impractical on Windows and Ubuntu CI for now.
    - [x] Build the updated standalone Windows production app and NSIS/MSI installers without overwriting the running app; the latest build includes the HOME, wallet, create/import, and Settings tabs.
    - [x] Manually launch and test the updated Windows app without the Vite development server; use only disposable wallets.
    - Use the release executable or installed app for standalone testing. A debug executable requires the Vite server and is expected to show a connection error if launched without it.
@@ -101,7 +101,7 @@ tabs, wallet-specific reveal/delete actions, copy-blocked recovery-phrase
 display, and Settings tab are implemented, with a stricter release CSP and
 Linux `0700`/`0600` permission hardening. The latest standalone x64 Windows
 app and NSIS/MSI installers include these changes. `cargo fmt --all -- --check`,
-`cargo test --workspace` (26 wallet-core unit tests and 1 persistence
+`cargo test --workspace` (26 wallet-core unit tests and 2 persistence
 integration test), 25 frontend component tests, frontend lint/build, and `cargo check --workspace` passed
 locally, and CI passed on Windows and Ubuntu for PR #1. Tests cover encryption,
 legacy migration and failure preservation, locked persistence, auto-lock
@@ -113,7 +113,7 @@ Settings, wallet deletion and persistence, standalone launch, clearing on
 minimise, copy blocking, CSP rendering, unlock delay, app-data permissions,
 vault password change, encrypted backup/restore, wallet rename, and duplicate-phrase blocking (release builds also no
 longer open a console window). Still outstanding: Linux
-permission checks and app testing, and an automated desktop-app restart test.
+permission checks and app testing, and a GUI-level restart test of the packaged app.
 Build note: this ARM64 Windows machine needs the x64 Rust toolchain
 (`RUSTUP_TOOLCHAIN=stable-x86_64-pc-windows-msvc`) and the x64 Visual Studio
 environment to build the x64 app.
