@@ -28,6 +28,8 @@ pub struct VaultWallet {
     pub name: String,
     pub created_at: String,
     pub updated_at: String,
+    #[serde(default)]
+    pub account_id: Option<String>,
     pub(crate) nonce: String,
     pub(crate) ciphertext: String,
 }

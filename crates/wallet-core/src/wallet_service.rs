@@ -34,6 +34,44 @@ pub struct WalletSummary {
     pub id: String,
     pub name: String,
     pub created_at: String,
+    pub account_id: Option<String>,
+}
+
+impl WalletSummary {
+    fn from_wallet(wallet: &VaultWallet) -> Self {
+        Self {
+            id: wallet.id.clone(),
+            name: wallet.name.clone(),
+            created_at: wallet.created_at.clone(),
+            account_id: wallet.account_id.clone(),
+        }
+    }
+}
+
+const MAX_ACCOUNT_NUM_DIGITS: usize = 19;
+
+/// Accepts a Hedera account ID of the form `0.0.<num>` and returns it normalised.
+pub fn validate_account_id(input: &str) -> Result<String, String> {
+    let trimmed = input.trim();
+    let mut parts = trimmed.split('.');
+    let (Some("0"), Some("0"), Some(num), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return Err("account ID must look like 0.0.12345".to_string());
+    };
+    if num.is_empty()
+        || num.len() > MAX_ACCOUNT_NUM_DIGITS
+        || !num.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return Err("account ID must look like 0.0.12345".to_string());
+    }
+    let number: u64 = num
+        .parse()
+        .map_err(|_| "account ID number is too large".to_string())?;
+    if number == 0 {
+        return Err("account ID number must be greater than zero".to_string());
+    }
+    Ok(format!("0.0.{number}"))
 }
 
 pub struct LegacyWalletPassword {
@@ -131,6 +169,7 @@ impl WalletService {
                         id: wallet.id.clone(),
                         name: wallet.name.clone(),
                         created_at: wallet.created_at.clone(),
+                        account_id: None,
                     })
                     .collect()
             })
@@ -278,6 +317,7 @@ impl WalletService {
                 name: legacy_wallet.name.clone(),
                 created_at: legacy_wallet.created_at.clone(),
                 updated_at: legacy_wallet.updated_at.clone(),
+                account_id: None,
                 nonce,
                 ciphertext,
             });
@@ -458,14 +498,11 @@ impl WalletService {
             name,
             created_at: now.clone(),
             updated_at: now,
+            account_id: None,
             nonce,
             ciphertext,
         };
-        let summary = WalletSummary {
-            id: wallet.id.clone(),
-            name: wallet.name.clone(),
-            created_at: wallet.created_at.clone(),
-        };
+        let summary = WalletSummary::from_wallet(&wallet);
         next_payload.wallets.push(wallet);
         self.persist_payload(next_payload, path)?;
         Ok(summary)
@@ -488,13 +525,59 @@ impl WalletService {
             .ok_or_else(|| format!("wallet not found: {wallet_id}"))?;
         wallet.name = name;
         wallet.updated_at = chrono::Utc::now().to_rfc3339();
-        let summary = WalletSummary {
-            id: wallet.id.clone(),
-            name: wallet.name.clone(),
-            created_at: wallet.created_at.clone(),
-        };
+        let summary = WalletSummary::from_wallet(wallet);
         self.persist_payload(next_payload, path)?;
         Ok(summary)
+    }
+
+    /// Links (or, with `None`, unlinks) a Hedera account ID. An account can
+    /// be linked to one wallet only, to avoid confusing balances.
+    pub fn set_wallet_account_id_and_save(
+        &mut self,
+        wallet_id: &str,
+        account_id: Option<&str>,
+        path: &str,
+    ) -> Result<WalletSummary, String> {
+        self.ensure_unlocked()?;
+        let account_id = account_id.map(validate_account_id).transpose()?;
+        let mut next_payload = self.payload.as_ref().expect("checked unlocked").clone();
+        if let Some(account_id) = &account_id
+            && let Some(other) = next_payload.wallets.iter().find(|wallet| {
+                wallet.id != wallet_id && wallet.account_id.as_deref() == Some(account_id)
+            })
+        {
+            return Err(format!(
+                "account {account_id} is already linked to wallet '{}'",
+                other.name
+            ));
+        }
+        let wallet = next_payload
+            .wallets
+            .iter_mut()
+            .find(|wallet| wallet.id == wallet_id)
+            .ok_or_else(|| format!("wallet not found: {wallet_id}"))?;
+        wallet.account_id = account_id;
+        wallet.updated_at = chrono::Utc::now().to_rfc3339();
+        let summary = WalletSummary::from_wallet(wallet);
+        self.persist_payload(next_payload, path)?;
+        Ok(summary)
+    }
+
+    /// The wallet's Ed25519 public key as lowercase hex. It is not secret,
+    /// but deriving it needs the recovery phrase, so the vault must be unlocked.
+    pub fn wallet_public_key(&mut self, wallet_id: &str) -> Result<String, String> {
+        self.ensure_unlocked()?;
+        let master_key = self.master_key.as_ref().expect("checked unlocked");
+        let wallet = self
+            .payload
+            .as_ref()
+            .expect("checked unlocked")
+            .wallets
+            .iter()
+            .find(|wallet| wallet.id == wallet_id)
+            .ok_or_else(|| format!("wallet not found: {wallet_id}"))?;
+        let mnemonic = decrypt_wallet_secret(master_key, &wallet.nonce, &wallet.ciphertext)?;
+        Ok(Wallet::from_mnemonic(mnemonic.as_str())?.public_key)
     }
 
     pub fn delete_wallet_and_save(&mut self, wallet_id: &str, path: &str) -> Result<(), String> {
@@ -594,11 +677,7 @@ fn summarize(payload: &VaultPayload) -> Vec<WalletSummary> {
     payload
         .wallets
         .iter()
-        .map(|wallet| WalletSummary {
-            id: wallet.id.clone(),
-            name: wallet.name.clone(),
-            created_at: wallet.created_at.clone(),
-        })
+        .map(WalletSummary::from_wallet)
         .collect()
 }
 
@@ -785,6 +864,90 @@ mod tests {
             .unwrap_err();
         assert!(error.contains("'Renamed'"));
         assert_eq!(service.list_wallets().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn account_ids_are_validated_linked_uniquely_and_persisted() {
+        use super::validate_account_id;
+
+        assert_eq!(validate_account_id(" 0.0.1234 ").unwrap(), "0.0.1234");
+        assert_eq!(validate_account_id("0.0.00042").unwrap(), "0.0.42");
+        for bad in [
+            "",
+            "1234",
+            "0.1234",
+            "0.0.",
+            "0.0.0",
+            "1.0.5",
+            "0.1.5",
+            "0.0.-5",
+            "0.0.5.6",
+            "0.0.abc",
+            "0.0.99999999999999999999",
+            "0.0.18446744073709551616",
+            "0x0.0.5",
+        ] {
+            assert!(validate_account_id(bad).is_err(), "accepted {bad:?}");
+        }
+
+        let (_directory, path) = temp_path();
+        let path = path.to_str().unwrap();
+        let mut service = WalletService::new();
+        service.create_vault("vault password", path).unwrap();
+        let first = service.create_and_save_wallet("First", path).unwrap();
+        let second = service.create_and_save_wallet("Second", path).unwrap();
+        assert!(first.account_id.is_none());
+
+        let linked = service
+            .set_wallet_account_id_and_save(&first.id, Some("0.0.1001"), path)
+            .unwrap();
+        assert_eq!(linked.account_id.as_deref(), Some("0.0.1001"));
+        let error = service
+            .set_wallet_account_id_and_save(&second.id, Some("0.0.1001"), path)
+            .unwrap_err();
+        assert!(error.contains("'First'"));
+        assert!(
+            service
+                .set_wallet_account_id_and_save("missing", Some("0.0.5"), path)
+                .is_err()
+        );
+        let invalid_path = format!("{path}.missing/vault.json");
+        assert!(
+            service
+                .set_wallet_account_id_and_save(&second.id, Some("0.0.7"), &invalid_path)
+                .is_err()
+        );
+        assert!(service.list_wallets().unwrap()[1].account_id.is_none());
+
+        service.lock();
+        let mut reloaded = WalletService::load_store(path).unwrap();
+        let wallets = reloaded.unlock_vault("vault password").unwrap();
+        assert_eq!(wallets[0].account_id.as_deref(), Some("0.0.1001"));
+
+        let unlinked = reloaded
+            .set_wallet_account_id_and_save(&first.id, None, path)
+            .unwrap();
+        assert!(unlinked.account_id.is_none());
+        reloaded
+            .set_wallet_account_id_and_save(&second.id, Some("0.0.1001"), path)
+            .unwrap();
+    }
+
+    #[test]
+    fn wallet_public_key_matches_the_derived_key_and_needs_an_unlocked_vault() {
+        let (_directory, path) = temp_path();
+        let path = path.to_str().unwrap();
+        let phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        let expected = Wallet::from_mnemonic(phrase).unwrap().public_key;
+        let mut service = WalletService::new();
+        service.create_vault("vault password", path).unwrap();
+        let wallet = service
+            .import_and_save_wallet("Imported", phrase, path)
+            .unwrap();
+        assert_eq!(service.wallet_public_key(&wallet.id).unwrap(), expected);
+        assert!(service.wallet_public_key("missing").is_err());
+        service.lock();
+        assert!(service.wallet_public_key(&wallet.id).is_err());
     }
 
     #[test]
