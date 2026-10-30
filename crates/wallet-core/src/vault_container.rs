@@ -166,6 +166,27 @@ impl VaultContainer {
         Ok((master_key, payload))
     }
 
+    /// Re-wraps the existing master key under a new password. Wallet data is
+    /// not re-encrypted, and the current password must be correct.
+    pub fn with_changed_password(
+        &self,
+        current_password: &str,
+        new_password: &str,
+    ) -> Result<Self, String> {
+        let (master_key, _) = self
+            .unlock(current_password)
+            .map_err(|_| "incorrect current vault password".to_string())?;
+        let salt: [u8; SALT_LENGTH] = random();
+        let password_key = derive_key(new_password, &salt)?;
+        let (key_nonce, wrapped_key) = encrypt(&password_key, &master_key[..])?;
+        Ok(Self {
+            salt: encode(salt),
+            key_nonce,
+            wrapped_key,
+            ..self.clone()
+        })
+    }
+
     pub fn encrypt_payload(
         &mut self,
         master_key: &[u8; KEY_LENGTH],
@@ -193,6 +214,14 @@ impl VaultContainer {
             .as_file()
             .sync_all()
             .map_err(|e| format!("sync temporary vault failed: {e}"))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            temp_file
+                .as_file()
+                .set_permissions(std::fs::Permissions::from_mode(0o600))
+                .map_err(|e| format!("restrict vault permissions failed: {e}"))?;
+        }
         temp_file
             .persist(path)
             .map_err(|e| format!("replace vault failed: {}", e.error))?;

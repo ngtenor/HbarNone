@@ -31,7 +31,9 @@ Treat development wallet material as compromised.
 - AES-256-GCM encryption for wallet metadata and recovery phrases under the master key
 - Migration of existing per-wallet encrypted records into the shared-password vault
 - Configurable inactivity auto-lock from 30 seconds to 30 minutes (5-minute default)
-- A tabbed vault interface with a persistent HOME tab, wallet-specific tabs, and a Settings tab for auto-lock preferences
+- A browser-style tabbed vault interface with icon buttons at the top right (create/import wallet, settings, lock; a padlock shows when locked), a persistent HOME tab, wallet-specific tabs, and a Settings tab for auto-lock preferences and changing the vault password
+- Encrypted vault backup export and restore (separate Settings panels; restore also available when creating a vault)
+- Wallet rename, with unique names (up to 40 characters), and blocking of duplicate recovery-phrase imports
 - Wallet deletion and recovery-phrase reveal from the selected wallet's tab
 - Wallet-store persistence in the desktop app's operating-system data directory
 - Tauri 2 and React desktop interface for creating, importing, listing, revealing, and deleting wallets

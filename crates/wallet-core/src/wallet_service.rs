@@ -14,7 +14,7 @@ use std::{
 };
 use zeroize::Zeroizing;
 
-const MAX_BACKUP_BYTES: usize = 10 * 1024 * 1024;
+pub const MAX_BACKUP_BYTES: usize = 10 * 1024 * 1024;
 const FREE_UNLOCK_ATTEMPTS: u32 = 3;
 const BASE_UNLOCK_DELAY_SECONDS: u64 = 5;
 const MAX_UNLOCK_DELAY_SECONDS: u64 = 300;
@@ -135,6 +135,32 @@ impl WalletService {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    pub fn change_vault_password(
+        &mut self,
+        current_password: &str,
+        new_password: &str,
+        path: &str,
+    ) -> Result<(), String> {
+        self.ensure_unlocked()?;
+        if current_password.is_empty() || current_password.len() > 1024 {
+            return Err("vault password must contain between 1 and 1024 bytes".to_string());
+        }
+        if new_password.is_empty() || new_password.len() > 1024 {
+            return Err("new vault password must contain between 1 and 1024 bytes".to_string());
+        }
+        if new_password == current_password {
+            return Err("the new password must differ from the current password".to_string());
+        }
+        let updated = self
+            .container
+            .as_ref()
+            .ok_or_else(|| "vault has not been created".to_string())?
+            .with_changed_password(current_password, new_password)?;
+        updated.save_to_file(path)?;
+        self.container = Some(updated);
+        Ok(())
     }
 
     pub fn set_auto_lock_seconds(&mut self, seconds: u32, path: &str) -> Result<(), String> {
@@ -281,14 +307,17 @@ impl WalletService {
     }
 
     /// Replaces the current vault with a verified backup. The previous vault
-    /// file is kept beside it as `<path>.pre-restore`.
+    /// file is kept beside it as `<path>.pre-restore`. A restore is allowed
+    /// while the vault is unlocked, or when no vault exists yet.
     pub fn restore_backup(
         &mut self,
         backup_json: &str,
         backup_password: &str,
         path: &str,
     ) -> Result<Vec<WalletSummary>, String> {
-        self.ensure_unlocked()?;
+        if self.vault_status() != "uninitialized" {
+            self.ensure_unlocked()?;
+        }
         if backup_password.is_empty() || backup_password.len() > 1024 {
             return Err("backup password must contain between 1 and 1024 bytes".to_string());
         }
@@ -397,8 +426,20 @@ impl WalletService {
         path: &str,
     ) -> Result<WalletSummary, String> {
         self.ensure_unlocked()?;
+        let name = validate_wallet_name(name)?;
         let master_key = self.master_key.as_ref().expect("checked unlocked");
         let current_payload = self.payload.as_ref().expect("checked unlocked");
+        ensure_name_available(current_payload, &name, None)?;
+        for existing in &current_payload.wallets {
+            let existing_mnemonic =
+                decrypt_wallet_secret(master_key, &existing.nonce, &existing.ciphertext)?;
+            if existing_mnemonic.as_str() == mnemonic {
+                return Err(format!(
+                    "this recovery phrase is already in the vault as '{}'",
+                    existing.name
+                ));
+            }
+        }
         let mut next_payload = current_payload.clone();
         let id = loop {
             let candidate = format!("wallet-{}", hex::encode(random::<[u8; 16]>()));
@@ -414,7 +455,7 @@ impl WalletService {
         let (nonce, ciphertext) = encrypt_wallet_secret(master_key, mnemonic)?;
         let wallet = VaultWallet {
             id,
-            name: name.to_string(),
+            name,
             created_at: now.clone(),
             updated_at: now,
             nonce,
@@ -426,6 +467,32 @@ impl WalletService {
             created_at: wallet.created_at.clone(),
         };
         next_payload.wallets.push(wallet);
+        self.persist_payload(next_payload, path)?;
+        Ok(summary)
+    }
+
+    pub fn rename_wallet_and_save(
+        &mut self,
+        wallet_id: &str,
+        name: &str,
+        path: &str,
+    ) -> Result<WalletSummary, String> {
+        self.ensure_unlocked()?;
+        let name = validate_wallet_name(name)?;
+        let mut next_payload = self.payload.as_ref().expect("checked unlocked").clone();
+        ensure_name_available(&next_payload, &name, Some(wallet_id))?;
+        let wallet = next_payload
+            .wallets
+            .iter_mut()
+            .find(|wallet| wallet.id == wallet_id)
+            .ok_or_else(|| format!("wallet not found: {wallet_id}"))?;
+        wallet.name = name;
+        wallet.updated_at = chrono::Utc::now().to_rfc3339();
+        let summary = WalletSummary {
+            id: wallet.id.clone(),
+            name: wallet.name.clone(),
+            created_at: wallet.created_at.clone(),
+        };
         self.persist_payload(next_payload, path)?;
         Ok(summary)
     }
@@ -491,6 +558,38 @@ impl Default for WalletService {
     }
 }
 
+pub const MAX_WALLET_NAME_CHARS: usize = 40;
+
+fn validate_wallet_name(name: &str) -> Result<String, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("wallet name cannot be empty".to_string());
+    }
+    if name.chars().count() > MAX_WALLET_NAME_CHARS {
+        return Err(format!(
+            "wallet name cannot exceed {MAX_WALLET_NAME_CHARS} characters"
+        ));
+    }
+    if name.chars().any(char::is_control) {
+        return Err("wallet name cannot contain control characters".to_string());
+    }
+    Ok(name.to_string())
+}
+
+fn ensure_name_available(
+    payload: &VaultPayload,
+    name: &str,
+    ignore_id: Option<&str>,
+) -> Result<(), String> {
+    let wanted = name.to_lowercase();
+    if payload.wallets.iter().any(|wallet| {
+        Some(wallet.id.as_str()) != ignore_id && wallet.name.trim().to_lowercase() == wanted
+    }) {
+        return Err(format!("a wallet named '{name}' already exists"));
+    }
+    Ok(())
+}
+
 fn summarize(payload: &VaultPayload) -> Vec<WalletSummary> {
     payload
         .wallets
@@ -505,7 +604,7 @@ fn summarize(payload: &VaultPayload) -> Vec<WalletSummary> {
 
 #[cfg(test)]
 mod tests {
-    use super::{LegacyWalletPassword, WalletService};
+    use super::{LegacyWalletPassword, MAX_WALLET_NAME_CHARS, WalletService};
     use crate::{vault::VaultFile, wallet::Wallet, wallet_store::WalletStore};
     use std::time::{Duration, Instant};
     use zeroize::Zeroizing;
@@ -562,6 +661,310 @@ mod tests {
         service.unlock_vault("vault password").unwrap();
         assert_eq!(service.failed_unlock_attempts, 0);
         assert!(service.unlock_blocked_until.is_none());
+    }
+
+    #[test]
+    fn changing_the_password_rewraps_the_key_and_keeps_wallets() {
+        let (_directory, path) = temp_path();
+        let path = path.to_str().unwrap();
+        let mut service = WalletService::new();
+        service.create_vault("old password", path).unwrap();
+        let created = service.create_and_save_wallet("Keep", path).unwrap();
+        let phrase = service.reveal_mnemonic(&created.id).unwrap().to_string();
+        let before = std::fs::read_to_string(path).unwrap();
+
+        assert!(
+            service
+                .change_vault_password("wrong password", "new password", path)
+                .is_err()
+        );
+        assert!(
+            service
+                .change_vault_password("old password", "old password", path)
+                .is_err()
+        );
+        assert!(
+            service
+                .change_vault_password("old password", "", path)
+                .is_err()
+        );
+        let invalid_path = format!("{path}.missing/vault.json");
+        assert!(
+            service
+                .change_vault_password("old password", "new password", &invalid_path)
+                .is_err()
+        );
+        assert_eq!(std::fs::read_to_string(path).unwrap(), before);
+
+        service
+            .change_vault_password("old password", "new password", path)
+            .unwrap();
+        assert_ne!(std::fs::read_to_string(path).unwrap(), before);
+        service.lock();
+
+        let mut reloaded = WalletService::load_store(path).unwrap();
+        assert!(reloaded.unlock_vault("old password").is_err());
+        reloaded.unlock_vault("new password").unwrap();
+        assert_eq!(reloaded.list_wallets().unwrap()[0].id, created.id);
+        assert_eq!(
+            reloaded.reveal_mnemonic(&created.id).unwrap().as_str(),
+            phrase
+        );
+    }
+
+    #[test]
+    fn changing_the_password_requires_an_unlocked_vault() {
+        let (_directory, path) = temp_path();
+        let path = path.to_str().unwrap();
+        let mut service = WalletService::new();
+        service.create_vault("old password", path).unwrap();
+        service.lock();
+        assert!(
+            service
+                .change_vault_password("old password", "new password", path)
+                .is_err()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn saved_vault_file_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_directory, path) = temp_path();
+        let path = path.to_str().unwrap();
+        let mut service = WalletService::new();
+        service.create_vault("vault password", path).unwrap();
+        let mode = std::fs::metadata(path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[test]
+    fn wallet_names_are_validated_and_unique() {
+        let (_directory, path) = temp_path();
+        let path = path.to_str().unwrap();
+        let mut service = WalletService::new();
+        service.create_vault("vault password", path).unwrap();
+        let saved = service.create_and_save_wallet("  Savings  ", path).unwrap();
+        assert_eq!(saved.name, "Savings");
+
+        assert!(service.create_and_save_wallet("savings", path).is_err());
+        assert!(service.create_and_save_wallet("   ", path).is_err());
+        assert!(service.create_and_save_wallet("bad\nname", path).is_err());
+        assert!(
+            service
+                .create_and_save_wallet(&"x".repeat(MAX_WALLET_NAME_CHARS + 1), path)
+                .is_err()
+        );
+        service
+            .create_and_save_wallet(&"x".repeat(MAX_WALLET_NAME_CHARS), path)
+            .unwrap();
+        assert_eq!(service.list_wallets().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn duplicate_recovery_phrases_are_rejected_even_after_rename() {
+        let (_directory, path) = temp_path();
+        let path = path.to_str().unwrap();
+        let phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        let mut service = WalletService::new();
+        service.create_vault("vault password", path).unwrap();
+        let imported = service
+            .import_and_save_wallet("Original", phrase, path)
+            .unwrap();
+        let error = service
+            .import_and_save_wallet("Copy", phrase, path)
+            .unwrap_err();
+        assert!(error.contains("'Original'"));
+        assert!(!error.contains("abandon"));
+
+        service
+            .rename_wallet_and_save(&imported.id, "Renamed", path)
+            .unwrap();
+        let error = service
+            .import_and_save_wallet("Another", phrase, path)
+            .unwrap_err();
+        assert!(error.contains("'Renamed'"));
+        assert_eq!(service.list_wallets().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn rename_validates_persists_and_is_rollback_safe() {
+        let (_directory, path) = temp_path();
+        let path = path.to_str().unwrap();
+        let mut service = WalletService::new();
+        service.create_vault("vault password", path).unwrap();
+        let first = service.create_and_save_wallet("First", path).unwrap();
+        let second = service.create_and_save_wallet("Second", path).unwrap();
+
+        assert!(
+            service
+                .rename_wallet_and_save(&second.id, "FIRST", path)
+                .is_err()
+        );
+        assert!(
+            service
+                .rename_wallet_and_save(&second.id, "", path)
+                .is_err()
+        );
+        assert!(
+            service
+                .rename_wallet_and_save("missing", "Name", path)
+                .is_err()
+        );
+        let invalid_path = format!("{path}.missing/vault.json");
+        assert!(
+            service
+                .rename_wallet_and_save(&second.id, "Unsaved", &invalid_path)
+                .is_err()
+        );
+        assert_eq!(service.list_wallets().unwrap()[1].name, "Second");
+
+        // Renaming to the same name with different case is allowed.
+        service
+            .rename_wallet_and_save(&first.id, "first", path)
+            .unwrap();
+        service
+            .rename_wallet_and_save(&second.id, "Third", path)
+            .unwrap();
+        service.lock();
+        let mut reloaded = WalletService::load_store(path).unwrap();
+        let wallets = reloaded.unlock_vault("vault password").unwrap();
+        assert_eq!(wallets[0].name, "first");
+        assert_eq!(wallets[1].name, "Third");
+    }
+
+    #[test]
+    fn backup_round_trips_to_a_new_machine_without_plaintext() {
+        let (_source_directory, source_path) = temp_path();
+        let source_path = source_path.to_str().unwrap();
+        let mut source = WalletService::new();
+        source.create_vault("backup password", source_path).unwrap();
+        let first = source.create_and_save_wallet("First", source_path).unwrap();
+        let second = source
+            .create_and_save_wallet("Second", source_path)
+            .unwrap();
+        let first_phrase = source.reveal_mnemonic(&first.id).unwrap().to_string();
+        let backup = source.export_backup().unwrap();
+        assert!(!backup.contains(&first_phrase));
+        assert!(!backup.contains("First"));
+
+        let (_target_directory, target_path) = temp_path();
+        let target_path = target_path.to_str().unwrap();
+        let mut target = WalletService::new();
+        assert_eq!(target.vault_status(), "uninitialized");
+        let restored = target
+            .restore_backup(&backup, "backup password", target_path)
+            .unwrap();
+        assert_eq!(restored.len(), 2);
+        assert_eq!(target.vault_status(), "unlocked");
+        assert_eq!(
+            target.reveal_mnemonic(&first.id).unwrap().as_str(),
+            first_phrase
+        );
+        assert!(
+            target
+                .list_wallets()
+                .unwrap()
+                .iter()
+                .any(|w| w.id == second.id)
+        );
+        target.lock();
+
+        let mut reloaded = WalletService::load_store(target_path).unwrap();
+        reloaded.unlock_vault("backup password").unwrap();
+        assert_eq!(reloaded.list_wallets().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn restore_rejects_bad_backups_and_leaves_the_vault_unchanged() {
+        let (_directory, path) = temp_path();
+        let path = path.to_str().unwrap();
+        let mut service = WalletService::new();
+        service.create_vault("vault password", path).unwrap();
+        service.create_and_save_wallet("Keep", path).unwrap();
+        let backup = service.export_backup().unwrap();
+        let before = std::fs::read_to_string(path).unwrap();
+
+        assert!(
+            service
+                .restore_backup(&backup, "wrong password", path)
+                .is_err()
+        );
+        assert!(
+            service
+                .restore_backup("not json", "vault password", path)
+                .is_err()
+        );
+        assert!(
+            service
+                .restore_backup("{\"hello\":1}", "vault password", path)
+                .is_err()
+        );
+        assert!(service.restore_backup(&backup, "", path).is_err());
+        let oversized = " ".repeat(super::MAX_BACKUP_BYTES + 1);
+        assert!(
+            service
+                .restore_backup(&oversized, "vault password", path)
+                .is_err()
+        );
+        let invalid_path = format!("{path}.missing/vault.json");
+        assert!(
+            service
+                .restore_backup(&backup, "vault password", &invalid_path)
+                .is_err()
+        );
+        assert_eq!(std::fs::read_to_string(path).unwrap(), before);
+        assert_eq!(service.vault_status(), "unlocked");
+        assert_eq!(service.list_wallets().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn restore_over_an_existing_vault_keeps_a_pre_restore_copy() {
+        let (_source_directory, source_path) = temp_path();
+        let source_path = source_path.to_str().unwrap();
+        let mut source = WalletService::new();
+        source.create_vault("source password", source_path).unwrap();
+        let source_wallet = source
+            .create_and_save_wallet("Source", source_path)
+            .unwrap();
+        let backup = source.export_backup().unwrap();
+
+        let (_directory, path) = temp_path();
+        let path = path.to_str().unwrap();
+        let mut service = WalletService::new();
+        service.create_vault("local password", path).unwrap();
+        service.create_and_save_wallet("Local", path).unwrap();
+        let before = std::fs::read_to_string(path).unwrap();
+
+        let restored = service
+            .restore_backup(&backup, "source password", path)
+            .unwrap();
+        assert_eq!(restored.len(), 1);
+        assert_eq!(restored[0].id, source_wallet.id);
+        assert_eq!(
+            std::fs::read_to_string(format!("{path}.pre-restore")).unwrap(),
+            before
+        );
+        service.lock();
+        let mut reloaded = WalletService::load_store(path).unwrap();
+        assert!(reloaded.unlock_vault("local password").is_err());
+        reloaded.unlock_vault("source password").unwrap();
+    }
+
+    #[test]
+    fn backup_operations_require_an_unlocked_vault() {
+        let (_directory, path) = temp_path();
+        let path = path.to_str().unwrap();
+        let mut service = WalletService::new();
+        service.create_vault("vault password", path).unwrap();
+        let backup = service.export_backup().unwrap();
+        service.lock();
+        assert!(service.export_backup().is_err());
+        assert!(
+            service
+                .restore_backup(&backup, "vault password", path)
+                .is_err()
+        );
     }
 
     #[test]

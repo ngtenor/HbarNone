@@ -64,6 +64,44 @@ function AutoLockSlider({
   )
 }
 
+const iconProps = {
+  width: 26,
+  height: 26,
+  viewBox: '0 0 24 24',
+  fill: 'none',
+  stroke: 'currentColor',
+  strokeWidth: 2,
+  strokeLinecap: 'round',
+  strokeLinejoin: 'round',
+  'aria-hidden': true,
+} as const
+
+function PlusIcon() {
+  return (
+    <svg {...iconProps}>
+      <path d="M12 5v14M5 12h14" />
+    </svg>
+  )
+}
+
+function CogIcon() {
+  return (
+    <svg {...iconProps}>
+      <circle cx="12" cy="12" r="3" />
+      <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3h0a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9v0a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" />
+    </svg>
+  )
+}
+
+function PadlockIcon({ locked }: { locked: boolean }) {
+  return (
+    <svg {...iconProps}>
+      <rect x="4" y="11" width="16" height="10" rx="2" />
+      <path d={locked ? 'M8 11V7a4 4 0 0 1 8 0v4' : 'M8 11V7a4 4 0 0 1 7.5-1.9'} />
+    </svg>
+  )
+}
+
 function App() {
   const [wallets, setWallets] = useState<WalletSummary[]>([])
   const [activeTab, setActiveTab] = useState('home')
@@ -78,7 +116,27 @@ function App() {
   const [legacyPasswords, setLegacyPasswords] = useState<Record<string, string>>({})
   const [autoLockSeconds, setAutoLockSeconds] = useState(DEFAULT_AUTO_LOCK_SECONDS)
   const [isSubmittingVault, setIsSubmittingVault] = useState(false)
+  const [currentPassword, setCurrentPassword] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [newPasswordConfirmation, setNewPasswordConfirmation] = useState('')
+  const [isNewPasswordVisible, setIsNewPasswordVisible] = useState(false)
+  const [passwordChangeError, setPasswordChangeError] = useState('')
+  const [passwordChangeSuccess, setPasswordChangeSuccess] = useState(false)
+  const [isChangingPassword, setIsChangingPassword] = useState(false)
+  const [backupPassword, setBackupPassword] = useState('')
+  const [isBackupPasswordVisible, setIsBackupPasswordVisible] = useState(false)
+  const [hasConfirmedRestore, setHasConfirmedRestore] = useState(false)
+  const [backupError, setBackupError] = useState('')
+  const [backupMessage, setBackupMessage] = useState('')
+  const [restoreError, setRestoreError] = useState('')
+  const [restoreMessage, setRestoreMessage] = useState('')
+  const [isBackupBusy, setIsBackupBusy] = useState(false)
+  const [isRestoreBusy, setIsRestoreBusy] = useState(false)
   const [walletMode, setWalletMode] = useState<'create' | 'import'>('create')
+  const [renamingWalletId, setRenamingWalletId] = useState<string | null>(null)
+  const [renameValue, setRenameValue] = useState('')
+  const [renameError, setRenameError] = useState('')
+  const [isRenaming, setIsRenaming] = useState(false)
   const [name, setName] = useState('')
   const [importMnemonic, setImportMnemonic] = useState('')
   const [error, setError] = useState('')
@@ -111,11 +169,29 @@ function App() {
     setDeleteError('')
   }, [])
 
+  const clearPasswordChange = useCallback(() => {
+    setCurrentPassword('')
+    setNewPassword('')
+    setNewPasswordConfirmation('')
+    setIsNewPasswordVisible(false)
+    setPasswordChangeError('')
+    setPasswordChangeSuccess(false)
+    setBackupPassword('')
+    setIsBackupPasswordVisible(false)
+    setHasConfirmedRestore(false)
+    setBackupError('')
+    setBackupMessage('')
+    setRestoreError('')
+    setRestoreMessage('')
+  }, [])
+
   const lockVault = useCallback(async () => {
     if (lockRequestActive.current || vaultView !== 'unlocked') return
     lockRequestActive.current = true
     closeReveal()
     closeDelete()
+    clearPasswordChange()
+    setRenamingWalletId(null)
     setMnemonic('')
     setVaultPassword('')
     setVaultPasswordConfirmation('')
@@ -133,7 +209,7 @@ function App() {
       setVaultView('locked')
       lockRequestActive.current = false
     }
-  }, [closeDelete, closeReveal, vaultView])
+  }, [clearPasswordChange, closeDelete, closeReveal, vaultView])
 
   useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent) => {
@@ -158,6 +234,7 @@ function App() {
       setVaultPasswordConfirmation('')
       setLegacyPasswords({})
       setIsVaultPasswordVisible(false)
+      clearPasswordChange()
     }
     const hideWhenBackgrounded = () => {
       if (document.visibilityState !== 'visible') hideSensitiveDialog()
@@ -168,7 +245,7 @@ function App() {
       window.removeEventListener('blur', hideSensitiveDialog)
       document.removeEventListener('visibilitychange', hideWhenBackgrounded)
     }
-  }, [closeDelete, closeReveal])
+  }, [clearPasswordChange, closeDelete, closeReveal])
 
   useEffect(() => {
     let cancelled = false
@@ -362,6 +439,138 @@ function App() {
     }
   }
 
+  function handleGeneratePasswordChangePassphrase() {
+    try {
+      const passphrase = generatePassphrase()
+      setNewPassword(passphrase)
+      setNewPasswordConfirmation(passphrase)
+      setPasswordChangeError('')
+      setPasswordChangeSuccess(false)
+    } catch {
+      setPasswordChangeError('Could not generate a secure passphrase on this device.')
+    }
+  }
+
+  async function handleChangePassword(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setPasswordChangeSuccess(false)
+    if (newPassword !== newPasswordConfirmation) {
+      setPasswordChangeError('New vault passwords do not match.')
+      return
+    }
+    setPasswordChangeError('')
+    setIsChangingPassword(true)
+    try {
+      await invoke('change_vault_password', { currentPassword, newPassword })
+      setCurrentPassword('')
+      setNewPassword('')
+      setNewPasswordConfirmation('')
+      setPasswordChangeSuccess(true)
+    } catch (changeError) {
+      setPasswordChangeError(errorMessage(changeError))
+    } finally {
+      setIsChangingPassword(false)
+    }
+  }
+
+  async function handleExportBackup() {
+    setBackupError('')
+    setBackupMessage('')
+    setIsBackupBusy(true)
+    try {
+      const saved = await invoke<boolean>('export_vault_backup')
+      setBackupMessage(saved
+        ? 'Backup saved. Remember: it opens with your current vault password.'
+        : 'Backup cancelled.')
+    } catch (exportError) {
+      setBackupError(errorMessage(exportError))
+    } finally {
+      setIsBackupBusy(false)
+    }
+  }
+
+  async function handleRestoreBackup(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setRestoreError('')
+    setRestoreMessage('')
+    setIsRestoreBusy(true)
+    try {
+      const state = await invoke<VaultState | null>('restore_vault_backup', { backupPassword })
+      if (state) {
+        setWallets(state.wallets)
+        setAutoLockSeconds(state.autoLockSeconds)
+        setOpenWalletTabs([])
+        closeReveal()
+        closeDelete()
+        setVaultView('unlocked')
+        setRestoreMessage(`Backup restored with ${state.wallets.length} wallet(s).`)
+      } else {
+        setRestoreMessage('Restore cancelled.')
+      }
+      setBackupPassword('')
+      setHasConfirmedRestore(false)
+    } catch (failure) {
+      setRestoreError(errorMessage(failure))
+      setBackupPassword('')
+    } finally {
+      setIsRestoreBusy(false)
+    }
+  }
+
+  function renderRestoreForm(idPrefix: string, requireConfirmation: boolean) {
+    return (
+      <form onSubmit={handleRestoreBackup}>
+        <label htmlFor={`${idPrefix}-backup-password`}>Password of the backup file</label>
+        <div className="password-input-row">
+          <input
+            id={`${idPrefix}-backup-password`}
+            type={isBackupPasswordVisible ? 'text' : 'password'}
+            autoComplete="off"
+            maxLength={1024}
+            required
+            value={backupPassword}
+            onChange={(event) => setBackupPassword(event.target.value)}
+          />
+          <button
+            className="password-toggle"
+            type="button"
+            aria-label={isBackupPasswordVisible ? 'Hide backup password' : 'Show backup password'}
+            aria-pressed={isBackupPasswordVisible}
+            onClick={() => setIsBackupPasswordVisible((visible) => !visible)}
+          >
+            {isBackupPasswordVisible ? 'Hide' : 'Show'}
+          </button>
+        </div>
+        <p className="field-hint">
+          Enter the vault password that was in use when this backup was
+          created. It may differ from your current vault password.
+        </p>
+        {requireConfirmation && (
+          <label className="write-down-confirmation">
+            <input
+              type="checkbox"
+              checked={hasConfirmedRestore}
+              onChange={(event) => setHasConfirmedRestore(event.target.checked)}
+            />
+            <span>
+              I understand restoring replaces all wallets in this vault. The
+              current vault file is kept as a .pre-restore copy.
+            </span>
+          </label>
+        )}
+        {restoreError && <p className="error-message" role="alert">{restoreError}</p>}
+        {restoreMessage && <p className="field-hint" role="status">{restoreMessage}</p>}
+        <button
+          className="secondary-button"
+          type="submit"
+          disabled={isRestoreBusy || (requireConfirmation && !hasConfirmedRestore)}
+        >
+          {isRestoreBusy ? 'Restoring...' : 'Choose backup file and restore'}
+        </button>
+      </form>
+    )
+  }
+
   async function handleReveal() {
     if (!walletToReveal) return
 
@@ -382,6 +591,28 @@ function App() {
       }
     } finally {
       if (requestId === revealRequestId.current) setIsRevealing(false)
+    }
+  }
+
+  async function handleRenameWallet(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!renamingWalletId || isRenaming) return
+    setRenameError('')
+    setIsRenaming(true)
+    try {
+      const updated = await invoke<WalletSummary>('rename_wallet', {
+        walletId: renamingWalletId,
+        name: renameValue,
+      })
+      setWallets((existing) => existing.map((wallet) => (
+        wallet.id === updated.id ? updated : wallet
+      )))
+      setRenamingWalletId(null)
+      setRenameValue('')
+    } catch (renameFailure) {
+      setRenameError(errorMessage(renameFailure))
+    } finally {
+      setIsRenaming(false)
     }
   }
 
@@ -459,6 +690,7 @@ function App() {
 
   function closeSettingsTab() {
     setIsSettingsTabOpen(false)
+    clearPasswordChange()
     if (activeTab === 'settings') setActiveTab('home')
   }
 
@@ -476,15 +708,44 @@ function App() {
           <span className="brand-mark" aria-hidden="true">H</span>
           <span>HederaVault</span>
         </a>
-        <span className="network-label">
-          <span className="status-dot" aria-hidden="true" />
-          {vaultView === 'unlocked' ? 'Vault unlocked' : 'Local vault'}
-        </span>
-        {vaultView === 'unlocked' && (
-          <button className="secondary-button lock-button" type="button" onClick={() => void lockVault()}>
-            Lock vault
-          </button>
-        )}
+        <div className="topbar-actions">
+          {vaultView === 'locked' && (
+            <span className="topbar-icon locked-indicator" role="img" aria-label="Vault locked">
+              <PadlockIcon locked />
+            </span>
+          )}
+          {vaultView === 'unlocked' && (
+            <>
+              <button
+                className="topbar-icon"
+                type="button"
+                aria-label="Create / import wallet"
+                title="Create / import wallet"
+                onClick={openCreateTab}
+              >
+                <PlusIcon />
+              </button>
+              <button
+                className="topbar-icon"
+                type="button"
+                aria-label="Settings"
+                title="Settings"
+                onClick={openSettingsTab}
+              >
+                <CogIcon />
+              </button>
+              <button
+                className="topbar-icon"
+                type="button"
+                aria-label="Lock vault"
+                title="Lock vault"
+                onClick={() => void lockVault()}
+              >
+                <PadlockIcon locked={false} />
+              </button>
+            </>
+          )}
+        </div>
       </header>
 
       {vaultView === 'loading' && (
@@ -552,13 +813,13 @@ function App() {
               {isSubmittingVault ? 'Creating vault...' : 'Create vault'}
             </button>
           </form>
+          <h2>Or restore from a backup</h2>
+          {renderRestoreForm('gate', false)}
         </section>
       )}
 
       {vaultView === 'locked' && (
-        <section className="panel vault-gate">
-          <p className="eyebrow">VAULT LOCKED</p>
-          <h2>Unlock your vault</h2>
+        <section className="panel vault-gate unlock-gate" aria-label="Unlock vault">
           <form onSubmit={handleUnlockVault}>
             <label htmlFor="unlock-vault-password">Vault password</label>
             <input
@@ -572,7 +833,7 @@ function App() {
               onChange={(event) => setVaultPassword(event.target.value)}
             />
             {error && <p className="error-message" role="alert">{error}</p>}
-            <button className="primary-button" type="submit" disabled={isSubmittingVault}>
+            <button className="primary-button unlock-button" type="submit" disabled={isSubmittingVault}>
               {isSubmittingVault ? 'Unlocking...' : 'Unlock vault'}
             </button>
           </form>
@@ -767,25 +1028,10 @@ function App() {
               role="tabpanel"
               aria-labelledby="tab-home"
             >
-              <div className="home-heading">
-                <div>
-                  <p className="eyebrow">YOUR VAULT</p>
-                  <h1>Welcome home</h1>
-                </div>
-                <div className="home-actions">
-                  <button className="primary-button create-wallet-cta" type="button" onClick={openCreateTab}>
-                    Create / import wallet <span aria-hidden="true">+</span>
-                  </button>
-                  <button className="secondary-button settings-cta" type="button" onClick={openSettingsTab}>
-                    Settings
-                  </button>
-                </div>
-              </div>
               {error && <p className="error-message" role="alert">{error}</p>}
               <section className="home-wallets" aria-labelledby="home-wallets-heading">
                 <div className="panel-heading">
                   <div>
-                    <p className="eyebrow">IN THIS VAULT</p>
                     <h2 id="home-wallets-heading">Wallets</h2>
                   </div>
                   <span className="wallet-count">{wallets.length}</span>
@@ -837,6 +1083,125 @@ function App() {
                   Activity in the app resets the timer.
                 </p>
                 <AutoLockSlider seconds={autoLockSeconds} onChange={handleAutoLockChange} />
+              </section>
+              <section className="panel settings-panel create-panel" aria-labelledby="change-password-heading">
+                <div className="panel-heading">
+                  <div>
+                    <p className="eyebrow">SECURITY</p>
+                    <h2 id="change-password-heading">Change vault password</h2>
+                  </div>
+                </div>
+                <p className="dialog-copy">
+                  Your wallets are not re-encrypted; only the key protecting
+                  them is re-wrapped with the new password. A forgotten vault
+                  password still cannot be reset.
+                </p>
+                <form onSubmit={handleChangePassword}>
+                  <label htmlFor="current-vault-password">Current vault password</label>
+                  <input
+                    id="current-vault-password"
+                    type="password"
+                    autoComplete="current-password"
+                    maxLength={1024}
+                    required
+                    value={currentPassword}
+                    onChange={(event) => setCurrentPassword(event.target.value)}
+                  />
+                  <label htmlFor="new-vault-password">New vault password</label>
+                  <div className="password-input-row">
+                    <input
+                      id="new-vault-password"
+                      type={isNewPasswordVisible ? 'text' : 'password'}
+                      autoComplete="new-password"
+                      maxLength={1024}
+                      required
+                      value={newPassword}
+                      onChange={(event) => setNewPassword(event.target.value)}
+                    />
+                    <button
+                      className="password-toggle"
+                      type="button"
+                      aria-label={isNewPasswordVisible ? 'Hide new vault password' : 'Show new vault password'}
+                      aria-pressed={isNewPasswordVisible}
+                      onClick={() => setIsNewPasswordVisible((visible) => !visible)}
+                    >
+                      {isNewPasswordVisible ? 'Hide' : 'Show'}
+                    </button>
+                  </div>
+                  <label htmlFor="new-vault-password-confirmation">Confirm new vault password</label>
+                  <input
+                    id="new-vault-password-confirmation"
+                    type={isNewPasswordVisible ? 'text' : 'password'}
+                    autoComplete="new-password"
+                    maxLength={1024}
+                    required
+                    value={newPasswordConfirmation}
+                    onChange={(event) => setNewPasswordConfirmation(event.target.value)}
+                  />
+                  <button
+                    className="secondary-button generate-passphrase"
+                    type="button"
+                    disabled={isChangingPassword}
+                    onClick={handleGeneratePasswordChangePassphrase}
+                  >
+                    Generate six-word passphrase
+                  </button>
+                  <p className="field-hint">
+                    Use Show to read a generated passphrase and write it down
+                    before submitting. It is cleared if you leave this window
+                    or close this tab.
+                  </p>
+                  {passwordChangeError && (
+                    <p className="error-message" role="alert">{passwordChangeError}</p>
+                  )}
+                  {passwordChangeSuccess && (
+                    <p className="field-hint" role="status">Vault password changed.</p>
+                  )}
+                  <button className="primary-button" type="submit" disabled={isChangingPassword}>
+                    {isChangingPassword ? 'Changing password...' : 'Change password'}
+                  </button>
+                </form>
+              </section>
+
+              <section className="panel create-panel" aria-labelledby="backup-heading">
+                <div className="panel-heading">
+                  <div>
+                    <p className="eyebrow">BACKUP</p>
+                    <h2 id="backup-heading">Back up your vault</h2>
+                  </div>
+                </div>
+                <p className="dialog-copy">
+                  Saves a copy of your vault to a file you choose. The file is
+                  encrypted and contains no readable recovery phrases. It is
+                  protected by your current vault password, so no password is
+                  needed here, but you will need that password to restore it.
+                  Store the file somewhere safe, such as an external drive.
+                </p>
+                {backupError && <p className="error-message" role="alert">{backupError}</p>}
+                {backupMessage && <p className="field-hint" role="status">{backupMessage}</p>}
+                <button
+                  className="secondary-button"
+                  type="button"
+                  disabled={isBackupBusy}
+                  onClick={() => void handleExportBackup()}
+                >
+                  {isBackupBusy ? 'Saving...' : 'Choose location and save backup'}
+                </button>
+              </section>
+
+              <section className="panel create-panel" aria-labelledby="restore-heading">
+                <div className="panel-heading">
+                  <div>
+                    <p className="eyebrow">RESTORE</p>
+                    <h2 id="restore-heading">Restore from a backup</h2>
+                  </div>
+                </div>
+                <p className="dialog-copy">
+                  Replaces every wallet in this vault with the wallets in a
+                  backup file. Your current vault password will be replaced by
+                  the backup's password.
+                </p>
+                {renderRestoreForm('settings', true)}
               </section>
             </section>
           )}
@@ -908,7 +1273,7 @@ function App() {
                 <input
                   id="wallet-name"
                   autoComplete="off"
-                  maxLength={64}
+                  maxLength={40}
                   placeholder="e.g. Personal"
                   required
                   value={name}
@@ -944,7 +1309,52 @@ function App() {
                   <span className="wallet-icon wallet-icon-large" aria-hidden="true">H</span>
                 </div>
                 {error && <p className="error-message" role="alert">{error}</p>}
+                {renamingWalletId === wallet.id && (
+                  <form className="rename-form" onSubmit={handleRenameWallet}>
+                    <label htmlFor="rename-wallet-name">New wallet name</label>
+                    <input
+                      id="rename-wallet-name"
+                      autoComplete="off"
+                      maxLength={40}
+                      required
+                      autoFocus
+                      value={renameValue}
+                      onChange={(event) => setRenameValue(event.target.value)}
+                    />
+                    <p className="field-hint">
+                      Up to 40 characters. Names must be unique within the vault, ignoring capitalisation.
+                    </p>
+                    {renameError && <p className="error-message" role="alert">{renameError}</p>}
+                    <div className="wallet-tab-actions">
+                      <button className="primary-button" type="submit" disabled={isRenaming}>
+                        {isRenaming ? 'Saving...' : 'Save name'}
+                      </button>
+                      <button
+                        className="secondary-button"
+                        type="button"
+                        disabled={isRenaming}
+                        onClick={() => {
+                          setRenamingWalletId(null)
+                          setRenameError('')
+                        }}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </form>
+                )}
                 <div className="wallet-tab-actions">
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    onClick={() => {
+                      setRenameValue(wallet.name)
+                      setRenameError('')
+                      setRenamingWalletId(wallet.id)
+                    }}
+                  >
+                    Rename wallet
+                  </button>
                   <button
                     className="reveal-button"
                     type="button"
