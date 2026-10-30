@@ -56,7 +56,7 @@
    - [x] Add English BIP39 mnemonic import with validation and encryption into a new wallet record.
    - [x] Keep imported mnemonic/private-key material out of normal command responses and logs.
    - [x] Add vault password change in Settings: verifies the current password and re-wraps the master key under a new salt and password, saving atomically and leaving the vault unchanged if the save fails. Unit-tested and manually verified in the release app. The new-password field has a Show/Hide toggle so a generated passphrase can be read and written down before submitting.
-   - [ ] Add an encrypted, restorable backup export and restore, protected by the vault password, so a vault can be moved between machines. Never write seed words to a plaintext file.
+   - [x] Add encrypted backup export and restore, as separate Settings panels. A backup is the encrypted vault file (no plaintext phrases), protected by the vault password in use at export time; restore replaces all wallets, keeps a `.pre-restore` copy, and also works from the create-vault screen so a vault can move between machines. Exported files are `0600` on Unix. Unit-tested (round trip, wrong password, bad/oversized files, unchanged vault on failure, `.pre-restore`, locked-vault rejection) and manually verified on Windows. Still to check on Ubuntu: GTK file dialogs, file permissions, and Windows-to-Linux restore.
    - [ ] Detect duplicate imports of the same recovery phrase and warn or block.
    - [ ] Add wallet rename.
 4. **Automated testing and CI**
@@ -72,8 +72,8 @@
    - [x] Add a `.gitattributes` file to settle the LF/CRLF warnings.
    - [ ] Add a screenshot or short walkthrough to the README.
 
-Suggested order: run the Linux checks, then
-encrypted backup and the remaining recovery items.
+Suggested order: run the Linux checks (including the backup dialogs and a
+cross-platform restore), then the remaining recovery items.
 
 On the weekend Linux machine, run the workspace tests and checks and verify the
 desktop app builds and launches, and verify Linux app-data permissions. Do not
@@ -95,12 +95,13 @@ Password change and encrypted backup export/restore are now tracked under
 ## Validation status
 The source security reviews found no substantiated vulnerabilities. The
 shared-vault architecture, legacy-wallet migration, inactivity auto-lock,
-unlock brute-force delay, vault password change, HOME/wallet/create-import
+unlock brute-force delay, vault password change, encrypted backup/restore,
+HOME/wallet/create-import
 tabs, wallet-specific reveal/delete actions, copy-blocked recovery-phrase
 display, and Settings tab are implemented, with a stricter release CSP and
 Linux `0700`/`0600` permission hardening. The latest standalone x64 Windows
 app and NSIS/MSI installers include these changes. `cargo fmt --all -- --check`,
-`cargo test --workspace` (19 wallet-core unit tests and 1 persistence
+`cargo test --workspace` (23 wallet-core unit tests and 1 persistence
 integration test), frontend lint/build, and `cargo check --workspace` passed
 locally, and CI passed on Windows and Ubuntu for PR #1. Tests cover encryption,
 legacy migration and failure preservation, locked persistence, auto-lock
@@ -109,8 +110,9 @@ password change.
 
 Manually verified on Windows: vault creation/unlock/lock, auto-lock, tabs,
 Settings, wallet deletion and persistence, standalone launch, clearing on
-minimise, copy blocking, CSP rendering, unlock delay, app-data permissions, and
-vault password change. Still outstanding: Linux
+minimise, copy blocking, CSP rendering, unlock delay, app-data permissions,
+vault password change, and encrypted backup/restore (release builds also no
+longer open a console window). Still outstanding: Linux
 permission checks and app testing, and an automated desktop-app restart test.
 Build note: this ARM64 Windows machine needs the x64 Rust toolchain
 (`RUSTUP_TOOLCHAIN=stable-x86_64-pc-windows-msvc`) and the x64 Visual Studio

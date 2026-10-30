@@ -85,6 +85,15 @@ function App() {
   const [passwordChangeError, setPasswordChangeError] = useState('')
   const [passwordChangeSuccess, setPasswordChangeSuccess] = useState(false)
   const [isChangingPassword, setIsChangingPassword] = useState(false)
+  const [backupPassword, setBackupPassword] = useState('')
+  const [isBackupPasswordVisible, setIsBackupPasswordVisible] = useState(false)
+  const [hasConfirmedRestore, setHasConfirmedRestore] = useState(false)
+  const [backupError, setBackupError] = useState('')
+  const [backupMessage, setBackupMessage] = useState('')
+  const [restoreError, setRestoreError] = useState('')
+  const [restoreMessage, setRestoreMessage] = useState('')
+  const [isBackupBusy, setIsBackupBusy] = useState(false)
+  const [isRestoreBusy, setIsRestoreBusy] = useState(false)
   const [walletMode, setWalletMode] = useState<'create' | 'import'>('create')
   const [name, setName] = useState('')
   const [importMnemonic, setImportMnemonic] = useState('')
@@ -125,6 +134,13 @@ function App() {
     setIsNewPasswordVisible(false)
     setPasswordChangeError('')
     setPasswordChangeSuccess(false)
+    setBackupPassword('')
+    setIsBackupPasswordVisible(false)
+    setHasConfirmedRestore(false)
+    setBackupError('')
+    setBackupMessage('')
+    setRestoreError('')
+    setRestoreMessage('')
   }, [])
 
   const lockVault = useCallback(async () => {
@@ -414,6 +430,105 @@ function App() {
     }
   }
 
+  async function handleExportBackup() {
+    setBackupError('')
+    setBackupMessage('')
+    setIsBackupBusy(true)
+    try {
+      const saved = await invoke<boolean>('export_vault_backup')
+      setBackupMessage(saved
+        ? 'Backup saved. Remember: it opens with your current vault password.'
+        : 'Backup cancelled.')
+    } catch (exportError) {
+      setBackupError(errorMessage(exportError))
+    } finally {
+      setIsBackupBusy(false)
+    }
+  }
+
+  async function handleRestoreBackup(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setRestoreError('')
+    setRestoreMessage('')
+    setIsRestoreBusy(true)
+    try {
+      const state = await invoke<VaultState | null>('restore_vault_backup', { backupPassword })
+      if (state) {
+        setWallets(state.wallets)
+        setAutoLockSeconds(state.autoLockSeconds)
+        setOpenWalletTabs([])
+        setActiveTab('home')
+        closeReveal()
+        closeDelete()
+        setVaultView('unlocked')
+        setRestoreMessage(`Backup restored with ${state.wallets.length} wallet(s).`)
+      } else {
+        setRestoreMessage('Restore cancelled.')
+      }
+      setBackupPassword('')
+      setHasConfirmedRestore(false)
+    } catch (failure) {
+      setRestoreError(errorMessage(failure))
+      setBackupPassword('')
+    } finally {
+      setIsRestoreBusy(false)
+    }
+  }
+
+  function renderRestoreForm(idPrefix: string, requireConfirmation: boolean) {
+    return (
+      <form onSubmit={handleRestoreBackup}>
+        <label htmlFor={`${idPrefix}-backup-password`}>Password of the backup file</label>
+        <div className="password-input-row">
+          <input
+            id={`${idPrefix}-backup-password`}
+            type={isBackupPasswordVisible ? 'text' : 'password'}
+            autoComplete="off"
+            maxLength={1024}
+            required
+            value={backupPassword}
+            onChange={(event) => setBackupPassword(event.target.value)}
+          />
+          <button
+            className="password-toggle"
+            type="button"
+            aria-label={isBackupPasswordVisible ? 'Hide backup password' : 'Show backup password'}
+            aria-pressed={isBackupPasswordVisible}
+            onClick={() => setIsBackupPasswordVisible((visible) => !visible)}
+          >
+            {isBackupPasswordVisible ? 'Hide' : 'Show'}
+          </button>
+        </div>
+        <p className="field-hint">
+          Enter the vault password that was in use when this backup was
+          created. It may differ from your current vault password.
+        </p>
+        {requireConfirmation && (
+          <label className="write-down-confirmation">
+            <input
+              type="checkbox"
+              checked={hasConfirmedRestore}
+              onChange={(event) => setHasConfirmedRestore(event.target.checked)}
+            />
+            <span>
+              I understand restoring replaces all wallets in this vault. The
+              current vault file is kept as a .pre-restore copy.
+            </span>
+          </label>
+        )}
+        {restoreError && <p className="error-message" role="alert">{restoreError}</p>}
+        {restoreMessage && <p className="field-hint" role="status">{restoreMessage}</p>}
+        <button
+          className="secondary-button"
+          type="submit"
+          disabled={isRestoreBusy || (requireConfirmation && !hasConfirmedRestore)}
+        >
+          {isRestoreBusy ? 'Restoring...' : 'Choose backup file and restore'}
+        </button>
+      </form>
+    )
+  }
+
   async function handleReveal() {
     if (!walletToReveal) return
 
@@ -605,6 +720,8 @@ function App() {
               {isSubmittingVault ? 'Creating vault...' : 'Create vault'}
             </button>
           </form>
+          <h2>Or restore from a backup</h2>
+          {renderRestoreForm('gate', false)}
         </section>
       )}
 
@@ -968,6 +1085,47 @@ function App() {
                     {isChangingPassword ? 'Changing password...' : 'Change password'}
                   </button>
                 </form>
+              </section>
+
+              <section className="panel create-panel" aria-labelledby="backup-heading">
+                <div className="panel-heading">
+                  <div>
+                    <p className="eyebrow">BACKUP</p>
+                    <h2 id="backup-heading">Back up your vault</h2>
+                  </div>
+                </div>
+                <p className="dialog-copy">
+                  Saves a copy of your vault to a file you choose. The file is
+                  encrypted and contains no readable recovery phrases. It is
+                  protected by your current vault password, so no password is
+                  needed here, but you will need that password to restore it.
+                  Store the file somewhere safe, such as an external drive.
+                </p>
+                {backupError && <p className="error-message" role="alert">{backupError}</p>}
+                {backupMessage && <p className="field-hint" role="status">{backupMessage}</p>}
+                <button
+                  className="secondary-button"
+                  type="button"
+                  disabled={isBackupBusy}
+                  onClick={() => void handleExportBackup()}
+                >
+                  {isBackupBusy ? 'Saving...' : 'Choose location and save backup'}
+                </button>
+              </section>
+
+              <section className="panel create-panel" aria-labelledby="restore-heading">
+                <div className="panel-heading">
+                  <div>
+                    <p className="eyebrow">RESTORE</p>
+                    <h2 id="restore-heading">Restore from a backup</h2>
+                  </div>
+                </div>
+                <p className="dialog-copy">
+                  Replaces every wallet in this vault with the wallets in a
+                  backup file. Your current vault password will be replaced by
+                  the backup's password.
+                </p>
+                {renderRestoreForm('settings', true)}
               </section>
             </section>
           )}

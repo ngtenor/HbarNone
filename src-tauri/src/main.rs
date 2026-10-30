@@ -1,8 +1,13 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use std::{path::PathBuf, sync::Mutex};
 
 use serde::{Deserialize, Serialize};
 use tauri::{Manager, State};
-use wallet_core::wallet_service::{LegacyWalletPassword, WalletService, WalletSummary};
+use tauri_plugin_dialog::DialogExt;
+use wallet_core::wallet_service::{
+    LegacyWalletPassword, MAX_BACKUP_BYTES, WalletService, WalletSummary,
+};
 use zeroize::Zeroizing;
 
 struct AppState {
@@ -131,6 +136,71 @@ fn change_vault_password(
 }
 
 #[tauri::command]
+async fn export_vault_backup(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<bool, String> {
+    let backup = lock_service(&state)?.export_backup()?;
+    let Some(selected) = app
+        .dialog()
+        .file()
+        .set_title("Save encrypted vault backup")
+        .set_file_name("hedera-vault-backup.json")
+        .add_filter("HederaVault backup", &["json"])
+        .blocking_save_file()
+    else {
+        return Ok(false);
+    };
+    let path = selected
+        .into_path()
+        .map_err(|e| format!("invalid backup location: {e}"))?;
+    std::fs::write(&path, backup).map_err(|e| format!("could not write the backup file: {e}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| format!("could not restrict backup file permissions: {e}"))?;
+    }
+    Ok(true)
+}
+
+#[tauri::command]
+async fn restore_vault_backup(
+    backup_password: String,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Option<VaultState>, String> {
+    let backup_password = Zeroizing::new(backup_password);
+    let Some(selected) = app
+        .dialog()
+        .file()
+        .set_title("Choose an encrypted vault backup")
+        .add_filter("HederaVault backup", &["json"])
+        .blocking_pick_file()
+    else {
+        return Ok(None);
+    };
+    let path = selected
+        .into_path()
+        .map_err(|e| format!("invalid backup location: {e}"))?;
+    let size = std::fs::metadata(&path)
+        .map_err(|e| format!("could not read the backup file: {e}"))?
+        .len();
+    if size > MAX_BACKUP_BYTES as u64 {
+        return Err("backup file is too large".to_string());
+    }
+    let contents = std::fs::read_to_string(&path)
+        .map_err(|_| "the selected file is not a HederaVault backup".to_string())?;
+    let mut service = lock_service(&state)?;
+    service.restore_backup(
+        &contents,
+        backup_password.as_str(),
+        &state.store_path.to_string_lossy(),
+    )?;
+    unlocked_state(&mut service).map(Some)
+}
+
+#[tauri::command]
 fn set_auto_lock_seconds(seconds: u32, state: State<'_, AppState>) -> Result<u32, String> {
     let mut service = lock_service(&state)?;
     service.set_auto_lock_seconds(seconds, &state.store_path.to_string_lossy())?;
@@ -210,6 +280,7 @@ fn reveal_wallet_mnemonic(wallet_id: String, state: State<'_, AppState>) -> Resu
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let app_data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&app_data_dir)?;
@@ -242,6 +313,8 @@ fn main() {
             migrate_legacy_vault,
             set_auto_lock_seconds,
             change_vault_password,
+            export_vault_backup,
+            restore_vault_backup,
             record_activity,
             lock_vault,
             create_wallet,

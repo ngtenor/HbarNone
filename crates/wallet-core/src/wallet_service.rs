@@ -14,7 +14,7 @@ use std::{
 };
 use zeroize::Zeroizing;
 
-const MAX_BACKUP_BYTES: usize = 10 * 1024 * 1024;
+pub const MAX_BACKUP_BYTES: usize = 10 * 1024 * 1024;
 const FREE_UNLOCK_ATTEMPTS: u32 = 3;
 const BASE_UNLOCK_DELAY_SECONDS: u64 = 5;
 const MAX_UNLOCK_DELAY_SECONDS: u64 = 300;
@@ -307,14 +307,17 @@ impl WalletService {
     }
 
     /// Replaces the current vault with a verified backup. The previous vault
-    /// file is kept beside it as `<path>.pre-restore`.
+    /// file is kept beside it as `<path>.pre-restore`. A restore is allowed
+    /// while the vault is unlocked, or when no vault exists yet.
     pub fn restore_backup(
         &mut self,
         backup_json: &str,
         backup_password: &str,
         path: &str,
     ) -> Result<Vec<WalletSummary>, String> {
-        self.ensure_unlocked()?;
+        if self.vault_status() != "uninitialized" {
+            self.ensure_unlocked()?;
+        }
         if backup_password.is_empty() || backup_password.len() > 1024 {
             return Err("backup password must contain between 1 and 1024 bytes".to_string());
         }
@@ -663,6 +666,140 @@ mod tests {
         service.create_vault("vault password", path).unwrap();
         let mode = std::fs::metadata(path).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[test]
+    fn backup_round_trips_to_a_new_machine_without_plaintext() {
+        let (_source_directory, source_path) = temp_path();
+        let source_path = source_path.to_str().unwrap();
+        let mut source = WalletService::new();
+        source.create_vault("backup password", source_path).unwrap();
+        let first = source.create_and_save_wallet("First", source_path).unwrap();
+        let second = source
+            .create_and_save_wallet("Second", source_path)
+            .unwrap();
+        let first_phrase = source.reveal_mnemonic(&first.id).unwrap().to_string();
+        let backup = source.export_backup().unwrap();
+        assert!(!backup.contains(&first_phrase));
+        assert!(!backup.contains("First"));
+
+        let (_target_directory, target_path) = temp_path();
+        let target_path = target_path.to_str().unwrap();
+        let mut target = WalletService::new();
+        assert_eq!(target.vault_status(), "uninitialized");
+        let restored = target
+            .restore_backup(&backup, "backup password", target_path)
+            .unwrap();
+        assert_eq!(restored.len(), 2);
+        assert_eq!(target.vault_status(), "unlocked");
+        assert_eq!(
+            target.reveal_mnemonic(&first.id).unwrap().as_str(),
+            first_phrase
+        );
+        assert!(
+            target
+                .list_wallets()
+                .unwrap()
+                .iter()
+                .any(|w| w.id == second.id)
+        );
+        target.lock();
+
+        let mut reloaded = WalletService::load_store(target_path).unwrap();
+        reloaded.unlock_vault("backup password").unwrap();
+        assert_eq!(reloaded.list_wallets().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn restore_rejects_bad_backups_and_leaves_the_vault_unchanged() {
+        let (_directory, path) = temp_path();
+        let path = path.to_str().unwrap();
+        let mut service = WalletService::new();
+        service.create_vault("vault password", path).unwrap();
+        service.create_and_save_wallet("Keep", path).unwrap();
+        let backup = service.export_backup().unwrap();
+        let before = std::fs::read_to_string(path).unwrap();
+
+        assert!(
+            service
+                .restore_backup(&backup, "wrong password", path)
+                .is_err()
+        );
+        assert!(
+            service
+                .restore_backup("not json", "vault password", path)
+                .is_err()
+        );
+        assert!(
+            service
+                .restore_backup("{\"hello\":1}", "vault password", path)
+                .is_err()
+        );
+        assert!(service.restore_backup(&backup, "", path).is_err());
+        let oversized = " ".repeat(super::MAX_BACKUP_BYTES + 1);
+        assert!(
+            service
+                .restore_backup(&oversized, "vault password", path)
+                .is_err()
+        );
+        let invalid_path = format!("{path}.missing/vault.json");
+        assert!(
+            service
+                .restore_backup(&backup, "vault password", &invalid_path)
+                .is_err()
+        );
+        assert_eq!(std::fs::read_to_string(path).unwrap(), before);
+        assert_eq!(service.vault_status(), "unlocked");
+        assert_eq!(service.list_wallets().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn restore_over_an_existing_vault_keeps_a_pre_restore_copy() {
+        let (_source_directory, source_path) = temp_path();
+        let source_path = source_path.to_str().unwrap();
+        let mut source = WalletService::new();
+        source.create_vault("source password", source_path).unwrap();
+        let source_wallet = source
+            .create_and_save_wallet("Source", source_path)
+            .unwrap();
+        let backup = source.export_backup().unwrap();
+
+        let (_directory, path) = temp_path();
+        let path = path.to_str().unwrap();
+        let mut service = WalletService::new();
+        service.create_vault("local password", path).unwrap();
+        service.create_and_save_wallet("Local", path).unwrap();
+        let before = std::fs::read_to_string(path).unwrap();
+
+        let restored = service
+            .restore_backup(&backup, "source password", path)
+            .unwrap();
+        assert_eq!(restored.len(), 1);
+        assert_eq!(restored[0].id, source_wallet.id);
+        assert_eq!(
+            std::fs::read_to_string(format!("{path}.pre-restore")).unwrap(),
+            before
+        );
+        service.lock();
+        let mut reloaded = WalletService::load_store(path).unwrap();
+        assert!(reloaded.unlock_vault("local password").is_err());
+        reloaded.unlock_vault("source password").unwrap();
+    }
+
+    #[test]
+    fn backup_operations_require_an_unlocked_vault() {
+        let (_directory, path) = temp_path();
+        let path = path.to_str().unwrap();
+        let mut service = WalletService::new();
+        service.create_vault("vault password", path).unwrap();
+        let backup = service.export_backup().unwrap();
+        service.lock();
+        assert!(service.export_backup().is_err());
+        assert!(
+            service
+                .restore_backup(&backup, "vault password", path)
+                .is_err()
+        );
     }
 
     #[test]
