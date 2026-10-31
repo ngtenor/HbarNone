@@ -3,7 +3,7 @@ import type { FormEvent, KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { generatePassphrase } from './passphrase'
 import { TestnetPanel } from './TestnetPanel'
-import type { WalletSummary } from './types'
+import type { KeyDetection, WalletKeys, WalletSummary } from './types'
 import './App.css'
 
 type VaultView = 'loading' | 'uninitialized' | 'legacy' | 'locked' | 'unlocked'
@@ -138,6 +138,9 @@ function App() {
   const [isRenaming, setIsRenaming] = useState(false)
   const [name, setName] = useState('')
   const [importMnemonic, setImportMnemonic] = useState('')
+  const [importKind, setImportKind] = useState<'phrase' | 'key'>('phrase')
+  const [importKeyType, setImportKeyType] = useState<'auto' | 'ed25519' | 'ecdsa'>('auto')
+  const [walletKeys, setWalletKeys] = useState<{ id: string, keys: WalletKeys } | null>(null)
   const [error, setError] = useState('')
   const [isSavingWallet, setIsSavingWallet] = useState(false)
   const [walletToReveal, setWalletToReveal] = useState<WalletSummary | null>(null)
@@ -231,6 +234,13 @@ function App() {
     setHasConfirmedErase(false)
     setEraseError('')
     setRenamingWalletId(null)
+    setName('')
+    setImportMnemonic('')
+    setImportKind('phrase')
+    setImportKeyType('auto')
+    setWalletMode('create')
+    setWalletKeys(null)
+    setError('')
     setMnemonic('')
     setVaultPassword('')
     setVaultPasswordConfirmation('')
@@ -311,6 +321,21 @@ function App() {
       window.clearTimeout(autoLockSaveTimer.current)
     }
   }, [])
+
+  useEffect(() => {
+    if (vaultView !== 'unlocked' || !wallets.some((wallet) => wallet.id === activeTab)) return
+    let cancelled = false
+    void invoke<WalletKeys>('get_wallet_keys', { walletId: activeTab })
+      .then((keys) => {
+        if (!cancelled) setWalletKeys({ id: activeTab, keys })
+      })
+      .catch(() => {
+        if (!cancelled) setWalletKeys(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [activeTab, vaultView, wallets])
 
   useEffect(() => {
     if (vaultView !== 'unlocked') return
@@ -449,12 +474,52 @@ function App() {
     setError('')
     setIsSavingWallet(true)
     try {
-      const wallet = walletMode === 'create'
-        ? await invoke<WalletSummary>('create_wallet', { name })
-        : await invoke<WalletSummary>('import_wallet', {
+      let wallet: WalletSummary
+      let detectedAccounts: string[] = []
+      if (walletMode === 'create') {
+        wallet = await invoke<WalletSummary>('create_wallet', { name })
+      } else if (importKind === 'phrase') {
+        wallet = await invoke<WalletSummary>('import_wallet', {
           name,
           mnemonic: importMnemonic,
         })
+      } else {
+        let keyType: 'ed25519' | 'ecdsa' | null = importKeyType === 'auto' ? null : importKeyType
+        if (keyType === null) {
+          let detection: KeyDetection
+          try {
+            detection = await invoke<KeyDetection>('detect_private_key_type', {
+              privateKey: importMnemonic,
+            })
+          } catch (detectError) {
+            setError(`${errorMessage(detectError)} If you know the key type, choose it above.`)
+            return
+          }
+          if (!detection.keyType) {
+            setError(
+              'Could not tell which key type this is. Choose Ed25519 or ECDSA above and try again.',
+            )
+            return
+          }
+          keyType = detection.keyType
+          detectedAccounts = detection.accounts
+        }
+        wallet = await invoke<WalletSummary>('import_private_key', {
+          name,
+          privateKey: importMnemonic,
+          keyType,
+        })
+        if (detectedAccounts.length === 1) {
+          try {
+            wallet = await invoke<WalletSummary>('link_wallet_account', {
+              walletId: wallet.id,
+              accountId: detectedAccounts[0],
+            })
+          } catch {
+            // The wallet is saved; the account can be linked from its tab.
+          }
+        }
+      }
       setWallets((existing) => [...existing, wallet])
       setName('')
       setImportMnemonic('')
@@ -542,6 +607,12 @@ function App() {
       clearPasswordChange()
       setHasConfirmedErase(false)
       setRenamingWalletId(null)
+      setName('')
+      setImportMnemonic('')
+      setImportKind('phrase')
+      setImportKeyType('auto')
+      setWalletMode('create')
+      setWalletKeys(null)
       setMnemonic('')
       setVaultPassword('')
       setVaultPasswordConfirmation('')
@@ -1404,6 +1475,37 @@ function App() {
                 </div>
 
                 {walletMode === 'import' && (
+                  <div className="mode-switch" role="group" aria-label="What to import">
+                    <button
+                      className={importKind === 'phrase' ? 'mode-button active' : 'mode-button'}
+                      type="button"
+                      aria-pressed={importKind === 'phrase'}
+                      disabled={isSavingWallet}
+                      onClick={() => {
+                        setImportKind('phrase')
+                        setImportMnemonic('')
+                        setError('')
+                      }}
+                    >
+                      Recovery phrase
+                    </button>
+                    <button
+                      className={importKind === 'key' ? 'mode-button active' : 'mode-button'}
+                      type="button"
+                      aria-pressed={importKind === 'key'}
+                      disabled={isSavingWallet}
+                      onClick={() => {
+                        setImportKind('key')
+                        setImportMnemonic('')
+                        setError('')
+                      }}
+                    >
+                      Private key
+                    </button>
+                  </div>
+                )}
+
+                {walletMode === 'import' && importKind === 'phrase' && (
                   <>
                     <label htmlFor="import-mnemonic">English BIP39 recovery phrase</label>
                     <textarea
@@ -1418,6 +1520,40 @@ function App() {
                     />
                     <p className="field-hint">
                       The phrase is validated and encrypted in this device’s local vault. Do not import a phrase for a wallet containing real funds.
+                    </p>
+                  </>
+                )}
+
+                {walletMode === 'import' && importKind === 'key' && (
+                  <>
+                    <label htmlFor="import-private-key">Private key (hex or DER)</label>
+                    <input
+                      id="import-private-key"
+                      type="password"
+                      autoComplete="off"
+                      autoCapitalize="none"
+                      maxLength={1024}
+                      spellCheck={false}
+                      required
+                      value={importMnemonic}
+                      onChange={(event) => setImportMnemonic(event.target.value)}
+                    />
+                    <label htmlFor="import-key-type">Key type</label>
+                    <select
+                      id="import-key-type"
+                      value={importKeyType}
+                      onChange={(event) => setImportKeyType(
+                        event.target.value as 'auto' | 'ed25519' | 'ecdsa',
+                      )}
+                    >
+                      <option value="auto">Detect (looks the key up on Testnet)</option>
+                      <option value="ed25519">Ed25519</option>
+                      <option value="ecdsa">ECDSA (secp256k1)</option>
+                    </select>
+                    <p className="field-hint">
+                      A DER key states its own type. For a bare hex key, Detect sends only the
+                      public keys to the Testnet mirror node. The key is encrypted in this
+                      device’s local vault. Do not import a key for an account holding real funds.
                     </p>
                   </>
                 )}
@@ -1462,6 +1598,25 @@ function App() {
                   <span className="wallet-icon wallet-icon-large" aria-hidden="true">H</span>
                 </div>
                 {error && <p className="error-message" role="alert">{error}</p>}
+                <dl className="wallet-key-details">
+                  <dt>Key type</dt>
+                  <dd>
+                    {wallet.key_type === 'ecdsa' ? 'ECDSA (secp256k1)' : 'Ed25519'}
+                    {wallet.secret_kind === 'privatekey' ? ', imported private key' : ', recovery phrase'}
+                  </dd>
+                  {walletKeys?.id === wallet.id && (
+                    <>
+                      <dt>Public key</dt>
+                      <dd className="mono-value">{walletKeys.keys.publicKey}</dd>
+                      {walletKeys.keys.evmAddress && (
+                        <>
+                          <dt>EVM address</dt>
+                          <dd className="mono-value">{walletKeys.keys.evmAddress}</dd>
+                        </>
+                      )}
+                    </>
+                  )}
+                </dl>
                 {renamingWalletId === wallet.id && (
                   <form className="rename-form" onSubmit={handleRenameWallet}>
                     <label htmlFor="rename-wallet-name">New wallet name</label>
@@ -1517,7 +1672,7 @@ function App() {
                       setWalletToReveal(wallet)
                     }}
                   >
-                    Reveal recovery phrase
+                    Reveal {wallet.secret_kind === 'privatekey' ? 'private key' : 'recovery phrase'}
                   </button>
                   <button
                     className="delete-wallet-button"
@@ -1592,7 +1747,9 @@ function App() {
                   onContextMenu={(event) => event.preventDefault()}
                   onDragStart={(event) => event.preventDefault()}
                 >
-                  {mnemonic.split(' ').map((word, index) => (
+                  {walletToReveal.secret_kind === 'privatekey' ? (
+                    <li className="private-key-value"><strong>{mnemonic}</strong></li>
+                  ) : mnemonic.split(' ').map((word, index) => (
                     <li key={`${index}-${word}`}>
                       <span>{index + 1}</span>
                       <strong>{word}</strong>
