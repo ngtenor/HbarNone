@@ -99,6 +99,11 @@ function installBackend(overrides: Partial<Backend> = {}) {
         return backend.overview
       case 'export_vault_backup':
         return backend.exportSaved
+      case 'backup_and_erase_vault':
+        if (!backend.exportSaved) return null
+        backend.wallets = []
+        backend.status = 'uninitialized'
+        return { status: 'uninitialized', wallets: [], legacyWallets: [], autoLockSeconds: 300 }
       case 'restore_vault_backup':
         if (backend.restoreCancelled) return null
         if (args?.backupPassword !== 'backup password') {
@@ -474,6 +479,25 @@ describe('backup and restore', () => {
     backend.exportSaved = false
     await user.click(screen.getByRole('button', { name: 'Choose location and save backup' }))
     expect(await screen.findByText('Backup cancelled.')).toBeInTheDocument()
+  })
+
+  it('only backs up and erases after confirmation, then shows the create-vault gate', async () => {
+    const user = userEvent.setup()
+    await openSettings(user)
+    const eraseButton = screen.getByRole('button', { name: 'Choose location, save backup and erase' })
+    expect(eraseButton).toBeDisabled()
+
+    backend.exportSaved = false
+    await user.click(screen.getByRole('checkbox', { name: /removes every wallet from this device/ }))
+    await user.click(eraseButton)
+    expect(await screen.findByText('Cancelled. Nothing was erased.')).toBeInTheDocument()
+    expect(backend.wallets.length).toBeGreaterThan(0)
+
+    backend.exportSaved = true
+    await user.click(eraseButton)
+    expect(await screen.findByLabelText('Vault password')).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { level: 1, name: 'Settings' })).not.toBeInTheDocument()
+    expect(backend.status).toBe('uninitialized')
   })
 
   it('requires confirmation before restoring and reports a wrong password', async () => {

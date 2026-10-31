@@ -403,6 +403,28 @@ impl WalletService {
         Ok(summaries)
     }
 
+    /// Permanently removes the vault file and its `.pre-restore` copy, then
+    /// resets the service to a fresh, uninitialised state. `saved_backup` must
+    /// be the exact export that was just saved, so nothing is erased if the
+    /// vault changed since, and the vault must be unlocked.
+    pub fn erase_vault(&mut self, saved_backup: &str, path: &str) -> Result<(), String> {
+        if self.export_backup()? != saved_backup {
+            return Err(
+                "the vault changed since the backup was saved; nothing was erased".to_string(),
+            );
+        }
+        let pre_restore = format!("{path}.pre-restore");
+        for file in [pre_restore.as_str(), path] {
+            match std::fs::remove_file(file) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(format!("could not erase {file}: {error}")),
+            }
+        }
+        *self = Self::new();
+        Ok(())
+    }
+
     pub fn record_activity(&mut self) -> Result<(), String> {
         self.ensure_unlocked()?;
         self.last_activity = Some(Instant::now());
@@ -948,6 +970,64 @@ mod tests {
         assert!(service.wallet_public_key("missing").is_err());
         service.lock();
         assert!(service.wallet_public_key(&wallet.id).is_err());
+    }
+
+    #[test]
+    fn erase_removes_every_vault_file_and_returns_to_a_fresh_state() {
+        let (_directory, path) = temp_path();
+        let path = path.to_str().unwrap();
+        let mut service = WalletService::new();
+        service.create_vault("vault password", path).unwrap();
+        service.create_and_save_wallet("First", path).unwrap();
+        let backup = service.export_backup().unwrap();
+        // A restore over an existing vault leaves a .pre-restore copy behind.
+        service
+            .restore_backup(&backup, "vault password", path)
+            .unwrap();
+        assert!(std::path::Path::new(&format!("{path}.pre-restore")).exists());
+
+        service.erase_vault(&backup, path).unwrap();
+        assert!(!std::path::Path::new(path).exists());
+        assert!(!std::path::Path::new(&format!("{path}.pre-restore")).exists());
+        assert_eq!(service.vault_status(), "uninitialized");
+        assert!(service.list_wallets().is_err());
+        assert_eq!(
+            service.auto_lock_seconds(),
+            crate::vault_container::DEFAULT_AUTO_LOCK_SECONDS
+        );
+        assert_eq!(
+            WalletService::load_store(path).unwrap().vault_status(),
+            "uninitialized"
+        );
+
+        // The saved backup restores everything onto the now-empty machine.
+        let wallets = service
+            .restore_backup(&backup, "vault password", path)
+            .unwrap();
+        assert_eq!(wallets.len(), 1);
+        assert_eq!(wallets[0].name, "First");
+    }
+
+    #[test]
+    fn erase_refuses_when_locked_or_when_the_vault_changed_since_the_backup() {
+        let (_directory, path) = temp_path();
+        let path = path.to_str().unwrap();
+        let mut service = WalletService::new();
+        service.create_vault("vault password", path).unwrap();
+        service.create_and_save_wallet("First", path).unwrap();
+        let backup = service.export_backup().unwrap();
+
+        service.create_and_save_wallet("Second", path).unwrap();
+        let error = service.erase_vault(&backup, path).unwrap_err();
+        assert!(error.contains("changed"));
+        assert!(std::path::Path::new(path).exists());
+        assert_eq!(service.list_wallets().unwrap().len(), 2);
+
+        let current = service.export_backup().unwrap();
+        service.lock();
+        assert!(service.erase_vault(&current, path).is_err());
+        assert!(std::path::Path::new(path).exists());
+        assert_eq!(service.vault_status(), "locked");
     }
 
     #[test]

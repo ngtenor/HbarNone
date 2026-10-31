@@ -128,6 +128,9 @@ function App() {
   const [restoreMessage, setRestoreMessage] = useState('')
   const [isBackupBusy, setIsBackupBusy] = useState(false)
   const [isRestoreBusy, setIsRestoreBusy] = useState(false)
+  const [hasConfirmedErase, setHasConfirmedErase] = useState(false)
+  const [eraseError, setEraseError] = useState('')
+  const [isErasing, setIsErasing] = useState(false)
   const [walletMode, setWalletMode] = useState<'create' | 'import'>('create')
   const [renamingWalletId, setRenamingWalletId] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
@@ -179,6 +182,8 @@ function App() {
     setBackupMessage('')
     setRestoreError('')
     setRestoreMessage('')
+    setHasConfirmedErase(false)
+    setEraseError('')
   }, [])
 
   const lockVault = useCallback(async () => {
@@ -482,6 +487,38 @@ function App() {
       setBackupError(errorMessage(exportError))
     } finally {
       setIsBackupBusy(false)
+    }
+  }
+
+  async function handleBackupAndErase() {
+    if (isErasing || !hasConfirmedErase) return
+    setEraseError('')
+    setIsErasing(true)
+    try {
+      const state = await invoke<VaultState | null>('backup_and_erase_vault')
+      if (!state) {
+        setEraseError('Cancelled. Nothing was erased.')
+        return
+      }
+      closeReveal()
+      closeDelete()
+      clearPasswordChange()
+      setRenamingWalletId(null)
+      setMnemonic('')
+      setVaultPassword('')
+      setVaultPasswordConfirmation('')
+      setWallets([])
+      setActiveTab('home')
+      setIsCreateTabOpen(false)
+      setIsSettingsTabOpen(false)
+      setOpenWalletTabs([])
+      setAutoLockSeconds(state.autoLockSeconds)
+      setError('')
+      setVaultView(state.status)
+    } catch (failure) {
+      setEraseError(errorMessage(failure))
+    } finally {
+      setIsErasing(false)
     }
   }
 
@@ -1198,6 +1235,48 @@ function App() {
                   the backup's password.
                 </p>
                 {renderRestoreForm('settings', true)}
+              </section>
+
+              <section className="panel create-panel erase-panel" aria-labelledby="erase-heading">
+                <div className="panel-heading">
+                  <div>
+                    <p className="eyebrow">ERASE</p>
+                    <h2 id="erase-heading">Back up and erase this device</h2>
+                  </div>
+                </div>
+                <p className="dialog-copy">
+                  Saves an encrypted backup, checks that it was written correctly,
+                  and then permanently deletes the vault from this computer, so the
+                  app looks as if it had just been installed. You can restore the
+                  wallets later from the backup file, which opens with your
+                  current vault password. Without that file and password the
+                  wallets cannot be recovered from here.
+                </p>
+                <p className="field-hint">
+                  Deleting a file does not guarantee that its contents are
+                  unrecoverable from the disk. Full-disk encryption is the best
+                  protection.
+                </p>
+                <label className="write-down-confirmation">
+                  <input
+                    type="checkbox"
+                    checked={hasConfirmedErase}
+                    onChange={(event) => setHasConfirmedErase(event.target.checked)}
+                  />
+                  <span>
+                    I understand this removes every wallet from this device and
+                    that I must keep the backup file and its password safe.
+                  </span>
+                </label>
+                {eraseError && <p className="error-message" role="alert">{eraseError}</p>}
+                <button
+                  className="delete-wallet-button erase-button"
+                  type="button"
+                  disabled={isErasing || !hasConfirmedErase}
+                  onClick={() => void handleBackupAndErase()}
+                >
+                  {isErasing ? 'Saving backup...' : 'Choose location, save backup and erase'}
+                </button>
               </section>
             </section>
           )}

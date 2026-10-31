@@ -166,6 +166,49 @@ async fn export_vault_backup(
 }
 
 #[tauri::command]
+async fn backup_and_erase_vault(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Option<VaultState>, String> {
+    let backup = lock_service(&state)?.export_backup()?;
+    let Some(selected) = app
+        .dialog()
+        .file()
+        .set_title("Save encrypted vault backup before erasing")
+        .set_file_name("hedera-vault-backup.json")
+        .add_filter("HederaVault backup", &["json"])
+        .blocking_save_file()
+    else {
+        return Ok(None);
+    };
+    let path = selected
+        .into_path()
+        .map_err(|e| format!("invalid backup location: {e}"))?;
+    std::fs::write(&path, &backup)
+        .map_err(|e| format!("could not write the backup file: {e}; nothing was erased"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).map_err(|e| {
+            format!("could not restrict backup file permissions: {e}; nothing was erased")
+        })?;
+    }
+    // Nothing is erased unless the saved file reads back identical.
+    match std::fs::read_to_string(&path) {
+        Ok(saved) if saved == backup => {}
+        _ => return Err("the saved backup could not be verified; nothing was erased".to_string()),
+    }
+    let mut service = lock_service(&state)?;
+    service.erase_vault(&backup, &state.store_path.to_string_lossy())?;
+    Ok(Some(VaultState {
+        status: service.vault_status().to_string(),
+        wallets: Vec::new(),
+        legacy_wallets: Vec::new(),
+        auto_lock_seconds: service.auto_lock_seconds(),
+    }))
+}
+
+#[tauri::command]
 async fn restore_vault_backup(
     backup_password: String,
     app: tauri::AppHandle,
@@ -367,6 +410,7 @@ fn main() {
             set_auto_lock_seconds,
             change_vault_password,
             export_vault_backup,
+            backup_and_erase_vault,
             restore_vault_backup,
             record_activity,
             lock_vault,
