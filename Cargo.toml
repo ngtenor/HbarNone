@@ -1,6 +1,8 @@
 [workspace]
 members = [
-    "crates/wallet-core"
-, "src-tauri"]
+    "crates/wallet-core",
+    "crates/hedera-mirror",
+    "src-tauri",
+]
 
 resolver = "2"

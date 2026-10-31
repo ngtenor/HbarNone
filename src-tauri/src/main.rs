@@ -2,6 +2,7 @@
 
 use std::{path::PathBuf, sync::Mutex};
 
+use hedera_mirror::{AccountOverview, MirrorClient};
 use serde::{Deserialize, Serialize};
 use tauri::{Manager, State};
 use tauri_plugin_dialog::DialogExt;
@@ -165,6 +166,49 @@ async fn export_vault_backup(
 }
 
 #[tauri::command]
+async fn backup_and_erase_vault(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Option<VaultState>, String> {
+    let backup = lock_service(&state)?.export_backup()?;
+    let Some(selected) = app
+        .dialog()
+        .file()
+        .set_title("Save encrypted vault backup before erasing")
+        .set_file_name("hedera-vault-backup.json")
+        .add_filter("HederaVault backup", &["json"])
+        .blocking_save_file()
+    else {
+        return Ok(None);
+    };
+    let path = selected
+        .into_path()
+        .map_err(|e| format!("invalid backup location: {e}"))?;
+    std::fs::write(&path, &backup)
+        .map_err(|e| format!("could not write the backup file: {e}; nothing was erased"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).map_err(|e| {
+            format!("could not restrict backup file permissions: {e}; nothing was erased")
+        })?;
+    }
+    // Nothing is erased unless the saved file reads back identical.
+    match std::fs::read_to_string(&path) {
+        Ok(saved) if saved == backup => {}
+        _ => return Err("the saved backup could not be verified; nothing was erased".to_string()),
+    }
+    let mut service = lock_service(&state)?;
+    service.erase_vault(&backup, &state.store_path.to_string_lossy())?;
+    Ok(Some(VaultState {
+        status: service.vault_status().to_string(),
+        wallets: Vec::new(),
+        legacy_wallets: Vec::new(),
+        auto_lock_seconds: service.auto_lock_seconds(),
+    }))
+}
+
+#[tauri::command]
 async fn restore_vault_backup(
     backup_password: String,
     app: tauri::AppHandle,
@@ -230,6 +274,56 @@ fn delete_wallet(wallet_id: String, state: State<'_, AppState>) -> Result<(), St
     }
 
     lock_service(&state)?.delete_wallet_and_save(&wallet_id, &state.store_path.to_string_lossy())
+}
+
+#[tauri::command]
+fn link_wallet_account(
+    wallet_id: String,
+    account_id: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<WalletSummary, String> {
+    lock_service(&state)?.set_wallet_account_id_and_save(
+        &wallet_id,
+        account_id.as_deref(),
+        &state.store_path.to_string_lossy(),
+    )
+}
+
+// Network commands run only when the user clicks; the webview never sees the
+// mirror URL, and only the public key or account ID leaves the app.
+#[tauri::command]
+async fn find_wallet_account(
+    wallet_id: String,
+    state: State<'_, AppState>,
+) -> Result<WalletSummary, String> {
+    let public_key = lock_service(&state)?.wallet_public_key(&wallet_id)?;
+    let matches = MirrorClient::testnet()?
+        .find_accounts_by_public_key(&public_key)
+        .await?;
+    match matches.as_slice() {
+        [] => Err("no Testnet account uses this wallet's key yet; an account is created when the key's address first receives HBAR".to_string()),
+        [account_id] => lock_service(&state)?.set_wallet_account_id_and_save(
+            &wallet_id,
+            Some(account_id),
+            &state.store_path.to_string_lossy(),
+        ),
+        _ => Err("several Testnet accounts use this key; link the one you want by its account ID".to_string()),
+    }
+}
+
+#[tauri::command]
+async fn get_account_overview(
+    wallet_id: String,
+    state: State<'_, AppState>,
+) -> Result<Option<AccountOverview>, String> {
+    let account_id = lock_service(&state)?
+        .list_wallets()?
+        .into_iter()
+        .find(|wallet| wallet.id == wallet_id)
+        .ok_or_else(|| format!("wallet not found: {wallet_id}"))?
+        .account_id
+        .ok_or_else(|| "link a Hedera account to this wallet first".to_string())?;
+    MirrorClient::testnet()?.account_overview(&account_id).await
 }
 
 #[tauri::command]
@@ -316,12 +410,16 @@ fn main() {
             set_auto_lock_seconds,
             change_vault_password,
             export_vault_backup,
+            backup_and_erase_vault,
             restore_vault_backup,
             record_activity,
             lock_vault,
             create_wallet,
             delete_wallet,
             rename_wallet,
+            link_wallet_account,
+            find_wallet_account,
+            get_account_overview,
             import_wallet,
             list_wallets,
             reveal_wallet_mnemonic,

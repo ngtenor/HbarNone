@@ -59,7 +59,8 @@
    - [x] Add encrypted backup export and restore, as separate Settings panels. A backup is the encrypted vault file (no plaintext phrases), protected by the vault password in use at export time; restore replaces all wallets, keeps a `.pre-restore` copy, and also works from the create-vault screen so a vault can move between machines. Exported files are `0600` on Unix. Unit-tested (round trip, wrong password, bad/oversized files, unchanged vault on failure, `.pre-restore`, locked-vault rejection) and manually verified on Windows. Verified on Ubuntu 26.04: GTK file dialogs, `0600` permissions, restore of a Linux-made backup and restore of a Windows-made backup.
    - [x] Block duplicate imports of the same recovery phrase (checked against the decrypted phrases in memory; the error names the existing wallet, never the phrase). Unit-tested and manually verified.
    - [x] Add wallet rename, with names required to be non-empty, at most 40 characters, free of control characters, and unique within the vault ignoring capitalisation (enforced for create, import and rename). Rename is saved atomically and rolled back on failure. Unit-tested and manually verified.
-4. **Automated testing and CI**
+4. **Automated testing and CI**
+   - [x] Add Settings "Back up and erase this device": saves an encrypted backup via the file dialog, reads it back to verify, then deletes `wallets.json` and `wallets.json.pre-restore` and returns the app to the create-vault screen. Nothing is erased if the dialog is cancelled, the write or verification fails, the vault is locked, or the vault changed since the export. Requires a confirmation checkbox. Deletion is not a forensic wipe. Unit and Vitest tests added; awaiting manual test.
    - [x] Add frontend component tests (Vitest and React Testing Library, jsdom) in `desktop-ui/src/App.test.tsx` with a stateful fake `invoke`: 26 tests covering the unlock/lock gates, tab logic and keyboard navigation, auto-lock (fake timers: expiry, activity reset, closing an open phrase), the reveal flow (copy blocking, acknowledgment, clearing on blur/Escape), delete, rename, backup/restore and the password-change form. Run with `npm test` in `desktop-ui`; also run in CI and `scripts/linux-test.sh`.
    - [x] Add a GitHub Actions workflow (`.github/workflows/ci.yml`) running `cargo fmt --check`, `cargo test --workspace`, `cargo check --workspace`, frontend lint, frontend tests and frontend build on both Windows and Ubuntu. Passed on GitHub (Windows and Ubuntu) in the first run on PR #1.
 5. **Linux readiness**
@@ -83,9 +84,21 @@ use real funds or recovery phrases.
 Password change and encrypted backup export/restore are now tracked under
 "Wallet recovery and backup" in the pre-Linux work above.
 
+## Hedera Testnet integration
+- [x] Optional, validated, unique Hedera account ID per wallet, stored in the encrypted vault
+- [x] `hedera-mirror` crate: read-only client for the public Testnet mirror node (fixed URL, https only, no redirects, 15 s timeout, 512 KB cap); contacts the network only when the user clicks a button
+- [x] Testnet panel on each wallet tab: link an account by ID, find an account by key (Ed25519), refresh balance and recent transactions. Verified manually against the real Testnet (1000 ℏ shown)
+- [x] Settings "Back up and erase this device" (verified manually: save, erase, restore from the create screen)
+- [x] First-run, unlock and Settings layout polish (two-button start screen, in-box eye toggle, centred fixed-size boxes, adaptive logo/padlock)
+
+## Roadmap (agreed)
+1. **Raw private key import** (next branch): import hex and DER private keys, add ECDSA (secp256k1) alongside Ed25519, store key type and secret kind per wallet, show public key and EVM address, check the key against the Testnet account. Verify ECDSA derivation paths against test vectors first.
+2. **Transaction signing and account creation**: use an imported funded Testnet key to create accounts from app-generated mnemonics. Testnet only, with a confirmation screen. Decide between the Hedera Rust SDK and a custom encoder.
+3. **Hardware key**: FIDO2 `hmac-secret` design on an RP2350 board, after the board arrives.
+4. Mainnet only after the above has been reviewed.
+
 ## Later roadmap
-- [ ] Integrate Hedera network access and Testnet account support
-- [ ] Query account balances and transaction history
+- [x] Integrate read-only Hedera Testnet access (balance and transaction history)
 - [ ] Implement transaction creation and signing
 - [ ] Add HTS token, NFT, and smart-contract support
 - [ ] Build QR-based offline transaction transport
@@ -101,8 +114,8 @@ tabs, wallet-specific reveal/delete actions, copy-blocked recovery-phrase
 display, and Settings tab are implemented, with a stricter release CSP and
 Linux `0700`/`0600` permission hardening. The latest standalone x64 Windows
 app and NSIS/MSI installers include these changes. `cargo fmt --all -- --check`,
-`cargo test --workspace` (26 wallet-core unit tests and 2 persistence
-integration test), 25 frontend component tests, frontend lint/build, and `cargo check --workspace` passed
+`cargo test --workspace` (28 wallet-core unit tests, 2 persistence
+integration tests and 6 hedera-mirror tests), 34 frontend component tests, frontend lint/build, and `cargo check --workspace` passed
 locally, and CI passed on Windows and Ubuntu for PR #1. Tests cover encryption,
 legacy migration and failure preservation, locked persistence, auto-lock
 bounds/expiry/activity reset, wallet mutation rollback, unlock delay, and

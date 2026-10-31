@@ -297,6 +297,10 @@
   letter-spacing: -2.7px;
 }
 
+.settings-tab-panel > .panel + .panel {
+  margin-top: 20px;
+}
+
 .settings-panel {
   box-sizing: border-box;
   width: 100%;
@@ -356,6 +360,85 @@
   font-size: 12px;
 }
 
+.testnet-panel {
+  box-sizing: border-box;
+  min-height: 0;
+  margin-top: 28px;
+}
+
+.testnet-panel .panel-heading {
+  margin-bottom: 12px;
+}
+
+.testnet-panel .wallet-tab-actions {
+  padding-top: 12px;
+}
+
+.testnet-panel .wallet-tab-actions .secondary-button {
+  width: auto;
+  padding: 0 14px;
+}
+
+.testnet-account,
+.testnet-balance {
+  margin: 4px 0 0;
+  font-size: 13px;
+}
+
+.testnet-balance strong {
+  font-size: 20px;
+}
+
+.testnet-link-form {
+  display: grid;
+  max-width: 420px;
+  gap: 8px;
+  margin-top: 20px;
+}
+
+.testnet-link-form .secondary-button {
+  width: auto;
+  justify-self: start;
+  padding: 0 14px;
+}
+
+.testnet-overview {
+  margin-top: 18px;
+}
+
+.testnet-transactions {
+  display: grid;
+  padding: 0;
+  margin: 12px 0 0;
+  gap: 6px;
+  list-style: none;
+}
+
+.testnet-transactions li {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr 1.6fr auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 11px;
+}
+
+.testnet-kind {
+  font-weight: 600;
+}
+
+.testnet-result,
+.testnet-time {
+  color: var(--muted);
+}
+
+.testnet-net {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
 .topbar-actions {
   display: flex;
   align-items: center;
@@ -386,6 +469,12 @@ button.topbar-icon:hover {
   cursor: default;
 }
 
+.vault-gate.unlock-gate {
+  width: 420px;
+  min-height: 0;
+  padding: 28px;
+}
+
 .unlock-gate form {
   display: flex;
   flex-direction: column;
@@ -411,6 +500,123 @@ button.topbar-icon:hover {
   margin-top: 18px;
   padding: 0 22px;
   justify-content: center;
+}
+
+.gate-choice {
+  display: grid;
+  gap: 14px;
+}
+
+.app-shell.gate-centred {
+  position: relative;
+  display: flex;
+  box-sizing: border-box;
+  min-height: 100vh;
+  flex-direction: column;
+  padding: 24px 0;
+}
+
+.gate-centred .topbar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  border-bottom: 0;
+}
+
+.gate-centred .vault-gate {
+  width: min(560px, 100%);
+  min-height: 0;
+  margin: auto;
+}
+
+.gate-centred .vault-gate.unlock-gate {
+  width: 420px;
+  max-width: 100%;
+}
+
+.brand.logo-hidden,
+.locked-indicator.logo-hidden {
+  visibility: hidden;
+}
+
+.brand.text-hidden > span:not(.brand-mark) {
+  visibility: hidden;
+}
+
+.password-field {
+  position: relative;
+}
+
+.vault-gate .password-field input:not([type="range"]) {
+  padding-right: 44px;
+}
+
+.password-field input::-ms-reveal {
+  display: none;
+}
+
+.eye-toggle {
+  position: absolute;
+  top: 0;
+  right: 4px;
+  display: flex;
+  width: 36px;
+  height: 100%;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  color: var(--muted);
+  background: none;
+  cursor: pointer;
+}
+
+.eye-toggle:hover {
+  color: var(--purple);
+}
+
+.primary-button.gate-button,
+.secondary-button.gate-button {
+  display: flex;
+  box-sizing: border-box;
+  width: 100%;
+  height: 44px;
+  margin: 0;
+  padding: 0 14px;
+  justify-content: center;
+  align-items: center;
+  font-size: 13px;
+  text-align: center;
+}
+
+.vault-gate form > .primary-button.gate-button {
+  margin-top: 18px;
+}
+
+.secondary-button.gate-button {
+  border: 2px solid var(--purple);
+  background: #fff;
+  font-weight: 600;
+}
+
+.vault-gate form > .secondary-button.gate-button {
+  margin-top: 24px;
+}
+
+.gate-back {
+  display: block;
+  margin: 14px auto 0;
+  padding: 4px 10px;
+  border: 0;
+  color: var(--muted);
+  background: none;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+}
+
+.gate-back:hover {
+  color: var(--purple);
 }
 
 .legacy-password-list {

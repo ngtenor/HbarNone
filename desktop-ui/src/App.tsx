@@ -1,14 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { FormEvent, KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { generatePassphrase } from './passphrase'
+import { TestnetPanel } from './TestnetPanel'
+import type { WalletSummary } from './types'
 import './App.css'
-
-type WalletSummary = {
-  id: string
-  name: string
-  created_at: string
-}
 
 type VaultView = 'loading' | 'uninitialized' | 'legacy' | 'locked' | 'unlocked'
 
@@ -124,7 +120,6 @@ function App() {
   const [passwordChangeSuccess, setPasswordChangeSuccess] = useState(false)
   const [isChangingPassword, setIsChangingPassword] = useState(false)
   const [backupPassword, setBackupPassword] = useState('')
-  const [isBackupPasswordVisible, setIsBackupPasswordVisible] = useState(false)
   const [hasConfirmedRestore, setHasConfirmedRestore] = useState(false)
   const [backupError, setBackupError] = useState('')
   const [backupMessage, setBackupMessage] = useState('')
@@ -132,6 +127,10 @@ function App() {
   const [restoreMessage, setRestoreMessage] = useState('')
   const [isBackupBusy, setIsBackupBusy] = useState(false)
   const [isRestoreBusy, setIsRestoreBusy] = useState(false)
+  const [hasConfirmedErase, setHasConfirmedErase] = useState(false)
+  const [gateMode, setGateMode] = useState<'choose' | 'create' | 'restore'>('choose')
+  const [eraseError, setEraseError] = useState('')
+  const [isErasing, setIsErasing] = useState(false)
   const [walletMode, setWalletMode] = useState<'create' | 'import'>('create')
   const [renamingWalletId, setRenamingWalletId] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
@@ -153,6 +152,45 @@ function App() {
   const lastActivityAt = useRef(0)
   const lastActivitySyncAt = useRef(0)
   const lockRequestActive = useRef(false)
+  const shellRef = useRef<HTMLElement>(null)
+  const [logoState, setLogoState] = useState<'full' | 'mark' | 'hidden'>('full')
+  const [isPadlockHidden, setIsPadlockHidden] = useState(false)
+
+  // On the centred gate screens the white box can reach the logo or padlock in a small window.
+  // Hidden parts keep their layout space, so the measurements stay stable.
+  useLayoutEffect(() => {
+    const shell = shellRef.current
+    const box = shell?.querySelector('.vault-gate')
+    const logo = shell?.querySelector('.brand')
+    const mark = shell?.querySelector('.brand-mark')
+    const padlock = shell?.querySelector('.locked-indicator')
+    if ((vaultView !== 'uninitialized' && vaultView !== 'locked') || !shell || !box || !logo || !mark) {
+      setLogoState('full')
+      setIsPadlockHidden(false)
+      return
+    }
+    const overlaps = (a: DOMRect, b: DOMRect) =>
+      a.top < b.bottom && a.bottom > b.top && a.left < b.right && a.right > b.left
+    const update = () => {
+      const boxRect = box.getBoundingClientRect()
+      if (!overlaps(boxRect, logo.getBoundingClientRect())) {
+        setLogoState('full')
+      } else if (!overlaps(boxRect, mark.getBoundingClientRect())) {
+        setLogoState('mark')
+      } else {
+        setLogoState('hidden')
+      }
+      setIsPadlockHidden(padlock ? overlaps(boxRect, padlock.getBoundingClientRect()) : false)
+    }
+    update()
+    window.addEventListener('resize', update)
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(update)
+    observer?.observe(box)
+    return () => {
+      window.removeEventListener('resize', update)
+      observer?.disconnect()
+    }
+  }, [vaultView, gateMode, error])
   const autoLockSaveTimer = useRef<number | null>(null)
 
   const closeReveal = useCallback(() => {
@@ -177,7 +215,6 @@ function App() {
     setPasswordChangeError('')
     setPasswordChangeSuccess(false)
     setBackupPassword('')
-    setIsBackupPasswordVisible(false)
     setHasConfirmedRestore(false)
     setBackupError('')
     setBackupMessage('')
@@ -191,6 +228,8 @@ function App() {
     closeReveal()
     closeDelete()
     clearPasswordChange()
+    setHasConfirmedErase(false)
+    setEraseError('')
     setRenamingWalletId(null)
     setMnemonic('')
     setVaultPassword('')
@@ -432,7 +471,6 @@ function App() {
       const passphrase = generatePassphrase()
       setVaultPassword(passphrase)
       setVaultPasswordConfirmation(passphrase)
-      setIsVaultPasswordVisible(false)
       setError('')
     } catch {
       setError('Could not generate a secure passphrase on this device.')
@@ -489,6 +527,40 @@ function App() {
     }
   }
 
+  async function handleBackupAndErase() {
+    if (isErasing || !hasConfirmedErase) return
+    setEraseError('')
+    setIsErasing(true)
+    try {
+      const state = await invoke<VaultState | null>('backup_and_erase_vault')
+      if (!state) {
+        setEraseError('Cancelled. Nothing was erased.')
+        return
+      }
+      closeReveal()
+      closeDelete()
+      clearPasswordChange()
+      setHasConfirmedErase(false)
+      setRenamingWalletId(null)
+      setMnemonic('')
+      setVaultPassword('')
+      setVaultPasswordConfirmation('')
+      setWallets([])
+      setActiveTab('home')
+      setIsCreateTabOpen(false)
+      setIsSettingsTabOpen(false)
+      setOpenWalletTabs([])
+      setAutoLockSeconds(state.autoLockSeconds)
+      setGateMode('choose')
+      setError('')
+      setVaultView(state.status)
+    } catch (failure) {
+      setEraseError(errorMessage(failure))
+    } finally {
+      setIsErasing(false)
+    }
+  }
+
   async function handleRestoreBackup(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     setRestoreError('')
@@ -517,30 +589,40 @@ function App() {
     }
   }
 
+  function renderEyeToggle() {
+    const label = isVaultPasswordVisible ? 'Hide vault password' : 'Show vault password'
+    return (
+      <button
+        className="eye-toggle"
+        type="button"
+        aria-label={label}
+        title={label}
+        aria-pressed={isVaultPasswordVisible}
+        onClick={() => setIsVaultPasswordVisible((visible) => !visible)}
+      >
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor"
+          strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z" />
+          <circle cx="12" cy="12" r="3" />
+          {isVaultPasswordVisible && <path d="M3 3l18 18" />}
+        </svg>
+      </button>
+    )
+  }
+
   function renderRestoreForm(idPrefix: string, requireConfirmation: boolean) {
     return (
       <form onSubmit={handleRestoreBackup}>
         <label htmlFor={`${idPrefix}-backup-password`}>Password of the backup file</label>
-        <div className="password-input-row">
-          <input
-            id={`${idPrefix}-backup-password`}
-            type={isBackupPasswordVisible ? 'text' : 'password'}
-            autoComplete="off"
-            maxLength={1024}
-            required
-            value={backupPassword}
-            onChange={(event) => setBackupPassword(event.target.value)}
-          />
-          <button
-            className="password-toggle"
-            type="button"
-            aria-label={isBackupPasswordVisible ? 'Hide backup password' : 'Show backup password'}
-            aria-pressed={isBackupPasswordVisible}
-            onClick={() => setIsBackupPasswordVisible((visible) => !visible)}
-          >
-            {isBackupPasswordVisible ? 'Hide' : 'Show'}
-          </button>
-        </div>
+        <input
+          id={`${idPrefix}-backup-password`}
+          type="password"
+          autoComplete="off"
+          maxLength={1024}
+          required
+          value={backupPassword}
+          onChange={(event) => setBackupPassword(event.target.value)}
+        />
         <p className="field-hint">
           Enter the vault password that was in use when this backup was
           created. It may differ from your current vault password.
@@ -561,7 +643,7 @@ function App() {
         {restoreError && <p className="error-message" role="alert">{restoreError}</p>}
         {restoreMessage && <p className="field-hint" role="status">{restoreMessage}</p>}
         <button
-          className="secondary-button"
+          className={idPrefix === 'gate' ? 'primary-button gate-button' : 'secondary-button'}
           type="submit"
           disabled={isRestoreBusy || (requireConfirmation && !hasConfirmedRestore)}
         >
@@ -702,15 +784,26 @@ function App() {
   }
 
   return (
-    <main className="app-shell">
+    <main
+      ref={shellRef}
+      className={vaultView === 'uninitialized' || vaultView === 'locked' ? 'app-shell gate-centred' : 'app-shell'}
+    >
       <header className="topbar">
-        <a className="brand" href="/" aria-label="HederaVault home">
+        <a
+          className={logoState === 'hidden' ? 'brand logo-hidden' : logoState === 'mark' ? 'brand text-hidden' : 'brand'}
+          href="/"
+          aria-label="HederaVault home"
+        >
           <span className="brand-mark" aria-hidden="true">H</span>
           <span>HederaVault</span>
         </a>
         <div className="topbar-actions">
           {vaultView === 'locked' && (
-            <span className="topbar-icon locked-indicator" role="img" aria-label="Vault locked">
+            <span
+              className={isPadlockHidden ? 'topbar-icon locked-indicator logo-hidden' : 'topbar-icon locked-indicator'}
+              role="img"
+              aria-label="Vault locked"
+            >
               <PadlockIcon locked />
             </span>
           )}
@@ -755,7 +848,18 @@ function App() {
         </section>
       )}
 
-      {vaultView === 'uninitialized' && (
+      {vaultView === 'uninitialized' && gateMode === 'choose' && (
+        <section className="panel vault-gate gate-choice" aria-label="Get started">
+          <button className="primary-button gate-button" type="button" onClick={() => setGateMode('create')}>
+            Create vault
+          </button>
+          <button className="primary-button gate-button" type="button" onClick={() => setGateMode('restore')}>
+            Restore backup
+          </button>
+        </section>
+      )}
+
+      {vaultView === 'uninitialized' && gateMode === 'create' && (
         <section className="panel vault-gate">
           <p className="eyebrow">CREATE YOUR VAULT</p>
           <h2>One password for all your wallets</h2>
@@ -766,7 +870,7 @@ function App() {
           </p>
           <form onSubmit={handleCreateVault}>
             <label htmlFor="create-vault-password">Vault password</label>
-            <div className="password-input-row">
+            <div className="password-field">
               <input
                 id="create-vault-password"
                 type={isVaultPasswordVisible ? 'text' : 'password'}
@@ -776,28 +880,23 @@ function App() {
                 value={vaultPassword}
                 onChange={(event) => setVaultPassword(event.target.value)}
               />
-              <button
-                className="password-toggle"
-                type="button"
-                aria-label={isVaultPasswordVisible ? 'Hide vault password' : 'Show vault password'}
-                aria-pressed={isVaultPasswordVisible}
-                onClick={() => setIsVaultPasswordVisible((visible) => !visible)}
-              >
-                {isVaultPasswordVisible ? 'Hide' : 'Show'}
-              </button>
+              {renderEyeToggle()}
             </div>
             <label htmlFor="create-vault-password-confirmation">Confirm vault password</label>
-            <input
-              id="create-vault-password-confirmation"
-              type={isVaultPasswordVisible ? 'text' : 'password'}
-              autoComplete="new-password"
-              maxLength={1024}
-              required
-              value={vaultPasswordConfirmation}
-              onChange={(event) => setVaultPasswordConfirmation(event.target.value)}
-            />
+            <div className="password-field">
+              <input
+                id="create-vault-password-confirmation"
+                type={isVaultPasswordVisible ? 'text' : 'password'}
+                autoComplete="new-password"
+                maxLength={1024}
+                required
+                value={vaultPasswordConfirmation}
+                onChange={(event) => setVaultPasswordConfirmation(event.target.value)}
+              />
+              {renderEyeToggle()}
+            </div>
             <button
-              className="secondary-button generate-passphrase"
+              className="secondary-button gate-button generate-passphrase"
               type="button"
               disabled={isSubmittingVault}
               onClick={handleGeneratePassphrase}
@@ -805,16 +904,28 @@ function App() {
               Generate six-word passphrase
             </button>
             <p className="field-hint">
-              The six words are selected locally using this device’s secure
-              random generator. Write the passphrase down and store it safely.
+              The six words are from the eff.org long word list and selected
+              locally using this device’s secure random generator. Write the
+              passphrase down and store it safely.
             </p>
             {error && <p className="error-message" role="alert">{error}</p>}
-            <button className="primary-button" type="submit" disabled={isSubmittingVault}>
+            <button className="primary-button gate-button" type="submit" disabled={isSubmittingVault}>
               {isSubmittingVault ? 'Creating vault...' : 'Create vault'}
             </button>
+            <button className="gate-back" type="button" onClick={() => setGateMode('choose')}>
+              Back
+            </button>
           </form>
-          <h2>Or restore from a backup</h2>
+        </section>
+      )}
+
+      {vaultView === 'uninitialized' && gateMode === 'restore' && (
+        <section className="panel vault-gate">
+          <p className="eyebrow">RESTORE FROM A BACKUP</p>
           {renderRestoreForm('gate', false)}
+          <button className="gate-back" type="button" onClick={() => setGateMode('choose')}>
+            Back
+          </button>
         </section>
       )}
 
@@ -1203,6 +1314,48 @@ function App() {
                 </p>
                 {renderRestoreForm('settings', true)}
               </section>
+
+              <section className="panel create-panel erase-panel" aria-labelledby="erase-heading">
+                <div className="panel-heading">
+                  <div>
+                    <p className="eyebrow">ERASE</p>
+                    <h2 id="erase-heading">Back up and erase this device</h2>
+                  </div>
+                </div>
+                <p className="dialog-copy">
+                  Saves an encrypted backup, checks that it was written correctly,
+                  and then permanently deletes the vault from this computer, so the
+                  app looks as if it had just been installed. You can restore the
+                  wallets later from the backup file, which opens with your
+                  current vault password. Without that file and password the
+                  wallets cannot be recovered from here.
+                </p>
+                <p className="field-hint">
+                  Deleting a file does not guarantee that its contents are
+                  unrecoverable from the disk. Full-disk encryption is the best
+                  protection.
+                </p>
+                <label className="write-down-confirmation">
+                  <input
+                    type="checkbox"
+                    checked={hasConfirmedErase}
+                    onChange={(event) => setHasConfirmedErase(event.target.checked)}
+                  />
+                  <span>
+                    I understand this removes every wallet from this device and
+                    that I must keep the backup file and its password safe.
+                  </span>
+                </label>
+                {eraseError && <p className="error-message" role="alert">{eraseError}</p>}
+                <button
+                  className="delete-wallet-button erase-button"
+                  type="button"
+                  disabled={isErasing || !hasConfirmedErase}
+                  onClick={() => void handleBackupAndErase()}
+                >
+                  {isErasing ? 'Saving backup...' : 'Choose location, save backup and erase'}
+                </button>
+              </section>
             </section>
           )}
 
@@ -1379,6 +1532,13 @@ function App() {
                     Delete wallet
                   </button>
                 </div>
+                <TestnetPanel
+                  key={wallet.id}
+                  wallet={wallet}
+                  onWalletUpdated={(updated) => setWallets((existing) => existing.map((item) => (
+                    item.id === updated.id ? updated : item
+                  )))}
+                />
               </section>
             )
           })()}
