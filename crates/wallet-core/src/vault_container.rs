@@ -30,6 +30,10 @@ pub struct VaultWallet {
     pub updated_at: String,
     #[serde(default)]
     pub account_id: Option<String>,
+    #[serde(default)]
+    pub secret_kind: crate::key_import::SecretKind,
+    #[serde(default)]
+    pub key_type: crate::key_import::KeyType,
     pub(crate) nonce: String,
     pub(crate) ciphertext: String,
 }

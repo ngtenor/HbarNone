@@ -5,11 +5,23 @@ use serde::{Deserialize, Serialize};
 use sha3::{Digest, Keccak256};
 use zeroize::Zeroizing;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum KeyType {
+    #[default]
     Ed25519,
     Ecdsa,
+}
+
+/// What a wallet's encrypted secret holds: a BIP39 recovery phrase, or a raw
+/// private key stored as 64 lowercase hex characters.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SecretKind {
+    #[default]
+    Mnemonic,
+    #[serde(rename = "privatekey")]
+    PrivateKey,
 }
 
 /// DER prefixes (PKCS#8) of the 32-byte private keys that Hedera tools export.
