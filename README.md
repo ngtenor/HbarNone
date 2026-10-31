@@ -32,7 +32,10 @@ Treat development wallet material as compromised.
 - Migration of existing per-wallet encrypted records into the shared-password vault
 - Configurable inactivity auto-lock from 30 seconds to 30 minutes (5-minute default)
 - A browser-style tabbed vault interface with icon buttons at the top right (create/import wallet, settings, lock; a padlock shows when locked), a persistent HOME tab, wallet-specific tabs, and a Settings tab for auto-lock preferences and changing the vault password
-- Encrypted vault backup export and restore (separate Settings panels; restore also available when creating a vault)
+- Encrypted vault backup export and restore (separate Settings panels; restore also available from the first-run screen)
+- Settings "Back up and erase this device": saves and verifies an encrypted backup, then removes the vault so the app returns to its first-run state
+- Read-only Hedera Testnet panel on each wallet: link an account ID, then manually refresh the balance and recent transactions from the public Testnet mirror node
+- A two-button first-run screen (Create vault / Restore backup) and a centred unlock screen
 - Wallet rename, with unique names (up to 40 characters), and blocking of duplicate recovery-phrase imports
 - Wallet deletion and recovery-phrase reveal from the selected wallet's tab
 - Wallet-store persistence in the desktop app's operating-system data directory
@@ -44,8 +47,10 @@ master key to encrypt vault contents and wallet recovery phrases. Normal
 commands do not return mnemonic or private-key material to the UI; a user must
 explicitly reveal a wallet's phrase while the vault is unlocked. The app locks
 after the selected inactivity period and when it closes. The auto-lock setting
-is encrypted as part of the vault contents. Hedera network access,
-account management, and transaction creation are not yet implemented.
+is encrypted as part of the vault contents. The app contacts the Hedera Testnet
+mirror node only when you click a button in a wallet's Testnet panel, and
+only to read public account data. Account creation, transaction signing and
+mainnet access are not yet implemented.
 
 Existing records encrypted with separate wallet passwords are migrated by
 asking for each wallet's current password once and a new vault password. The
@@ -116,7 +121,7 @@ See [docs/TODO.md](docs/TODO.md) for current status and next steps.
 
 ## Longer-term roadmap
 
-1. Testnet support, account management, transfers, and transaction history
+1. Raw private key import (Ed25519 and ECDSA), then Testnet account creation and transfers
 2. HTS tokens, NFTs, and smart-contract interactions
 3. Offline signing and QR-based transaction transport
 4. A dedicated signer application and reproducible hardware reference design

@@ -84,9 +84,21 @@ use real funds or recovery phrases.
 Password change and encrypted backup export/restore are now tracked under
 "Wallet recovery and backup" in the pre-Linux work above.
 
+## Hedera Testnet integration
+- [x] Optional, validated, unique Hedera account ID per wallet, stored in the encrypted vault
+- [x] `hedera-mirror` crate: read-only client for the public Testnet mirror node (fixed URL, https only, no redirects, 15 s timeout, 512 KB cap); contacts the network only when the user clicks a button
+- [x] Testnet panel on each wallet tab: link an account by ID, find an account by key (Ed25519), refresh balance and recent transactions. Verified manually against the real Testnet (1000 ℏ shown)
+- [x] Settings "Back up and erase this device" (verified manually: save, erase, restore from the create screen)
+- [x] First-run, unlock and Settings layout polish (two-button start screen, in-box eye toggle, centred fixed-size boxes, adaptive logo/padlock)
+
+## Roadmap (agreed)
+1. **Raw private key import** (next branch): import hex and DER private keys, add ECDSA (secp256k1) alongside Ed25519, store key type and secret kind per wallet, show public key and EVM address, check the key against the Testnet account. Verify ECDSA derivation paths against test vectors first.
+2. **Transaction signing and account creation**: use an imported funded Testnet key to create accounts from app-generated mnemonics. Testnet only, with a confirmation screen. Decide between the Hedera Rust SDK and a custom encoder.
+3. **Hardware key**: FIDO2 `hmac-secret` design on an RP2350 board, after the board arrives.
+4. Mainnet only after the above has been reviewed.
+
 ## Later roadmap
-- [ ] Integrate Hedera network access and Testnet account support
-- [ ] Query account balances and transaction history
+- [x] Integrate read-only Hedera Testnet access (balance and transaction history)
 - [ ] Implement transaction creation and signing
 - [ ] Add HTS token, NFT, and smart-contract support
 - [ ] Build QR-based offline transaction transport
@@ -102,8 +114,8 @@ tabs, wallet-specific reveal/delete actions, copy-blocked recovery-phrase
 display, and Settings tab are implemented, with a stricter release CSP and
 Linux `0700`/`0600` permission hardening. The latest standalone x64 Windows
 app and NSIS/MSI installers include these changes. `cargo fmt --all -- --check`,
-`cargo test --workspace` (26 wallet-core unit tests and 2 persistence
-integration test), 25 frontend component tests, frontend lint/build, and `cargo check --workspace` passed
+`cargo test --workspace` (28 wallet-core unit tests, 2 persistence
+integration tests and 6 hedera-mirror tests), 34 frontend component tests, frontend lint/build, and `cargo check --workspace` passed
 locally, and CI passed on Windows and Ubuntu for PR #1. Tests cover encryption,
 legacy migration and failure preservation, locked persistence, auto-lock
 bounds/expiry/activity reset, wallet mutation rollback, unlock delay, and
