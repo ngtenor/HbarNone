@@ -257,6 +257,47 @@
   text-align: left;
 }
 
+.wallet-balance {
+  flex: 0 0 120px;
+  color: var(--ink);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.wallet-item.wallet-total {
+  min-height: 20px;
+  padding: 0 12px;
+  background: var(--wash);
+}
+
+.wallet-total .wallet-open-button {
+  min-height: 20px;
+  padding: 3px 12px;
+}
+
+.wallet-total .wallet-icon {
+  height: 0;
+}
+
+.wallet-total:hover {
+  border-color: var(--line);
+  box-shadow: none;
+}
+
+.wallet-total .wallet-open-button {
+  cursor: default;
+}
+
+.wallet-total .wallet-balance {
+  font-weight: 700;
+}
+
+.wallet-total-spacer {
+  visibility: hidden;
+}
+
 .wallet-open-indicator {
   flex: 0 0 auto;
   color: var(--purple);

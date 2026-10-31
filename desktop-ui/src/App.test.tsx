@@ -200,14 +200,41 @@ describe('vault gates', () => {
 describe('hedera testnet panel', () => {
   beforeEach(() => installBackend())
 
-  it('contacts the network only when a button is clicked', async () => {
+  it('does not contact the network for wallets without a linked account', async () => {
     const user = userEvent.setup()
     render(<App />)
     await unlock(user)
     await openWalletTab(user, 'Savings')
-    expect(screen.getByText(/only when you click a button here/)).toBeInTheDocument()
+    expect(screen.getByText(/when the vault\s+unlocks, when you open a wallet/)).toBeInTheDocument()
     expect(commandsCalled('find_wallet_account')).toHaveLength(0)
     expect(commandsCalled('get_account_overview')).toHaveLength(0)
+  })
+
+  it('shows each balance and the total on HOME, and refreshes when a wallet opens', async () => {
+    const user = userEvent.setup()
+    installBackend({
+      wallets: [
+        wallet('w1', 'Savings', '0.0.1001'),
+        wallet('w2', 'Trading', '0.0.1002'),
+        wallet('w3', 'Empty'),
+      ],
+      overview: { account_id: 'x', balance_tinybars: 250_000_000, transactions: [] },
+    })
+    render(<App />)
+    await unlock(user)
+    await waitFor(() => expect(screen.getAllByText('2.50 ℏ')).toHaveLength(2))
+    expect(screen.getByLabelText('Total balance')).toHaveTextContent('5.00 ℏ')
+    expect(commandsCalled('get_account_overview')).toHaveLength(2)
+
+    await openWalletTab(user, 'Savings')
+    await waitFor(() => expect(commandsCalled('get_account_overview')).toHaveLength(3))
+  })
+
+  it('leaves the total blank when no balance is known', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+    await unlock(user)
+    expect(screen.getByLabelText('Total balance')).toHaveTextContent('')
   })
 
   it('links an account ID, rejects a malformed one, and unlinks', async () => {
