@@ -9,6 +9,8 @@ use prost::Message;
 use sha3::{Digest, Keccak256};
 use wallet_core::key_import::{KeyType, public_key_bytes};
 
+pub mod submit;
+
 #[derive(Clone, PartialEq, Message)]
 pub struct AccountId {
     #[prost(int64, tag = "1")]

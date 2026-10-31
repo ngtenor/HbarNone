@@ -14,6 +14,7 @@ type Backend = {
   restoreCancelled: boolean
   foundAccount: string | null
   overview: unknown
+  sendError: string | null
   detection: { keyType: string | null; accounts: string[] }
   calls: { cmd: string; args?: Record<string, unknown> }[]
 }
@@ -48,6 +49,7 @@ function installBackend(overrides: Partial<Backend> = {}) {
     restoreCancelled: false,
     foundAccount: null,
     overview: null,
+    sendError: null,
     detection: { keyType: null, accounts: [] },
     calls: [],
     ...overrides,
@@ -99,6 +101,9 @@ function installBackend(overrides: Partial<Backend> = {}) {
       }
       case 'get_account_overview':
         return backend.overview
+      case 'send_hbar':
+        if (backend.sendError) throw new Error(backend.sendError)
+        return { transactionId: '0.0.1001-1700000000-000000005' }
       case 'get_wallet_keys':
         return { publicKey: 'ab'.repeat(32), evmAddress: null }
       case 'detect_private_key_type':
@@ -308,6 +313,80 @@ describe('hedera testnet panel', () => {
     await openWalletTab(user, 'Savings')
     await user.click(screen.getByRole('button', { name: 'Refresh balance' }))
     expect(await screen.findByRole('status')).toHaveTextContent('not found on Hedera Testnet')
+  })
+
+  describe('send HBAR', () => {
+    async function openSend(user: ReturnType<typeof userEvent.setup>) {
+      render(<App />)
+      await unlock(user)
+      await openWalletTab(user, 'Savings')
+      await user.type(await screen.findByLabelText('Recipient account ID'), '0.0.2002')
+      await user.type(screen.getByLabelText('Amount (ℏ)'), '1.5')
+    }
+
+    it('shows a confirmation and sends only after it is accepted', async () => {
+      const user = userEvent.setup()
+      installBackend({ wallets: [wallet('w1', 'Savings', '0.0.1001')] })
+      await openSend(user)
+      await user.click(screen.getByRole('button', { name: 'Review transfer' }))
+      const confirm = screen.getByRole('group', { name: 'Confirm transfer' })
+      expect(within(confirm).getByText('0.0.1001')).toBeInTheDocument()
+      expect(within(confirm).getByText('0.0.2002')).toBeInTheDocument()
+      expect(within(confirm).getByText('1.5 ℏ')).toBeInTheDocument()
+      expect(commandsCalled('send_hbar')).toHaveLength(0)
+
+      await user.click(screen.getByRole('button', { name: 'Sign and send' }))
+      expect(await screen.findByText(/Submitted 0\.0\.1001-1700000000-000000005/)).toBeInTheDocument()
+      expect(commandsCalled('send_hbar').map((call) => call.args)).toEqual([
+        { walletId: 'w1', recipient: '0.0.2002', amountHbar: '1.5', memo: '' },
+      ])
+      expect(screen.queryByRole('group', { name: 'Confirm transfer' })).not.toBeInTheDocument()
+    })
+
+    it('can go back from the confirmation without sending', async () => {
+      const user = userEvent.setup()
+      installBackend({ wallets: [wallet('w1', 'Savings', '0.0.1001')] })
+      await openSend(user)
+      await user.click(screen.getByRole('button', { name: 'Review transfer' }))
+      await user.click(screen.getByRole('button', { name: 'Back' }))
+      expect(screen.getByLabelText('Recipient account ID')).toHaveValue('0.0.2002')
+      expect(commandsCalled('send_hbar')).toHaveLength(0)
+    })
+
+    it('refuses to send to the wallet’s own account', async () => {
+      const user = userEvent.setup()
+      installBackend({ wallets: [wallet('w1', 'Savings', '0.0.1001')] })
+      render(<App />)
+      await unlock(user)
+      await openWalletTab(user, 'Savings')
+      await user.type(await screen.findByLabelText('Recipient account ID'), '0.0.1001')
+      await user.type(screen.getByLabelText('Amount (ℏ)'), '1')
+      await user.click(screen.getByRole('button', { name: 'Review transfer' }))
+      expect(await screen.findByRole('alert')).toHaveTextContent('different account')
+      expect(screen.queryByRole('group', { name: 'Confirm transfer' })).not.toBeInTheDocument()
+    })
+
+    it('shows the node’s error and keeps the confirmation', async () => {
+      const user = userEvent.setup()
+      installBackend({
+        wallets: [wallet('w1', 'Savings', '0.0.1001')],
+        sendError: 'The node rejected the transfer: INVALID_SIGNATURE',
+      })
+      await openSend(user)
+      await user.click(screen.getByRole('button', { name: 'Review transfer' }))
+      await user.click(screen.getByRole('button', { name: 'Sign and send' }))
+      expect(await screen.findByRole('alert')).toHaveTextContent('INVALID_SIGNATURE')
+      expect(screen.getByRole('group', { name: 'Confirm transfer' })).toBeInTheDocument()
+    })
+
+    it('offers no send form until an account is linked', async () => {
+      const user = userEvent.setup()
+      installBackend()
+      render(<App />)
+      await unlock(user)
+      await openWalletTab(user, 'Savings')
+      expect(screen.queryByText('Send HBAR')).not.toBeInTheDocument()
+    })
   })
 })
 

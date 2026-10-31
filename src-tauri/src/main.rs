@@ -327,6 +327,45 @@ async fn get_account_overview(
     MirrorClient::testnet()?.account_overview(&account_id).await
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SendResult {
+    transaction_id: String,
+}
+
+/// Signs in the backend with the wallet's own key and submits to Testnet only.
+#[tauri::command]
+async fn send_hbar(
+    wallet_id: String,
+    recipient: String,
+    amount_hbar: String,
+    memo: String,
+    state: State<'_, AppState>,
+) -> Result<SendResult, String> {
+    let tinybars = hedera_tx::submit::parse_hbar(&amount_hbar)?;
+    let sender = {
+        let mut service = lock_service(&state)?;
+        service
+            .list_wallets()?
+            .into_iter()
+            .find(|wallet| wallet.id == wallet_id)
+            .ok_or_else(|| format!("wallet not found: {wallet_id}"))?
+            .account_id
+            .ok_or_else(|| "link a Hedera account to this wallet first".to_string())?
+    };
+    let (key_type, secret) = lock_service(&state)?
+        .with_wallet_key(&wallet_id, |key_type, secret| {
+            Ok((key_type, Zeroizing::new(*secret)))
+        })?;
+    let receipt = hedera_tx::submit::send_testnet_transfer(
+        key_type, &secret, &sender, &recipient, tinybars, &memo,
+    )
+    .await?;
+    Ok(SendResult {
+        transaction_id: receipt.transaction_id,
+    })
+}
+
 #[tauri::command]
 fn rename_wallet(
     wallet_id: String,
@@ -503,6 +542,7 @@ fn main() {
             link_wallet_account,
             find_wallet_account,
             get_account_overview,
+            send_hbar,
             import_wallet,
             import_private_key,
             detect_private_key_type,

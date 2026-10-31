@@ -700,6 +700,17 @@ impl WalletService {
         }
     }
 
+    /// Lends the wallet's curve and secret bytes to `action` so callers can
+    /// sign without the secret ever being returned or stored outside the service.
+    pub fn with_wallet_key<R>(
+        &mut self,
+        wallet_id: &str,
+        action: impl FnOnce(KeyType, &[u8; 32]) -> Result<R, String>,
+    ) -> Result<R, String> {
+        let (key_type, secret) = self.wallet_key_material(wallet_id)?;
+        action(key_type, &secret)
+    }
+
     fn wallet_key_material(
         &mut self,
         wallet_id: &str,

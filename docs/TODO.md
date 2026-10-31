@@ -94,7 +94,7 @@ Password change and encrypted backup export/restore are now tracked under
 
 ## Roadmap (agreed)
 1. **Raw private key import** (done on `feature/raw-key-import`): import hex and DER private keys, ECDSA (secp256k1) alongside Ed25519, key type and secret kind stored per wallet (older vaults and backups still load), public key and EVM address shown, bare-hex curve detected through the Testnet mirror, duplicates detected by key material, import form cleared on lock. Manually verified with a funded Testnet ECDSA account. New mnemonic wallets stay Ed25519 only; ECDSA mnemonic derivation paths are still unverified. Note: an older app version cannot open a vault containing a raw-key wallet.
-2. **Transaction signing and account creation**: use an imported funded Testnet key to create accounts from app-generated mnemonics. Testnet only, with a confirmation screen. Decide between the Hedera Rust SDK and a custom encoder.
+2. **Transaction signing and account creation**: use an imported funded Testnet key to create accounts from app-generated mnemonics. Testnet only, with a confirmation screen. Decision: own small protobuf layer (`prost` + `tonic`), because `hiero-sdk` needs OpenSSL and `hedera-proto` needs `protoc`. In progress on `feature/testnet-transfer`: HBAR transfer between own accounts (signing core, gRPC submit, send form with confirmation) is written and manually verified on Testnet with both Ed25519 and ECDSA keys; account creation (`CryptoCreate`) is next.
 3. **Hardware key**: FIDO2 `hmac-secret` design on an RP2350 board, after the board arrives.
 4. Mainnet only after the above has been reviewed.
 
