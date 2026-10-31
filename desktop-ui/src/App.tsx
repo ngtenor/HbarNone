@@ -120,7 +120,6 @@ function App() {
   const [passwordChangeSuccess, setPasswordChangeSuccess] = useState(false)
   const [isChangingPassword, setIsChangingPassword] = useState(false)
   const [backupPassword, setBackupPassword] = useState('')
-  const [isBackupPasswordVisible, setIsBackupPasswordVisible] = useState(false)
   const [hasConfirmedRestore, setHasConfirmedRestore] = useState(false)
   const [backupError, setBackupError] = useState('')
   const [backupMessage, setBackupMessage] = useState('')
@@ -177,7 +176,6 @@ function App() {
     setPasswordChangeError('')
     setPasswordChangeSuccess(false)
     setBackupPassword('')
-    setIsBackupPasswordVisible(false)
     setHasConfirmedRestore(false)
     setBackupError('')
     setBackupMessage('')
@@ -552,30 +550,40 @@ function App() {
     }
   }
 
+  function renderEyeToggle() {
+    const label = isVaultPasswordVisible ? 'Hide vault password' : 'Show vault password'
+    return (
+      <button
+        className="eye-toggle"
+        type="button"
+        aria-label={label}
+        title={label}
+        aria-pressed={isVaultPasswordVisible}
+        onClick={() => setIsVaultPasswordVisible((visible) => !visible)}
+      >
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor"
+          strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z" />
+          <circle cx="12" cy="12" r="3" />
+          {isVaultPasswordVisible && <path d="M3 3l18 18" />}
+        </svg>
+      </button>
+    )
+  }
+
   function renderRestoreForm(idPrefix: string, requireConfirmation: boolean) {
     return (
       <form onSubmit={handleRestoreBackup}>
         <label htmlFor={`${idPrefix}-backup-password`}>Password of the backup file</label>
-        <div className="password-input-row">
-          <input
-            id={`${idPrefix}-backup-password`}
-            type={isBackupPasswordVisible ? 'text' : 'password'}
-            autoComplete="off"
-            maxLength={1024}
-            required
-            value={backupPassword}
-            onChange={(event) => setBackupPassword(event.target.value)}
-          />
-          <button
-            className="password-toggle"
-            type="button"
-            aria-label={isBackupPasswordVisible ? 'Hide backup password' : 'Show backup password'}
-            aria-pressed={isBackupPasswordVisible}
-            onClick={() => setIsBackupPasswordVisible((visible) => !visible)}
-          >
-            {isBackupPasswordVisible ? 'Hide' : 'Show'}
-          </button>
-        </div>
+        <input
+          id={`${idPrefix}-backup-password`}
+          type="password"
+          autoComplete="off"
+          maxLength={1024}
+          required
+          value={backupPassword}
+          onChange={(event) => setBackupPassword(event.target.value)}
+        />
         <p className="field-hint">
           Enter the vault password that was in use when this backup was
           created. It may differ from your current vault password.
@@ -812,7 +820,7 @@ function App() {
           </p>
           <form onSubmit={handleCreateVault}>
             <label htmlFor="create-vault-password">Vault password</label>
-            <div className="password-input-row">
+            <div className="password-field">
               <input
                 id="create-vault-password"
                 type={isVaultPasswordVisible ? 'text' : 'password'}
@@ -822,26 +830,21 @@ function App() {
                 value={vaultPassword}
                 onChange={(event) => setVaultPassword(event.target.value)}
               />
-              <button
-                className="password-toggle"
-                type="button"
-                aria-label={isVaultPasswordVisible ? 'Hide vault password' : 'Show vault password'}
-                aria-pressed={isVaultPasswordVisible}
-                onClick={() => setIsVaultPasswordVisible((visible) => !visible)}
-              >
-                {isVaultPasswordVisible ? 'Hide' : 'Show'}
-              </button>
+              {renderEyeToggle()}
             </div>
             <label htmlFor="create-vault-password-confirmation">Confirm vault password</label>
-            <input
-              id="create-vault-password-confirmation"
-              type={isVaultPasswordVisible ? 'text' : 'password'}
-              autoComplete="new-password"
-              maxLength={1024}
-              required
-              value={vaultPasswordConfirmation}
-              onChange={(event) => setVaultPasswordConfirmation(event.target.value)}
-            />
+            <div className="password-field">
+              <input
+                id="create-vault-password-confirmation"
+                type={isVaultPasswordVisible ? 'text' : 'password'}
+                autoComplete="new-password"
+                maxLength={1024}
+                required
+                value={vaultPasswordConfirmation}
+                onChange={(event) => setVaultPasswordConfirmation(event.target.value)}
+              />
+              {renderEyeToggle()}
+            </div>
             <button
               className="secondary-button gate-button generate-passphrase"
               type="button"

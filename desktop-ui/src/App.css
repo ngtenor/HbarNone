@@ -497,6 +497,43 @@ button.topbar-icon:hover {
   gap: 14px;
 }
 
+.vault-gate.gate-choice {
+  margin-top: 50vh;
+  margin-bottom: 0;
+  transform: translateY(-50%);
+}
+
+.password-field {
+  position: relative;
+}
+
+.vault-gate .password-field input:not([type="range"]) {
+  padding-right: 44px;
+}
+
+.password-field input::-ms-reveal {
+  display: none;
+}
+
+.eye-toggle {
+  position: absolute;
+  top: 0;
+  right: 4px;
+  display: flex;
+  width: 36px;
+  height: 100%;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  color: var(--muted);
+  background: none;
+  cursor: pointer;
+}
+
+.eye-toggle:hover {
+  color: var(--purple);
+}
+
 .primary-button.gate-button,
 .secondary-button.gate-button {
   display: flex;
