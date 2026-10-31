@@ -497,10 +497,35 @@ button.topbar-icon:hover {
   gap: 14px;
 }
 
-.vault-gate.gate-choice {
-  margin-top: 50vh;
-  margin-bottom: 0;
-  transform: translateY(-50%);
+.app-shell.gate-centred {
+  position: relative;
+  display: flex;
+  box-sizing: border-box;
+  min-height: 100vh;
+  flex-direction: column;
+  padding: 24px 0;
+}
+
+.gate-centred .topbar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  border-bottom: 0;
+}
+
+.gate-centred .vault-gate {
+  width: min(560px, 100%);
+  min-height: 0;
+  margin: auto;
+}
+
+.brand.logo-hidden {
+  visibility: hidden;
+}
+
+.brand.text-hidden > span:not(.brand-mark) {
+  visibility: hidden;
 }
 
 .password-field {

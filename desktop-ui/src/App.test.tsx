@@ -555,6 +555,8 @@ describe('backup and restore', () => {
     await user.click(screen.getAllByRole('button', { name: 'Show vault password' })[0])
     expect(screen.getByLabelText('Vault password')).toHaveAttribute('type', 'text')
     expect(screen.getByLabelText('Confirm vault password')).toHaveAttribute('type', 'text')
+    await user.click(screen.getByRole('button', { name: 'Generate six-word passphrase' }))
+    expect(screen.getByLabelText('Vault password')).toHaveAttribute('type', 'text')
     expect(screen.queryByRole('button', { name: 'Show' })).not.toBeInTheDocument()
     expect(screen.getByText(/eff\.org long word list/)).toBeInTheDocument()
     expect(screen.queryByLabelText('Password of the backup file')).not.toBeInTheDocument()

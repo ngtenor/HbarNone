@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { FormEvent, KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { generatePassphrase } from './passphrase'
@@ -152,6 +152,41 @@ function App() {
   const lastActivityAt = useRef(0)
   const lastActivitySyncAt = useRef(0)
   const lockRequestActive = useRef(false)
+  const shellRef = useRef<HTMLElement>(null)
+  const [logoState, setLogoState] = useState<'full' | 'mark' | 'hidden'>('full')
+
+  // On the first-run screens the centred white box can reach the logo in a small window.
+  // Hidden parts keep their layout space, so the measurements stay stable.
+  useLayoutEffect(() => {
+    const shell = shellRef.current
+    const box = shell?.querySelector('.vault-gate')
+    const logo = shell?.querySelector('.brand')
+    const mark = shell?.querySelector('.brand-mark')
+    if (vaultView !== 'uninitialized' || !shell || !box || !logo || !mark) {
+      setLogoState('full')
+      return
+    }
+    const overlaps = (a: DOMRect, b: DOMRect) =>
+      a.top < b.bottom && a.bottom > b.top && a.left < b.right && a.right > b.left
+    const update = () => {
+      const boxRect = box.getBoundingClientRect()
+      if (!overlaps(boxRect, logo.getBoundingClientRect())) {
+        setLogoState('full')
+      } else if (!overlaps(boxRect, mark.getBoundingClientRect())) {
+        setLogoState('mark')
+      } else {
+        setLogoState('hidden')
+      }
+    }
+    update()
+    window.addEventListener('resize', update)
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(update)
+    observer?.observe(box)
+    return () => {
+      window.removeEventListener('resize', update)
+      observer?.disconnect()
+    }
+  }, [vaultView, gateMode, error])
   const autoLockSaveTimer = useRef<number | null>(null)
 
   const closeReveal = useCallback(() => {
@@ -432,7 +467,6 @@ function App() {
       const passphrase = generatePassphrase()
       setVaultPassword(passphrase)
       setVaultPasswordConfirmation(passphrase)
-      setIsVaultPasswordVisible(false)
       setError('')
     } catch {
       setError('Could not generate a secure passphrase on this device.')
@@ -745,9 +779,16 @@ function App() {
   }
 
   return (
-    <main className="app-shell">
+    <main
+      ref={shellRef}
+      className={vaultView === 'uninitialized' ? 'app-shell gate-centred' : 'app-shell'}
+    >
       <header className="topbar">
-        <a className="brand" href="/" aria-label="HederaVault home">
+        <a
+          className={logoState === 'hidden' ? 'brand logo-hidden' : logoState === 'mark' ? 'brand text-hidden' : 'brand'}
+          href="/"
+          aria-label="HederaVault home"
+        >
           <span className="brand-mark" aria-hidden="true">H</span>
           <span>HederaVault</span>
         </a>
