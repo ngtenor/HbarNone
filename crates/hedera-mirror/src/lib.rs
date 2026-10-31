@@ -93,10 +93,10 @@ fn format_consensus_time(timestamp: &str) -> String {
 
 fn validate_public_key_hex(public_key: &str) -> Result<String, String> {
     let lowered = public_key.trim().to_ascii_lowercase();
-    if lowered.len() == 64 && lowered.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+    if matches!(lowered.len(), 64 | 66) && lowered.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         Ok(lowered)
     } else {
-        Err("public key must be 64 hexadecimal characters".to_string())
+        Err("public key must be 64 (Ed25519) or 66 (ECDSA) hexadecimal characters".to_string())
     }
 }
 
@@ -198,7 +198,8 @@ impl MirrorClient {
         Ok(Some(body))
     }
 
-    /// Accounts on Testnet whose key is this Ed25519 public key (hex).
+    /// Accounts on Testnet whose key is this public key (hex): 64 characters
+    /// for Ed25519, 66 for compressed ECDSA.
     pub async fn find_accounts_by_public_key(
         &self,
         public_key_hex: &str,

@@ -92,7 +92,7 @@ Password change and encrypted backup export/restore are now tracked under
 - [x] First-run, unlock and Settings layout polish (two-button start screen, in-box eye toggle, centred fixed-size boxes, adaptive logo/padlock)
 
 ## Roadmap (agreed)
-1. **Raw private key import** (next branch): import hex and DER private keys, add ECDSA (secp256k1) alongside Ed25519, store key type and secret kind per wallet, show public key and EVM address, check the key against the Testnet account. Verify ECDSA derivation paths against test vectors first.
+1. **Raw private key import** (done on `feature/raw-key-import`): import hex and DER private keys, ECDSA (secp256k1) alongside Ed25519, key type and secret kind stored per wallet (older vaults and backups still load), public key and EVM address shown, bare-hex curve detected through the Testnet mirror, duplicates detected by key material, import form cleared on lock. Manually verified with a funded Testnet ECDSA account. New mnemonic wallets stay Ed25519 only; ECDSA mnemonic derivation paths are still unverified. Note: an older app version cannot open a vault containing a raw-key wallet.
 2. **Transaction signing and account creation**: use an imported funded Testnet key to create accounts from app-generated mnemonics. Testnet only, with a confirmation screen. Decide between the Hedera Rust SDK and a custom encoder.
 3. **Hardware key**: FIDO2 `hmac-secret` design on an RP2350 board, after the board arrives.
 4. Mainnet only after the above has been reviewed.

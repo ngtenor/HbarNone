@@ -1,4 +1,7 @@
 use crate::{
+    key_import::{
+        KeyType, SecretKind, evm_address, is_valid_ecdsa_secret, parse_private_key, public_key_hex,
+    },
     vault_container::{
         DEFAULT_AUTO_LOCK_SECONDS, VaultContainer, VaultPayload, VaultWallet,
         decrypt_wallet_secret, encrypt_wallet_secret, validate_auto_lock_seconds,
@@ -35,6 +38,8 @@ pub struct WalletSummary {
     pub name: String,
     pub created_at: String,
     pub account_id: Option<String>,
+    pub secret_kind: SecretKind,
+    pub key_type: KeyType,
 }
 
 impl WalletSummary {
@@ -44,6 +49,33 @@ impl WalletSummary {
             name: wallet.name.clone(),
             created_at: wallet.created_at.clone(),
             account_id: wallet.account_id.clone(),
+            secret_kind: wallet.secret_kind,
+            key_type: wallet.key_type,
+        }
+    }
+}
+
+/// The key a stored secret controls, as its curve and 32 secret bytes. A
+/// recovery phrase always yields the standard Hedera Ed25519 key.
+fn wallet_identity(
+    secret_kind: SecretKind,
+    key_type: KeyType,
+    secret: &str,
+) -> Result<(KeyType, Zeroizing<[u8; 32]>), String> {
+    match secret_kind {
+        SecretKind::Mnemonic => {
+            let wallet = Wallet::from_mnemonic(secret)?;
+            Ok((
+                KeyType::Ed25519,
+                Zeroizing::new(*wallet.private_key_bytes()),
+            ))
+        }
+        SecretKind::PrivateKey => {
+            let parsed = parse_private_key(secret)?;
+            if key_type == KeyType::Ecdsa && !is_valid_ecdsa_secret(&parsed.secret) {
+                return Err("the private key is not a valid ECDSA (secp256k1) key".to_string());
+            }
+            Ok((key_type, parsed.secret))
         }
     }
 }
@@ -170,6 +202,8 @@ impl WalletService {
                         name: wallet.name.clone(),
                         created_at: wallet.created_at.clone(),
                         account_id: None,
+                        secret_kind: SecretKind::Mnemonic,
+                        key_type: KeyType::Ed25519,
                     })
                     .collect()
             })
@@ -318,6 +352,8 @@ impl WalletService {
                 created_at: legacy_wallet.created_at.clone(),
                 updated_at: legacy_wallet.updated_at.clone(),
                 account_id: None,
+                secret_kind: SecretKind::Mnemonic,
+                key_type: KeyType::Ed25519,
                 nonce,
                 ciphertext,
             });
@@ -380,10 +416,16 @@ impl WalletService {
             if wallet.id.trim().is_empty() || !ids.insert(wallet.id.as_str()) {
                 return Err("backup contains an empty or duplicate wallet ID".to_string());
             }
-            let mnemonic = decrypt_wallet_secret(&master_key, &wallet.nonce, &wallet.ciphertext)
+            let secret = decrypt_wallet_secret(&master_key, &wallet.nonce, &wallet.ciphertext)
                 .map_err(|_| "backup contains a damaged wallet".to_string())?;
-            Wallet::from_mnemonic(mnemonic.as_str())
-                .map_err(|_| "backup contains an invalid recovery phrase".to_string())?;
+            wallet_identity(wallet.secret_kind, wallet.key_type, secret.as_str()).map_err(
+                |_| match wallet.secret_kind {
+                    SecretKind::Mnemonic => {
+                        "backup contains an invalid recovery phrase".to_string()
+                    }
+                    SecretKind::PrivateKey => "backup contains an invalid private key".to_string(),
+                },
+            )?;
         }
 
         let previous = std::path::PathBuf::from(format!("{path}.pre-restore"));
@@ -462,7 +504,13 @@ impl WalletService {
         path: &str,
     ) -> Result<WalletSummary, String> {
         let wallet = Wallet::generate()?;
-        self.store_wallet(name, wallet.mnemonic(), path)
+        self.store_wallet(
+            name,
+            SecretKind::Mnemonic,
+            KeyType::Ed25519,
+            wallet.mnemonic(),
+            path,
+        )
     }
 
     pub fn import_and_save_wallet(
@@ -478,13 +526,55 @@ impl WalletService {
             return Err("recovery phrase cannot exceed 1024 bytes".to_string());
         }
         let wallet = Wallet::from_mnemonic(mnemonic)?;
-        self.store_wallet(name, wallet.mnemonic(), path)
+        self.store_wallet(
+            name,
+            SecretKind::Mnemonic,
+            KeyType::Ed25519,
+            wallet.mnemonic(),
+            path,
+        )
+    }
+
+    /// Imports a raw private key (hex or DER). `key_type` is required when the
+    /// input is bare hex, which carries no curve information.
+    pub fn import_private_key_and_save(
+        &mut self,
+        name: &str,
+        private_key: &str,
+        key_type: Option<KeyType>,
+        path: &str,
+    ) -> Result<WalletSummary, String> {
+        if private_key.len() > 1024 {
+            return Err("private key cannot exceed 1024 bytes".to_string());
+        }
+        let parsed = parse_private_key(private_key)?;
+        let key_type = match (parsed.key_type, key_type) {
+            (Some(detected), Some(chosen)) if detected != chosen => {
+                return Err("the key is not of the selected type".to_string());
+            }
+            (Some(detected), _) => detected,
+            (None, Some(chosen)) => chosen,
+            (None, None) => return Err("choose the key type (Ed25519 or ECDSA)".to_string()),
+        };
+        if key_type == KeyType::Ecdsa && !is_valid_ecdsa_secret(&parsed.secret) {
+            return Err("the private key is not a valid ECDSA (secp256k1) key".to_string());
+        }
+        let normalized = Zeroizing::new(hex::encode(*parsed.secret));
+        self.store_wallet(
+            name,
+            SecretKind::PrivateKey,
+            key_type,
+            normalized.as_str(),
+            path,
+        )
     }
 
     fn store_wallet(
         &mut self,
         name: &str,
-        mnemonic: &str,
+        secret_kind: SecretKind,
+        key_type: KeyType,
+        secret: &str,
         path: &str,
     ) -> Result<WalletSummary, String> {
         self.ensure_unlocked()?;
@@ -492,12 +582,18 @@ impl WalletService {
         let master_key = self.master_key.as_ref().expect("checked unlocked");
         let current_payload = self.payload.as_ref().expect("checked unlocked");
         ensure_name_available(current_payload, &name, None)?;
+        let (new_type, new_secret) = wallet_identity(secret_kind, key_type, secret)?;
         for existing in &current_payload.wallets {
-            let existing_mnemonic =
+            let existing_secret =
                 decrypt_wallet_secret(master_key, &existing.nonce, &existing.ciphertext)?;
-            if existing_mnemonic.as_str() == mnemonic {
+            let (existing_type, existing_key) = wallet_identity(
+                existing.secret_kind,
+                existing.key_type,
+                existing_secret.as_str(),
+            )?;
+            if existing_type == new_type && *existing_key == *new_secret {
                 return Err(format!(
-                    "this recovery phrase is already in the vault as '{}'",
+                    "this key is already in the vault as '{}'",
                     existing.name
                 ));
             }
@@ -514,13 +610,15 @@ impl WalletService {
             }
         };
         let now = chrono::Utc::now().to_rfc3339();
-        let (nonce, ciphertext) = encrypt_wallet_secret(master_key, mnemonic)?;
+        let (nonce, ciphertext) = encrypt_wallet_secret(master_key, secret)?;
         let wallet = VaultWallet {
             id,
             name,
             created_at: now.clone(),
             updated_at: now,
             account_id: None,
+            secret_kind,
+            key_type: new_type,
             nonce,
             ciphertext,
         };
@@ -585,9 +683,27 @@ impl WalletService {
         Ok(summary)
     }
 
-    /// The wallet's Ed25519 public key as lowercase hex. It is not secret,
-    /// but deriving it needs the recovery phrase, so the vault must be unlocked.
+    /// The wallet's public key as lowercase hex (Ed25519 raw, or ECDSA
+    /// compressed). It is not secret, but deriving it needs the stored secret,
+    /// so the vault must be unlocked.
     pub fn wallet_public_key(&mut self, wallet_id: &str) -> Result<String, String> {
+        let (key_type, secret) = self.wallet_key_material(wallet_id)?;
+        public_key_hex(key_type, &secret)
+    }
+
+    /// The wallet's EVM address, for ECDSA wallets only.
+    pub fn wallet_evm_address(&mut self, wallet_id: &str) -> Result<Option<String>, String> {
+        let (key_type, secret) = self.wallet_key_material(wallet_id)?;
+        match key_type {
+            KeyType::Ecdsa => evm_address(&secret).map(Some),
+            KeyType::Ed25519 => Ok(None),
+        }
+    }
+
+    fn wallet_key_material(
+        &mut self,
+        wallet_id: &str,
+    ) -> Result<(KeyType, Zeroizing<[u8; 32]>), String> {
         self.ensure_unlocked()?;
         let master_key = self.master_key.as_ref().expect("checked unlocked");
         let wallet = self
@@ -598,8 +714,8 @@ impl WalletService {
             .iter()
             .find(|wallet| wallet.id == wallet_id)
             .ok_or_else(|| format!("wallet not found: {wallet_id}"))?;
-        let mnemonic = decrypt_wallet_secret(master_key, &wallet.nonce, &wallet.ciphertext)?;
-        Ok(Wallet::from_mnemonic(mnemonic.as_str())?.public_key)
+        let secret = decrypt_wallet_secret(master_key, &wallet.nonce, &wallet.ciphertext)?;
+        wallet_identity(wallet.secret_kind, wallet.key_type, secret.as_str())
     }
 
     pub fn delete_wallet_and_save(&mut self, wallet_id: &str, path: &str) -> Result<(), String> {
@@ -705,7 +821,7 @@ fn summarize(payload: &VaultPayload) -> Vec<WalletSummary> {
 
 #[cfg(test)]
 mod tests {
-    use super::{LegacyWalletPassword, MAX_WALLET_NAME_CHARS, WalletService};
+    use super::{KeyType, LegacyWalletPassword, MAX_WALLET_NAME_CHARS, SecretKind, WalletService};
     use crate::{vault::VaultFile, wallet::Wallet, wallet_store::WalletStore};
     use std::time::{Duration, Instant};
     use zeroize::Zeroizing;
@@ -970,6 +1086,94 @@ mod tests {
         assert!(service.wallet_public_key("missing").is_err());
         service.lock();
         assert!(service.wallet_public_key(&wallet.id).is_err());
+    }
+
+    #[test]
+    fn raw_key_wallets_round_trip_and_block_duplicates() {
+        let (_directory, path) = temp_path();
+        let path = path.to_str().unwrap();
+        let one = format!("{:064x}", 1);
+        let mut service = WalletService::new();
+        service.create_vault("vault password", path).unwrap();
+        let wallet = service
+            .import_private_key_and_save("Key", &one, Some(KeyType::Ecdsa), path)
+            .unwrap();
+        assert_eq!(wallet.secret_kind, SecretKind::PrivateKey);
+        assert_eq!(wallet.key_type, KeyType::Ecdsa);
+        assert_eq!(
+            service.wallet_public_key(&wallet.id).unwrap(),
+            "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+        );
+        assert_eq!(
+            service.wallet_evm_address(&wallet.id).unwrap().unwrap(),
+            "0x7e5f4552091a69125d5dfcb7b8c2659029395bdf"
+        );
+        // Same bytes under the same curve is a duplicate, even with 0x and DER.
+        assert!(
+            service
+                .import_private_key_and_save(
+                    "Again",
+                    &format!("0x{one}"),
+                    Some(KeyType::Ecdsa),
+                    path
+                )
+                .unwrap_err()
+                .contains("already in the vault")
+        );
+        // Bare hex needs a curve; a different curve for the same bytes is distinct.
+        assert!(
+            service
+                .import_private_key_and_save("NoType", &one, None, path)
+                .is_err()
+        );
+        service
+            .import_private_key_and_save("Ed", &one, Some(KeyType::Ed25519), path)
+            .unwrap();
+
+        service.lock();
+        let listed = service.unlock_vault("vault password").unwrap();
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0].key_type, KeyType::Ecdsa);
+        assert_eq!(service.reveal_mnemonic(&wallet.id).unwrap().as_str(), one);
+        assert!(service.wallet_evm_address(&listed[1].id).unwrap().is_none());
+    }
+
+    #[test]
+    fn raw_ed25519_key_duplicating_a_phrase_wallet_is_blocked_and_backups_restore() {
+        let (_directory, path) = temp_path();
+        let path = path.to_str().unwrap();
+        let phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        let secret = hex::encode(Wallet::from_mnemonic(phrase).unwrap().private_key_bytes());
+        let mut service = WalletService::new();
+        service.create_vault("vault password", path).unwrap();
+        service
+            .import_and_save_wallet("Phrase", phrase, path)
+            .unwrap();
+        assert!(
+            service
+                .import_private_key_and_save("Raw", &secret, Some(KeyType::Ed25519), path)
+                .unwrap_err()
+                .contains("already in the vault")
+        );
+        service
+            .import_private_key_and_save(
+                "Ecdsa",
+                &format!("{:064x}", 7),
+                Some(KeyType::Ecdsa),
+                path,
+            )
+            .unwrap();
+        let backup = service.export_backup().unwrap();
+
+        let (_other, other_path) = temp_path();
+        let other_path = other_path.to_str().unwrap();
+        let mut target = WalletService::new();
+        let restored = target
+            .restore_backup(&backup, "vault password", other_path)
+            .unwrap();
+        assert_eq!(restored.len(), 2);
+        assert_eq!(restored[1].key_type, KeyType::Ecdsa);
+        assert_eq!(restored[1].secret_kind, SecretKind::PrivateKey);
     }
 
     #[test]

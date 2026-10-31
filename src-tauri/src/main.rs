@@ -6,8 +6,9 @@ use hedera_mirror::{AccountOverview, MirrorClient};
 use serde::{Deserialize, Serialize};
 use tauri::{Manager, State};
 use tauri_plugin_dialog::DialogExt;
-use wallet_core::wallet_service::{
-    LegacyWalletPassword, MAX_BACKUP_BYTES, WalletService, WalletSummary,
+use wallet_core::{
+    key_import::{KeyType, is_valid_ecdsa_secret, parse_private_key, public_key_hex},
+    wallet_service::{LegacyWalletPassword, MAX_BACKUP_BYTES, WalletService, WalletSummary},
 };
 use zeroize::Zeroizing;
 
@@ -367,6 +368,88 @@ fn import_wallet(
     )
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct KeyDetection {
+    key_type: Option<KeyType>,
+    accounts: Vec<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WalletKeys {
+    public_key: String,
+    evm_address: Option<String>,
+}
+
+// A DER key states its own curve. A bare hex key does not, so both candidate
+// public keys are looked up on Testnet; the curve is decided only if exactly
+// one of them owns an account. Only public keys leave the app.
+#[tauri::command]
+async fn detect_private_key_type(private_key: String) -> Result<KeyDetection, String> {
+    let private_key = Zeroizing::new(private_key);
+    if private_key.len() > 1024 {
+        return Err("private key cannot exceed 1024 bytes".to_string());
+    }
+    let parsed = parse_private_key(private_key.as_str())?;
+    if let Some(key_type) = parsed.key_type {
+        return Ok(KeyDetection {
+            key_type: Some(key_type),
+            accounts: Vec::new(),
+        });
+    }
+    let client = MirrorClient::testnet()?;
+    let ed_accounts = client
+        .find_accounts_by_public_key(&public_key_hex(KeyType::Ed25519, &parsed.secret)?)
+        .await?;
+    let ecdsa_accounts = if is_valid_ecdsa_secret(&parsed.secret) {
+        client
+            .find_accounts_by_public_key(&public_key_hex(KeyType::Ecdsa, &parsed.secret)?)
+            .await?
+    } else {
+        Vec::new()
+    };
+    Ok(match (ed_accounts.is_empty(), ecdsa_accounts.is_empty()) {
+        (false, true) => KeyDetection {
+            key_type: Some(KeyType::Ed25519),
+            accounts: ed_accounts,
+        },
+        (true, false) => KeyDetection {
+            key_type: Some(KeyType::Ecdsa),
+            accounts: ecdsa_accounts,
+        },
+        _ => KeyDetection {
+            key_type: None,
+            accounts: Vec::new(),
+        },
+    })
+}
+
+#[tauri::command]
+fn import_private_key(
+    name: String,
+    private_key: String,
+    key_type: Option<KeyType>,
+    state: State<'_, AppState>,
+) -> Result<WalletSummary, String> {
+    let private_key = Zeroizing::new(private_key);
+    lock_service(&state)?.import_private_key_and_save(
+        &name,
+        private_key.as_str(),
+        key_type,
+        &state.store_path.to_string_lossy(),
+    )
+}
+
+#[tauri::command]
+fn get_wallet_keys(wallet_id: String, state: State<'_, AppState>) -> Result<WalletKeys, String> {
+    let mut service = lock_service(&state)?;
+    Ok(WalletKeys {
+        public_key: service.wallet_public_key(&wallet_id)?,
+        evm_address: service.wallet_evm_address(&wallet_id)?,
+    })
+}
+
 #[tauri::command]
 fn reveal_wallet_mnemonic(wallet_id: String, state: State<'_, AppState>) -> Result<String, String> {
     Ok(lock_service(&state)?
@@ -421,6 +504,9 @@ fn main() {
             find_wallet_account,
             get_account_overview,
             import_wallet,
+            import_private_key,
+            detect_private_key_type,
+            get_wallet_keys,
             list_wallets,
             reveal_wallet_mnemonic,
             get_vault_state

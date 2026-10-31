@@ -14,6 +14,7 @@ type Backend = {
   restoreCancelled: boolean
   foundAccount: string | null
   overview: unknown
+  detection: { keyType: string | null; accounts: string[] }
   calls: { cmd: string; args?: Record<string, unknown> }[]
 }
 
@@ -47,6 +48,7 @@ function installBackend(overrides: Partial<Backend> = {}) {
     restoreCancelled: false,
     foundAccount: null,
     overview: null,
+    detection: { keyType: null, accounts: [] },
     calls: [],
     ...overrides,
   }
@@ -97,6 +99,22 @@ function installBackend(overrides: Partial<Backend> = {}) {
       }
       case 'get_account_overview':
         return backend.overview
+      case 'get_wallet_keys':
+        return { publicKey: 'ab'.repeat(32), evmAddress: null }
+      case 'detect_private_key_type':
+        return backend.detection
+      case 'import_private_key': {
+        if (backend.wallets.some((item) => item.name === args?.name)) {
+          throw new Error('name taken')
+        }
+        const created = {
+          ...wallet(`k${backend.wallets.length + 1}`, String(args?.name)),
+          secret_kind: 'privatekey',
+          key_type: String(args?.keyType),
+        }
+        backend.wallets.push(created)
+        return { ...created }
+      }
       case 'export_vault_backup':
         return backend.exportSaved
       case 'backup_and_erase_vault':
@@ -412,6 +430,71 @@ describe('delete flow', () => {
     await user.click(within(dialog).getByRole('button', { name: 'Delete wallet' }))
     expect(await within(dialog).findByText('could not save vault')).toBeInTheDocument()
     expect(screen.getByRole('tab', { name: 'Savings' })).toBeInTheDocument()
+  })
+})
+
+describe('private key import', () => {
+  beforeEach(() => installBackend())
+
+  async function openKeyImport(user: ReturnType<typeof userEvent.setup>) {
+    render(<App />)
+    await unlock(user)
+    await user.click(screen.getByRole('button', { name: /Create \/ import wallet/ }))
+    await user.click(await screen.findByRole('button', { name: 'Import' }))
+    await user.click(screen.getByRole('button', { name: 'Private key' }))
+  }
+
+  it('detects the key type, imports the key and links the single account found', async () => {
+    backend.detection = { keyType: 'ecdsa', accounts: ['0.0.555'] }
+    const user = userEvent.setup()
+    await openKeyImport(user)
+    await user.type(screen.getByLabelText('Private key (hex or DER)'), '11'.repeat(32))
+    await user.type(screen.getByLabelText('Wallet name'), 'Funded')
+    await user.click(screen.getByRole('button', { name: /Import encrypted wallet/ }))
+
+    await screen.findByRole('tab', { name: 'HOME' })
+    expect(commandsCalled('import_private_key')[0].args).toEqual({
+      name: 'Funded',
+      privateKey: '11'.repeat(32),
+      keyType: 'ecdsa',
+    })
+    expect(commandsCalled('link_wallet_account')[0].args).toEqual({
+      walletId: 'k3',
+      accountId: '0.0.555',
+    })
+  })
+
+  it('asks the user to choose when the type cannot be detected, then imports', async () => {
+    const user = userEvent.setup()
+    await openKeyImport(user)
+    await user.type(screen.getByLabelText('Private key (hex or DER)'), '22'.repeat(32))
+    await user.type(screen.getByLabelText('Wallet name'), 'Manual')
+    await user.click(screen.getByRole('button', { name: /Import encrypted wallet/ }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Choose Ed25519 or ECDSA')
+    expect(commandsCalled('import_private_key')).toHaveLength(0)
+
+    await user.selectOptions(screen.getByLabelText('Key type'), 'ed25519')
+    await user.click(screen.getByRole('button', { name: /Import encrypted wallet/ }))
+    await screen.findByRole('tab', { name: 'HOME' })
+    expect(commandsCalled('import_private_key')[0].args?.keyType).toBe('ed25519')
+    expect(commandsCalled('detect_private_key_type')).toHaveLength(1)
+  })
+  it('clears the import form and its error when the vault locks', async () => {
+    const user = userEvent.setup()
+    await openKeyImport(user)
+    await user.type(screen.getByLabelText('Private key (hex or DER)'), '33'.repeat(32))
+    await user.type(screen.getByLabelText('Wallet name'), 'Leftover')
+    await user.click(screen.getByRole('button', { name: /Import encrypted wallet/ }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Choose Ed25519 or ECDSA')
+
+    await user.click(screen.getByRole('button', { name: 'Lock vault' }))
+    await unlock(user)
+    await user.click(screen.getByRole('button', { name: /Create \/ import wallet/ }))
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Wallet name')).toHaveValue('')
+    await user.click(screen.getByRole('button', { name: 'Import' }))
+    await user.click(screen.getByRole('button', { name: 'Private key' }))
+    expect(screen.getByLabelText('Private key (hex or DER)')).toHaveValue('')
   })
 })
 

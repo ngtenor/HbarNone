@@ -26,6 +26,7 @@ Treat development wallet material as compromised.
 - Rust workspace with a `wallet-core` library
 - BIP39 mnemonic generation and recovery
 - Validated BIP39 mnemonic import into an encrypted wallet record
+- Raw private key import (hex or DER, Ed25519 or ECDSA secp256k1), with the key type detected from a DER key or, for bare hex, from the public keys' Testnet accounts; the wallet tab shows the public key and, for ECDSA, the EVM address
 - Hedera ED25519 key derivation using the standard Hedera SDK derivation path
 - A shared vault master key wrapped by an Argon2id-derived password key
 - AES-256-GCM encryption for wallet metadata and recovery phrases under the master key

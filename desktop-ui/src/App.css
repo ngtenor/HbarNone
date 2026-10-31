@@ -751,6 +751,7 @@ h2 {
 }
 
 .create-panel input,
+.create-panel select,
 .create-panel textarea {
   box-sizing: border-box;
   width: 100%;
@@ -764,7 +765,8 @@ h2 {
   font-size: 13px;
 }
 
-.create-panel input {
+.create-panel input,
+.create-panel select {
   height: 42px;
   padding: 0 12px;
 }
@@ -1215,6 +1217,41 @@ h2 {
   color: var(--muted);
   font-size: 9px;
   text-align: right;
+}
+
+.mnemonic-grid li.private-key-value {
+  grid-column: 1 / -1;
+  padding: 12px;
+}
+
+.mnemonic-grid li.private-key-value strong {
+  overflow-wrap: anywhere;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 12px;
+  text-overflow: clip;
+}
+
+.wallet-key-details {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 6px 14px;
+  margin: 0 0 16px;
+  font-size: 12px;
+}
+
+.wallet-key-details dt {
+  color: var(--muted);
+}
+
+.wallet-key-details dd {
+  margin: 0;
+  color: var(--ink);
+}
+
+.wallet-key-details .mono-value {
+  overflow-wrap: anywhere;
+  font-family: Consolas, "Courier New", monospace;
+  user-select: text;
 }
 
 .mnemonic-grid li strong {

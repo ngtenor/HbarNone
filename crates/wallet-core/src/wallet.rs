@@ -51,6 +51,10 @@ impl Wallet {
         &self.mnemonic
     }
 
+    pub fn private_key_bytes(&self) -> &[u8; 32] {
+        &self.private_key
+    }
+
     pub fn sign(&self, message: &[u8]) -> [u8; 64] {
         SigningKey::from_bytes(&self.private_key)
             .sign(message)
