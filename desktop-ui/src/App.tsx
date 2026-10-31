@@ -23,6 +23,13 @@ function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error)
 }
 
+function formatHomeBalance(tinybars: number) {
+  return `${(tinybars / 100_000_000).toLocaleString('en-US', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })} ℏ`
+}
+
 function formatAutoLock(seconds: number) {
   const minutes = Math.floor(seconds / 60)
   const remainingSeconds = seconds % 60
@@ -141,6 +148,8 @@ function App() {
   const [importKind, setImportKind] = useState<'phrase' | 'key'>('phrase')
   const [importKeyType, setImportKeyType] = useState<'auto' | 'ed25519' | 'ecdsa'>('auto')
   const [walletKeys, setWalletKeys] = useState<{ id: string, keys: WalletKeys } | null>(null)
+  const [balances, setBalances] = useState<Record<string, { account: string, tinybars: number }>>({})
+  const fetchedBalances = useRef(new Map<string, string>())
   const [error, setError] = useState('')
   const [isSavingWallet, setIsSavingWallet] = useState(false)
   const [walletToReveal, setWalletToReveal] = useState<WalletSummary | null>(null)
@@ -240,6 +249,7 @@ function App() {
     setImportKeyType('auto')
     setWalletMode('create')
     setWalletKeys(null)
+    setBalances({})
     setError('')
     setMnemonic('')
     setVaultPassword('')
@@ -321,6 +331,32 @@ function App() {
       window.clearTimeout(autoLockSaveTimer.current)
     }
   }, [])
+
+  useEffect(() => {
+    if (vaultView !== 'unlocked') {
+      fetchedBalances.current.clear()
+      return
+    }
+    for (const item of wallets) {
+      const account = item.account_id
+      if (!account || fetchedBalances.current.get(item.id) === account) continue
+      fetchedBalances.current.set(item.id, account)
+      void invoke<{ balance_tinybars: number } | null>('get_account_overview', { walletId: item.id })
+        .then((overview) => {
+          if (overview && fetchedBalances.current.get(item.id) === account) {
+            setBalances((existing) => ({
+              ...existing,
+              [item.id]: { account, tinybars: overview.balance_tinybars },
+            }))
+          }
+        })
+        .catch(() => {
+          if (fetchedBalances.current.get(item.id) === account) {
+            fetchedBalances.current.delete(item.id)
+          }
+        })
+    }
+  }, [vaultView, wallets])
 
   useEffect(() => {
     if (vaultView !== 'unlocked' || !wallets.some((wallet) => wallet.id === activeTab)) return
@@ -469,6 +505,19 @@ function App() {
     }, 350)
   }
 
+  function balanceText(item: WalletSummary) {
+    const balance = balances[item.id]
+    return balance && balance.account === item.account_id ? formatHomeBalance(balance.tinybars) : ''
+  }
+
+  const knownBalances = wallets.flatMap((item) => {
+    const balance = balances[item.id]
+    return balance && balance.account === item.account_id ? [balance.tinybars] : []
+  })
+  const totalText = knownBalances.length > 0
+    ? formatHomeBalance(knownBalances.reduce((sum, value) => sum + value, 0))
+    : ''
+
   async function handleSaveWallet(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     setError('')
@@ -613,6 +662,7 @@ function App() {
       setImportKeyType('auto')
       setWalletMode('create')
       setWalletKeys(null)
+      setBalances({})
       setMnemonic('')
       setVaultPassword('')
       setVaultPasswordConfirmation('')
@@ -1232,10 +1282,21 @@ function App() {
                             <strong>{wallet.name}</strong>
                             <span>Added {new Date(wallet.created_at).toLocaleDateString()}</span>
                           </span>
+                          <span className="wallet-balance">{balanceText(wallet)}</span>
                           <span className="wallet-open-indicator" aria-hidden="true">Open →</span>
                         </button>
                       </li>
                     ))}
+                    <li className="wallet-item wallet-total">
+                      <div className="wallet-open-button">
+                        <span className="wallet-icon wallet-total-spacer" aria-hidden="true" />
+                        <span className="wallet-details">
+                          <strong>Total</strong>
+                        </span>
+                        <span className="wallet-balance" aria-label="Total balance">{totalText}</span>
+                        <span className="wallet-open-indicator wallet-total-spacer" aria-hidden="true">Open →</span>
+                      </div>
+                    </li>
                   </ul>
                 )}
               </section>
@@ -1690,6 +1751,10 @@ function App() {
                 <TestnetPanel
                   key={wallet.id}
                   wallet={wallet}
+                  onBalance={(walletId, account, tinybars) => {
+                    fetchedBalances.current.set(walletId, account)
+                    setBalances((existing) => ({ ...existing, [walletId]: { account, tinybars } }))
+                  }}
                   onWalletUpdated={(updated) => setWallets((existing) => existing.map((item) => (
                     item.id === updated.id ? updated : item
                   )))}

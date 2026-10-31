@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import type { WalletSummary } from './types'
@@ -38,9 +38,10 @@ function errorMessage(error: unknown) {
 type Props = {
   wallet: WalletSummary
   onWalletUpdated: (wallet: WalletSummary) => void
+  onBalance?: (walletId: string, accountId: string, tinybars: number) => void
 }
 
-export function TestnetPanel({ wallet, onWalletUpdated }: Props) {
+export function TestnetPanel({ wallet, onWalletUpdated, onBalance }: Props) {
   const [overview, setOverview] = useState<AccountOverview | null>(null)
   const [accountInput, setAccountInput] = useState('')
   const [error, setError] = useState('')
@@ -94,8 +95,17 @@ export function TestnetPanel({ wallet, onWalletUpdated }: Props) {
       walletId: wallet.id,
     })
     setOverview(result)
+    if (result && wallet.account_id) {
+      onBalance?.(wallet.id, wallet.account_id, result.balance_tinybars)
+    }
     if (!result) setNotice('This account was not found on Hedera Testnet.')
   })
+
+  // Opening a wallet (or linking an account) refreshes its balance.
+  useEffect(() => {
+    if (wallet.account_id) void handleRefresh()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wallet.id, wallet.account_id])
 
   return (
     <section className="panel testnet-panel" aria-labelledby={`testnet-heading-${wallet.id}`}>
@@ -106,9 +116,9 @@ export function TestnetPanel({ wallet, onWalletUpdated }: Props) {
         </div>
       </div>
       <p className="dialog-copy">
-        Read-only. The app contacts Hedera&apos;s public Testnet mirror node only when you
-        click a button here, which tells its operator your account ID and IP address.
-        Testnet HBAR has no value.
+        Read-only. The app contacts Hedera&apos;s public Testnet mirror node when the vault
+        unlocks, when you open a wallet and when you click a button here, which tells its
+        operator your account IDs and IP address. Testnet HBAR has no value.
       </p>
 
       {wallet.account_id ? (

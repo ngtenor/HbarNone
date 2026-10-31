@@ -35,7 +35,7 @@ Treat development wallet material as compromised.
 - A browser-style tabbed vault interface with icon buttons at the top right (create/import wallet, settings, lock; a padlock shows when locked), a persistent HOME tab, wallet-specific tabs, and a Settings tab for auto-lock preferences and changing the vault password
 - Encrypted vault backup export and restore (separate Settings panels; restore also available from the first-run screen)
 - Settings "Back up and erase this device": saves and verifies an encrypted backup, then removes the vault so the app returns to its first-run state
-- Read-only Hedera Testnet panel on each wallet: link an account ID, then manually refresh the balance and recent transactions from the public Testnet mirror node
+- Read-only Hedera Testnet panel on each wallet: link an account ID, then view the balance (refreshed automatically when the wallet opens, or manually) and recent transactions from the public Testnet mirror node; HOME shows each linked wallet's balance and the total, fetched when the vault unlocks
 - A two-button first-run screen (Create vault / Restore backup) and a centred unlock screen
 - Wallet rename, with unique names (up to 40 characters), and blocking of duplicate recovery-phrase imports
 - Wallet deletion and recovery-phrase reveal from the selected wallet's tab
@@ -49,7 +49,8 @@ commands do not return mnemonic or private-key material to the UI; a user must
 explicitly reveal a wallet's phrase while the vault is unlocked. The app locks
 after the selected inactivity period and when it closes. The auto-lock setting
 is encrypted as part of the vault contents. The app contacts the Hedera Testnet
-mirror node only when you click a button in a wallet's Testnet panel, and
+mirror node when the vault unlocks (to show balances of linked accounts), when
+you open a wallet, and when you click a button in a wallet's Testnet panel, and
 only to read public account data. Account creation, transaction signing and
 mainnet access are not yet implemented.
 
