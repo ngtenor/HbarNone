@@ -297,6 +297,10 @@
   letter-spacing: -2.7px;
 }
 
+.settings-tab-panel > .panel + .panel {
+  margin-top: 20px;
+}
+
 .settings-panel {
   box-sizing: border-box;
   width: 100%;
@@ -465,6 +469,12 @@ button.topbar-icon:hover {
   cursor: default;
 }
 
+.vault-gate.unlock-gate {
+  width: 420px;
+  min-height: 0;
+  padding: 28px;
+}
+
 .unlock-gate form {
   display: flex;
   flex-direction: column;
@@ -520,7 +530,13 @@ button.topbar-icon:hover {
   margin: auto;
 }
 
-.brand.logo-hidden {
+.gate-centred .vault-gate.unlock-gate {
+  width: 420px;
+  max-width: 100%;
+}
+
+.brand.logo-hidden,
+.locked-indicator.logo-hidden {
   visibility: hidden;
 }
 

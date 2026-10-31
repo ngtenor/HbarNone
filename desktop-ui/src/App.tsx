@@ -154,16 +154,19 @@ function App() {
   const lockRequestActive = useRef(false)
   const shellRef = useRef<HTMLElement>(null)
   const [logoState, setLogoState] = useState<'full' | 'mark' | 'hidden'>('full')
+  const [isPadlockHidden, setIsPadlockHidden] = useState(false)
 
-  // On the first-run screens the centred white box can reach the logo in a small window.
+  // On the centred gate screens the white box can reach the logo or padlock in a small window.
   // Hidden parts keep their layout space, so the measurements stay stable.
   useLayoutEffect(() => {
     const shell = shellRef.current
     const box = shell?.querySelector('.vault-gate')
     const logo = shell?.querySelector('.brand')
     const mark = shell?.querySelector('.brand-mark')
-    if (vaultView !== 'uninitialized' || !shell || !box || !logo || !mark) {
+    const padlock = shell?.querySelector('.locked-indicator')
+    if ((vaultView !== 'uninitialized' && vaultView !== 'locked') || !shell || !box || !logo || !mark) {
       setLogoState('full')
+      setIsPadlockHidden(false)
       return
     }
     const overlaps = (a: DOMRect, b: DOMRect) =>
@@ -177,6 +180,7 @@ function App() {
       } else {
         setLogoState('hidden')
       }
+      setIsPadlockHidden(padlock ? overlaps(boxRect, padlock.getBoundingClientRect()) : false)
     }
     update()
     window.addEventListener('resize', update)
@@ -216,8 +220,6 @@ function App() {
     setBackupMessage('')
     setRestoreError('')
     setRestoreMessage('')
-    setHasConfirmedErase(false)
-    setEraseError('')
   }, [])
 
   const lockVault = useCallback(async () => {
@@ -226,6 +228,8 @@ function App() {
     closeReveal()
     closeDelete()
     clearPasswordChange()
+    setHasConfirmedErase(false)
+    setEraseError('')
     setRenamingWalletId(null)
     setMnemonic('')
     setVaultPassword('')
@@ -536,6 +540,7 @@ function App() {
       closeReveal()
       closeDelete()
       clearPasswordChange()
+      setHasConfirmedErase(false)
       setRenamingWalletId(null)
       setMnemonic('')
       setVaultPassword('')
@@ -781,7 +786,7 @@ function App() {
   return (
     <main
       ref={shellRef}
-      className={vaultView === 'uninitialized' ? 'app-shell gate-centred' : 'app-shell'}
+      className={vaultView === 'uninitialized' || vaultView === 'locked' ? 'app-shell gate-centred' : 'app-shell'}
     >
       <header className="topbar">
         <a
@@ -794,7 +799,11 @@ function App() {
         </a>
         <div className="topbar-actions">
           {vaultView === 'locked' && (
-            <span className="topbar-icon locked-indicator" role="img" aria-label="Vault locked">
+            <span
+              className={isPadlockHidden ? 'topbar-icon locked-indicator logo-hidden' : 'topbar-icon locked-indicator'}
+              role="img"
+              aria-label="Vault locked"
+            >
               <PadlockIcon locked />
             </span>
           )}

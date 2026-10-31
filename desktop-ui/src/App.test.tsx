@@ -501,6 +501,17 @@ describe('backup and restore', () => {
     expect(backend.status).toBe('uninitialized')
   })
 
+  it('keeps the erase confirmation ticked when the window loses focus for the file dialog', async () => {
+    const user = userEvent.setup()
+    await openSettings(user)
+    const box = screen.getByRole('checkbox', { name: /removes every wallet from this device/ })
+    await user.click(box)
+    act(() => {
+      window.dispatchEvent(new Event('blur'))
+    })
+    expect(box).toBeChecked()
+  })
+
   it('requires confirmation before restoring and reports a wrong password', async () => {
     const user = userEvent.setup()
     await openSettings(user)
