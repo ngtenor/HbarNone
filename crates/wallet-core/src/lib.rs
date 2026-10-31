@@ -1,3 +1,4 @@
+pub mod key_import;
 pub mod result;
 pub mod vault;
 pub mod vault_container;
