@@ -495,7 +495,8 @@ describe('backup and restore', () => {
 
     backend.exportSaved = true
     await user.click(eraseButton)
-    expect(await screen.findByLabelText('Vault password')).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: 'Create vault' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Restore backup' })).toBeInTheDocument()
     expect(screen.queryByRole('heading', { level: 1, name: 'Settings' })).not.toBeInTheDocument()
     expect(backend.status).toBe('uninitialized')
   })
@@ -538,11 +539,31 @@ describe('backup and restore', () => {
     expect(backend.wallets.map((item) => item.name)).toEqual(['Savings', 'Trading'])
   })
 
+  it('starts with two plain buttons and shows only the chosen section', async () => {
+    installBackend({ status: 'uninitialized' })
+    const user = userEvent.setup()
+    render(<App />)
+    const createButton = await screen.findByRole('button', { name: 'Create vault' })
+    expect(screen.getByRole('button', { name: 'Restore backup' })).toBeInTheDocument()
+    expect(screen.queryByLabelText('Vault password')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Password of the backup file')).not.toBeInTheDocument()
+
+    await user.click(createButton)
+    expect(screen.getByLabelText('Vault password')).toBeInTheDocument()
+    expect(screen.getByText(/eff\.org long word list/)).toBeInTheDocument()
+    expect(screen.queryByLabelText('Password of the backup file')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Back' }))
+
+    await user.click(screen.getByRole('button', { name: 'Restore backup' }))
+    expect(screen.getByLabelText('Password of the backup file')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Vault password')).not.toBeInTheDocument()
+  })
+
   it('offers restore on the create-vault screen without a confirmation checkbox', async () => {
     installBackend({ status: 'uninitialized' })
     const user = userEvent.setup()
     render(<App />)
-    expect(await screen.findByText('Or restore from a backup')).toBeInTheDocument()
+    await user.click(await screen.findByRole('button', { name: 'Restore backup' }))
     expect(screen.queryByRole('checkbox')).not.toBeInTheDocument()
     await user.type(screen.getByLabelText('Password of the backup file'), 'backup password')
     await user.click(screen.getByRole('button', { name: 'Choose backup file and restore' }))

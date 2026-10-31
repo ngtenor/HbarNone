@@ -129,6 +129,7 @@ function App() {
   const [isBackupBusy, setIsBackupBusy] = useState(false)
   const [isRestoreBusy, setIsRestoreBusy] = useState(false)
   const [hasConfirmedErase, setHasConfirmedErase] = useState(false)
+  const [gateMode, setGateMode] = useState<'choose' | 'create' | 'restore'>('choose')
   const [eraseError, setEraseError] = useState('')
   const [isErasing, setIsErasing] = useState(false)
   const [walletMode, setWalletMode] = useState<'create' | 'import'>('create')
@@ -513,6 +514,7 @@ function App() {
       setIsSettingsTabOpen(false)
       setOpenWalletTabs([])
       setAutoLockSeconds(state.autoLockSeconds)
+      setGateMode('choose')
       setError('')
       setVaultView(state.status)
     } catch (failure) {
@@ -594,7 +596,7 @@ function App() {
         {restoreError && <p className="error-message" role="alert">{restoreError}</p>}
         {restoreMessage && <p className="field-hint" role="status">{restoreMessage}</p>}
         <button
-          className="secondary-button"
+          className={idPrefix === 'gate' ? 'primary-button gate-button' : 'secondary-button'}
           type="submit"
           disabled={isRestoreBusy || (requireConfirmation && !hasConfirmedRestore)}
         >
@@ -788,7 +790,18 @@ function App() {
         </section>
       )}
 
-      {vaultView === 'uninitialized' && (
+      {vaultView === 'uninitialized' && gateMode === 'choose' && (
+        <section className="panel vault-gate gate-choice" aria-label="Get started">
+          <button className="primary-button gate-button" type="button" onClick={() => setGateMode('create')}>
+            Create vault
+          </button>
+          <button className="primary-button gate-button" type="button" onClick={() => setGateMode('restore')}>
+            Restore backup
+          </button>
+        </section>
+      )}
+
+      {vaultView === 'uninitialized' && gateMode === 'create' && (
         <section className="panel vault-gate">
           <p className="eyebrow">CREATE YOUR VAULT</p>
           <h2>One password for all your wallets</h2>
@@ -830,7 +843,7 @@ function App() {
               onChange={(event) => setVaultPasswordConfirmation(event.target.value)}
             />
             <button
-              className="secondary-button generate-passphrase"
+              className="secondary-button gate-button generate-passphrase"
               type="button"
               disabled={isSubmittingVault}
               onClick={handleGeneratePassphrase}
@@ -838,16 +851,28 @@ function App() {
               Generate six-word passphrase
             </button>
             <p className="field-hint">
-              The six words are selected locally using this device’s secure
-              random generator. Write the passphrase down and store it safely.
+              The six words are from the eff.org long word list and selected
+              locally using this device’s secure random generator. Write the
+              passphrase down and store it safely.
             </p>
             {error && <p className="error-message" role="alert">{error}</p>}
-            <button className="primary-button" type="submit" disabled={isSubmittingVault}>
+            <button className="primary-button gate-button" type="submit" disabled={isSubmittingVault}>
               {isSubmittingVault ? 'Creating vault...' : 'Create vault'}
             </button>
+            <button className="gate-back" type="button" onClick={() => setGateMode('choose')}>
+              Back
+            </button>
           </form>
-          <h2>Or restore from a backup</h2>
+        </section>
+      )}
+
+      {vaultView === 'uninitialized' && gateMode === 'restore' && (
+        <section className="panel vault-gate">
+          <p className="eyebrow">RESTORE FROM A BACKUP</p>
           {renderRestoreForm('gate', false)}
+          <button className="gate-back" type="button" onClick={() => setGateMode('choose')}>
+            Back
+          </button>
         </section>
       )}
 
