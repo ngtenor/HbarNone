@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import type { WalletSummary } from './types'
@@ -47,7 +47,11 @@ export function TestnetPanel({ wallet, onWalletUpdated, onBalance }: Props) {
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [isBusy, setIsBusy] = useState(false)
-
+  const [recipient, setRecipient] = useState('')
+  const [amount, setAmount] = useState('')
+  const [memo, setMemo] = useState('')
+  const [confirming, setConfirming] = useState(false)
+  const refreshTimer = useRef(0)
   async function run(task: () => Promise<void>) {
     if (isBusy) return
     setError('')
@@ -107,6 +111,42 @@ export function TestnetPanel({ wallet, onWalletUpdated, onBalance }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [wallet.id, wallet.account_id])
 
+  useEffect(() => () => window.clearTimeout(refreshTimer.current), [])
+
+  const resetSend = () => {
+    setRecipient('')
+    setAmount('')
+    setMemo('')
+    setConfirming(false)
+  }
+
+  const handleReview = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    setError('')
+    setNotice('')
+    if (recipient.trim() === wallet.account_id) {
+      setError('The recipient must be a different account.')
+      return
+    }
+    setConfirming(true)
+  }
+
+  const handleSend = () => run(async () => {
+    const result = await invoke<{ transactionId: string }>('send_hbar', {
+      walletId: wallet.id,
+      recipient: recipient.trim(),
+      amountHbar: amount.trim(),
+      memo,
+    })
+    resetSend()
+    setNotice(
+      `Submitted ${result.transactionId}. Testnet usually confirms within a few seconds; ` +
+        'the balance refreshes automatically.',
+    )
+    window.clearTimeout(refreshTimer.current)
+    refreshTimer.current = window.setTimeout(() => void handleRefresh(), 8000)
+  })
+
   return (
     <section className="panel testnet-panel" aria-labelledby={`testnet-heading-${wallet.id}`}>
       <div className="panel-heading">
@@ -116,9 +156,10 @@ export function TestnetPanel({ wallet, onWalletUpdated, onBalance }: Props) {
         </div>
       </div>
       <p className="dialog-copy">
-        Read-only. The app contacts Hedera&apos;s public Testnet mirror node when the vault
-        unlocks, when you open a wallet and when you click a button here, which tells its
-        operator your account IDs and IP address. Testnet HBAR has no value.
+        The app contacts Hedera&apos;s public Testnet mirror node when the vault unlocks, when
+        you open a wallet and when you click a button here, which tells its operator your
+        account IDs and IP address. Sending HBAR also contacts a Testnet node directly.
+        Transfers are signed inside the app and only ever go to Testnet, which has no value.
       </p>
 
       {wallet.account_id ? (
@@ -165,6 +206,78 @@ export function TestnetPanel({ wallet, onWalletUpdated, onBalance }: Props) {
 
       {error && <p className="error-message" role="alert">{error}</p>}
       {notice && <p className="field-hint" role="status">{notice}</p>}
+
+      {wallet.account_id && (
+        <div className="testnet-send">
+          <h3>Send HBAR</h3>
+          {confirming ? (
+            <div className="testnet-confirm" role="group" aria-label="Confirm transfer">
+              <p>Please check the details. A transfer cannot be undone.</p>
+              <dl>
+                <dt>Network</dt>
+                <dd>Hedera Testnet (no real value)</dd>
+                <dt>From</dt>
+                <dd>{wallet.account_id}</dd>
+                <dt>To</dt>
+                <dd>{recipient.trim()}</dd>
+                <dt>Amount</dt>
+                <dd>{amount.trim()} ℏ</dd>
+                {memo && (
+                  <>
+                    <dt>Memo</dt>
+                    <dd>{memo}</dd>
+                  </>
+                )}
+                <dt>Maximum fee</dt>
+                <dd>1 ℏ (the real fee is far lower)</dd>
+              </dl>
+              <div className="wallet-tab-actions">
+                <button className="primary-button" type="button" disabled={isBusy} onClick={handleSend}>
+                  {isBusy ? 'Sending...' : 'Sign and send'}
+                </button>
+                <button className="secondary-button" type="button" disabled={isBusy} onClick={() => setConfirming(false)}>
+                  Back
+                </button>
+              </div>
+            </div>
+          ) : (
+            <form className="testnet-send-form" onSubmit={handleReview}>
+              <label htmlFor={`send-to-${wallet.id}`}>Recipient account ID</label>
+              <input
+                id={`send-to-${wallet.id}`}
+                autoComplete="off"
+                placeholder="0.0.12345"
+                maxLength={32}
+                required
+                value={recipient}
+                onChange={(event) => setRecipient(event.target.value)}
+              />
+              <label htmlFor={`send-amount-${wallet.id}`}>Amount (ℏ)</label>
+              <input
+                id={`send-amount-${wallet.id}`}
+                autoComplete="off"
+                inputMode="decimal"
+                placeholder="1.5"
+                maxLength={20}
+                required
+                value={amount}
+                onChange={(event) => setAmount(event.target.value)}
+              />
+              <label htmlFor={`send-memo-${wallet.id}`}>Memo (optional)</label>
+              <input
+                id={`send-memo-${wallet.id}`}
+                autoComplete="off"
+                maxLength={100}
+                value={memo}
+                onChange={(event) => setMemo(event.target.value)}
+              />
+              <button className="secondary-button" type="submit" disabled={isBusy}>
+                Review transfer
+              </button>
+            </form>
+          )}
+        </div>
+      )}
 
       {overview && (
         <div className="testnet-overview">

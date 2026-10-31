@@ -447,6 +447,50 @@
   margin-top: 18px;
 }
 
+.testnet-send {
+  margin-top: 20px;
+}
+
+.testnet-send h3 {
+  margin: 0 0 8px;
+  font-size: 15px;
+}
+
+.testnet-send-form {
+  display: grid;
+  max-width: 420px;
+  gap: 8px;
+}
+
+.testnet-send-form .secondary-button {
+  width: auto;
+  justify-self: start;
+  padding: 0 14px;
+}
+
+.testnet-confirm {
+  max-width: 460px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.testnet-confirm dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 14px;
+  margin: 10px 0;
+}
+
+.testnet-confirm dt {
+  font-weight: 600;
+}
+
+.testnet-confirm dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
 .testnet-transactions {
   display: grid;
   padding: 0;
