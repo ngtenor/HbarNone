@@ -3,7 +3,10 @@ import type { FormEvent, KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { generatePassphrase } from './passphrase'
 import { TestnetPanel } from './TestnetPanel'
-import type { KeyDetection, WalletKeys, WalletSummary } from './types'
+import { AddressBook } from './AddressBook'
+import { AccountLabel } from './AccountLabel'
+import { WalletBadge } from './WalletBadge'
+import type { AddressBookView, KeyDetection, WalletKeys, WalletSummary } from './types'
 import './App.css'
 
 type VaultView = 'loading' | 'uninitialized' | 'legacy' | 'locked' | 'unlocked'
@@ -21,6 +24,10 @@ const DEFAULT_AUTO_LOCK_SECONDS = 300
 
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error)
+}
+
+function balanceKey(walletId: string, accountId: string) {
+  return `${walletId}/${accountId}`
 }
 
 function formatHomeBalance(tinybars: number) {
@@ -87,11 +94,31 @@ function PlusIcon() {
   )
 }
 
+function AddressBookIcon() {
+  return (
+    <svg {...iconProps}>
+      <path d="M5 4h12a2 2 0 0 1 2 2v14H7a2 2 0 0 1-2-2z" />
+      <circle cx="12" cy="10" r="2.5" />
+      <path d="M8 16c.8-1.6 2.2-2.4 4-2.4s3.2.8 4 2.4M3 8h2M3 12h2M3 16h2" />
+    </svg>
+  )
+}
+
 function CogIcon() {
   return (
     <svg {...iconProps}>
       <circle cx="12" cy="12" r="3" />
       <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3h0a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9v0a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" />
+    </svg>
+  )
+}
+
+function WalletsIcon() {
+  return (
+    <svg {...iconProps}>
+      <path d="M4 7a2 2 0 0 1 2-2h11v3" />
+      <rect x="4" y="7" width="16" height="13" rx="2" />
+      <path d="M16 13.5h4v3h-4a1.5 1.5 0 0 1 0-3z" />
     </svg>
   )
 }
@@ -110,6 +137,8 @@ function App() {
   const [activeTab, setActiveTab] = useState('home')
   const [isCreateTabOpen, setIsCreateTabOpen] = useState(false)
   const [isSettingsTabOpen, setIsSettingsTabOpen] = useState(false)
+  const [isAddressBookTabOpen, setIsAddressBookTabOpen] = useState(false)
+  const [addressBook, setAddressBook] = useState<AddressBookView>({ rows: [], allowExternalSends: false, allowExternalDeletes: false })
   const [openWalletTabs, setOpenWalletTabs] = useState<string[]>([])
   const [legacyWallets, setLegacyWallets] = useState<WalletSummary[]>([])
   const [vaultView, setVaultView] = useState<VaultView>('loading')
@@ -148,14 +177,18 @@ function App() {
   const [importKind, setImportKind] = useState<'phrase' | 'key'>('phrase')
   const [importKeyType, setImportKeyType] = useState<'auto' | 'ed25519' | 'ecdsa'>('auto')
   const [walletKeys, setWalletKeys] = useState<{ id: string, keys: WalletKeys } | null>(null)
-  const [balances, setBalances] = useState<Record<string, { account: string, tinybars: number }>>({})
-  const fetchedBalances = useRef(new Map<string, string>())
+  const [balances, setBalances] = useState<Record<string, number>>({})
+  const [selectedAccounts, setSelectedAccounts] = useState<Record<string, string>>({})
+  const [isRefreshingAll, setIsRefreshingAll] = useState(false)
+  const [findNotice, setFindNotice] = useState('')
+  const fetchedBalances = useRef(new Set<string>())
   const [error, setError] = useState('')
   const [isSavingWallet, setIsSavingWallet] = useState(false)
   const [walletToReveal, setWalletToReveal] = useState<WalletSummary | null>(null)
   const [walletToDelete, setWalletToDelete] = useState<WalletSummary | null>(null)
   const [isDeletingWallet, setIsDeletingWallet] = useState(false)
   const [deleteError, setDeleteError] = useState('')
+  const [deleteConfirmed, setDeleteConfirmed] = useState(false)
   const [mnemonic, setMnemonic] = useState('')
   const [revealError, setRevealError] = useState('')
   const [isRevealing, setIsRevealing] = useState(false)
@@ -217,6 +250,7 @@ function App() {
   const closeDelete = useCallback(() => {
     setWalletToDelete(null)
     setDeleteError('')
+    setDeleteConfirmed(false)
   }, [])
 
   const clearPasswordChange = useCallback(() => {
@@ -258,6 +292,8 @@ function App() {
     setActiveTab('home')
     setIsCreateTabOpen(false)
     setIsSettingsTabOpen(false)
+    setIsAddressBookTabOpen(false)
+    setAddressBook({ rows: [], allowExternalSends: false, allowExternalDeletes: false })
     setOpenWalletTabs([])
     try {
       await invoke('lock_vault')
@@ -269,6 +305,12 @@ function App() {
       lockRequestActive.current = false
     }
   }, [clearPasswordChange, closeDelete, closeReveal, vaultView])
+
+  useEffect(() => {
+    if (!findNotice) return
+    const timer = window.setTimeout(() => setFindNotice(''), 2000)
+    return () => window.clearTimeout(timer)
+  }, [findNotice])
 
   useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent) => {
@@ -326,6 +368,20 @@ function App() {
     }
   }, [])
 
+  // Names, moves and deletions all change the address book, so reload it with the wallets.
+  useEffect(() => {
+    if (vaultView !== 'unlocked') return
+    let cancelled = false
+    void invoke<AddressBookView>('get_address_book')
+      .then((view) => {
+        if (!cancelled) setAddressBook(view)
+      })
+      .catch(() => undefined)
+    return () => {
+      cancelled = true
+    }
+  }, [vaultView, wallets])
+
   useEffect(() => () => {
     if (autoLockSaveTimer.current !== null) {
       window.clearTimeout(autoLockSaveTimer.current)
@@ -338,23 +394,22 @@ function App() {
       return
     }
     for (const item of wallets) {
-      const account = item.account_id
-      if (!account || fetchedBalances.current.get(item.id) === account) continue
-      fetchedBalances.current.set(item.id, account)
-      void invoke<{ balance_tinybars: number } | null>('get_account_overview', { walletId: item.id })
-        .then((overview) => {
-          if (overview && fetchedBalances.current.get(item.id) === account) {
-            setBalances((existing) => ({
-              ...existing,
-              [item.id]: { account, tinybars: overview.balance_tinybars },
-            }))
-          }
+      for (const account of item.accounts) {
+        if (account.network !== 'testnet') continue
+        const key = balanceKey(item.id, account.id)
+        if (fetchedBalances.current.has(key)) continue
+        fetchedBalances.current.add(key)
+        void invoke<number | null>('get_account_balance', {
+          walletId: item.id,
+          accountId: account.id,
         })
-        .catch(() => {
-          if (fetchedBalances.current.get(item.id) === account) {
-            fetchedBalances.current.delete(item.id)
-          }
-        })
+          .then((tinybars) => {
+            if (tinybars !== null && fetchedBalances.current.has(key)) {
+              setBalances((existing) => ({ ...existing, [key]: tinybars }))
+            }
+          })
+          .catch(() => fetchedBalances.current.delete(key))
+      }
     }
   }, [vaultView, wallets])
 
@@ -439,6 +494,7 @@ function App() {
   async function handleUnlockVault(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     setError('')
+    if (vaultPassword === '') return
     setIsSubmittingVault(true)
     try {
       const state = await invoke<VaultState>('unlock_vault', {
@@ -505,18 +561,67 @@ function App() {
     }, 350)
   }
 
-  function balanceText(item: WalletSummary) {
-    const balance = balances[item.id]
-    return balance && balance.account === item.account_id ? formatHomeBalance(balance.tinybars) : ''
+  function accountBalanceText(walletId: string, accountId: string) {
+    const tinybars = balances[balanceKey(walletId, accountId)]
+    return tinybars === undefined ? '' : formatHomeBalance(tinybars)
   }
 
-  const knownBalances = wallets.flatMap((item) => {
-    const balance = balances[item.id]
-    return balance && balance.account === item.account_id ? [balance.tinybars] : []
-  })
+  const knownBalances = wallets.flatMap((item) => item.accounts.flatMap((account) => {
+    const tinybars = account.network === 'testnet'
+      ? balances[balanceKey(item.id, account.id)]
+      : undefined
+    return tinybars === undefined ? [] : [tinybars]
+  }))
   const totalText = knownBalances.length > 0
     ? formatHomeBalance(knownBalances.reduce((sum, value) => sum + value, 0))
     : ''
+
+  // An account page is open only after the user picks one; otherwise the wallet page shows.
+  function selectedAccountOf(wallet: WalletSummary) {
+    const chosen = selectedAccounts[wallet.id]
+    return chosen && wallet.accounts.some((account) => account.id === chosen) ? chosen : null
+  }
+
+  async function handleRefreshAll(wallet: WalletSummary) {
+    setError('')
+    setIsRefreshingAll(true)
+    try {
+      await Promise.all(wallet.accounts
+        .filter((account) => account.network === 'testnet')
+        .map(async (account) => {
+          const result = await invoke<{ balance_tinybars: number } | null>('get_account_overview', {
+            walletId: wallet.id,
+            accountId: account.id,
+          })
+          if (!result) return
+          const key = balanceKey(wallet.id, account.id)
+          fetchedBalances.current.add(key)
+          setBalances((existing) => ({ ...existing, [key]: result.balance_tinybars }))
+        }))
+    } catch (failure) {
+      setError(errorMessage(failure))
+    } finally {
+      setIsRefreshingAll(false)
+    }
+  }
+
+  async function handleFindAccounts(wallet: WalletSummary) {
+    setError('')
+    setIsRefreshingAll(true)
+    try {
+      const updated = await invoke<WalletSummary>('find_wallet_accounts', { walletId: wallet.id })
+      setWallets((existing) => existing.map((item) => (item.id === updated.id ? updated : item)))
+      setFindNotice(
+        updated.accounts.length === 0
+          ? 'No Testnet account uses this wallet’s key yet.'
+          : `This wallet has ${updated.accounts.length} account(s).`,
+      )
+    } catch (failure) {
+      setError(errorMessage(failure))
+    } finally {
+      setIsRefreshingAll(false)
+    }
+  }
 
   async function handleSaveWallet(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -524,7 +629,6 @@ function App() {
     setIsSavingWallet(true)
     try {
       let wallet: WalletSummary
-      let detectedAccounts: string[] = []
       if (walletMode === 'create') {
         wallet = await invoke<WalletSummary>('create_wallet', { name })
       } else if (importKind === 'phrase') {
@@ -551,22 +655,20 @@ function App() {
             return
           }
           keyType = detection.keyType
-          detectedAccounts = detection.accounts
         }
         wallet = await invoke<WalletSummary>('import_private_key', {
           name,
           privateKey: importMnemonic,
           keyType,
         })
-        if (detectedAccounts.length === 1) {
-          try {
-            wallet = await invoke<WalletSummary>('link_wallet_account', {
-              walletId: wallet.id,
-              accountId: detectedAccounts[0],
-            })
-          } catch {
-            // The wallet is saved; the account can be linked from its tab.
-          }
+      }
+      if (walletMode === 'import') {
+        // Link every Testnet account this key controls. The wallet is already
+        // saved, so a lookup failure only means the accounts are added later.
+        try {
+          wallet = await invoke<WalletSummary>('find_wallet_accounts', { walletId: wallet.id })
+        } catch {
+          // Nothing to link yet, or Testnet is unreachable.
         }
       }
       setWallets((existing) => [...existing, wallet])
@@ -670,6 +772,8 @@ function App() {
       setActiveTab('home')
       setIsCreateTabOpen(false)
       setIsSettingsTabOpen(false)
+      setIsAddressBookTabOpen(false)
+      setAddressBook({ rows: [], allowExternalSends: false, allowExternalDeletes: false })
       setOpenWalletTabs([])
       setAutoLockSeconds(state.autoLockSeconds)
       setGateMode('choose')
@@ -853,6 +957,51 @@ function App() {
     setError('')
   }
 
+  // After an account changes wallet, show it at once in both wallets, then
+  // re-read the vault so the lists and balances match what was saved.
+  function handleAccountMoved(target: WalletSummary, sourceWalletId: string, accountId: string) {
+    setWallets((existing) => existing.map((item) => {
+      if (item.id === target.id) return target
+      if (item.id !== sourceWalletId) return item
+      return { ...item, accounts: item.accounts.filter((entry) => entry.id !== accountId) }
+    }))
+    const sourceKey = balanceKey(sourceWalletId, accountId)
+    fetchedBalances.current.delete(sourceKey)
+    fetchedBalances.current.delete(balanceKey(target.id, accountId))
+    setBalances((existing) => {
+      const next = { ...existing }
+      delete next[sourceKey]
+      delete next[balanceKey(target.id, accountId)]
+      return next
+    })
+    setSelectedAccounts((existing) => {
+      const next = { ...existing, [target.id]: accountId }
+      delete next[sourceWalletId]
+      return next
+    })
+    void invoke<VaultState>('get_vault_state')
+      .then((state) => {
+        if (state.status === 'unlocked') setWallets(state.wallets)
+      })
+      .catch(() => undefined)
+  }
+
+  function handleAccountDeleted(updated: WalletSummary, accountId: string) {
+    setWallets((existing) => existing.map((item) => (item.id === updated.id ? updated : item)))
+    const key = balanceKey(updated.id, accountId)
+    fetchedBalances.current.delete(key)
+    setBalances((existing) => {
+      const next = { ...existing }
+      delete next[key]
+      return next
+    })
+    void invoke<VaultState>('get_vault_state')
+      .then((state) => {
+        if (state.status === 'unlocked') setWallets(state.wallets)
+      })
+      .catch(() => undefined)
+  }
+
   function openWalletTab(walletId: string) {
     setOpenWalletTabs((existing) => (
       existing.includes(walletId) ? existing : [...existing, walletId]
@@ -889,6 +1038,32 @@ function App() {
     setName('')
     setImportMnemonic('')
     setError('')
+  }
+
+  function openAddressBookTab() {
+    setIsAddressBookTabOpen(true)
+    setActiveTab('addressbook')
+  }
+
+  function closeAddressBookTab() {
+    setIsAddressBookTabOpen(false)
+    if (activeTab === 'addressbook') setActiveTab('home')
+  }
+
+  async function handleAllowExternalSends(allowed: boolean) {
+    try {
+      setAddressBook(await invoke<AddressBookView>('set_allow_external_sends', { allowed }))
+    } catch (failure) {
+      setError(errorMessage(failure))
+    }
+  }
+
+  async function handleAllowExternalDeletes(allowed: boolean) {
+    try {
+      setAddressBook(await invoke<AddressBookView>('set_allow_external_deletes', { allowed }))
+    } catch (failure) {
+      setError(errorMessage(failure))
+    }
   }
 
   function closeSettingsTab() {
@@ -930,6 +1105,15 @@ function App() {
           )}
           {vaultView === 'unlocked' && (
             <>
+              <button
+                className="topbar-icon"
+                type="button"
+                aria-label="Address book"
+                title="Address book"
+                onClick={openAddressBookTab}
+              >
+                <AddressBookIcon />
+              </button>
               <button
                 className="topbar-icon"
                 type="button"
@@ -1052,7 +1236,7 @@ function App() {
 
       {vaultView === 'locked' && (
         <section className="panel vault-gate unlock-gate" aria-label="Unlock vault">
-          <form onSubmit={handleUnlockVault}>
+          <form onSubmit={handleUnlockVault} noValidate>
             <label htmlFor="unlock-vault-password">Vault password</label>
             <input
               id="unlock-vault-password"
@@ -1192,6 +1376,31 @@ function App() {
                 </button>
               </div>
             )}
+            {isAddressBookTabOpen && (
+              <div className={`vault-tab-wrap${activeTab === 'addressbook' ? ' active' : ''}`} role="presentation">
+                <button
+                  className="vault-tab"
+                  id="tab-addressbook"
+                  type="button"
+                  role="tab"
+                  aria-selected={activeTab === 'addressbook'}
+                  aria-controls={activeTab === 'addressbook' ? 'panel-addressbook' : undefined}
+                  tabIndex={activeTab === 'addressbook' ? 0 : -1}
+                  onKeyDown={handleTabKeyDown}
+                  onClick={() => setActiveTab('addressbook')}
+                >
+                  Address book
+                </button>
+                <button
+                  className="vault-tab-close"
+                  type="button"
+                  aria-label="Close address book tab"
+                  onClick={closeAddressBookTab}
+                >
+                  ×
+                </button>
+              </div>
+            )}
             {isCreateTabOpen && (
               <div className={`vault-tab-wrap${activeTab === 'create' ? ' active' : ''}`} role="presentation">
                 <button
@@ -1264,43 +1473,78 @@ function App() {
               <section className="home-wallets" aria-labelledby="home-wallets-heading">
                 <div className="panel-heading">
                   <div>
-                    <h2 id="home-wallets-heading">Wallets</h2>
+                    <h2 id="home-wallets-heading" className="section-title"><WalletsIcon />Wallets</h2>
                   </div>
                   <span className="wallet-count">{wallets.length}</span>
                 </div>
                 {wallets.length > 0 && (
-                  <ul className="wallet-list">
-                    {wallets.map((wallet) => (
-                      <li className="wallet-item" key={wallet.id}>
-                        <button
-                          className="wallet-open-button"
-                          type="button"
-                          onClick={() => openWalletTab(wallet.id)}
-                        >
-                          <span className="wallet-icon" aria-hidden="true">H</span>
-                          <span className="wallet-details">
-                            <strong>{wallet.name}</strong>
-                            <span>Added {new Date(wallet.created_at).toLocaleDateString()}</span>
-                          </span>
-                          <span className="wallet-balance">{balanceText(wallet)}</span>
-                          <span className="wallet-open-indicator" aria-hidden="true">Open →</span>
-                        </button>
+                  <>
+                    <div className="home-columns" aria-hidden="true">
+                      <span />
+                      <span>Accounts</span>
+                      <span>Testnet</span>
+                      <span>Mainnet</span>
+                    </div>
+                    <ul className="wallet-list">
+                      {wallets.map((wallet) => (
+                        <li className="wallet-item" key={wallet.id}>
+                          <button
+                            className="wallet-open-button"
+                            type="button"
+                            onClick={() => openWalletTab(wallet.id)}
+                          >
+                            <WalletBadge wallet={wallet} />
+                            <span className="wallet-details">
+                              <strong>{wallet.name}</strong>
+                              <span>Added {new Date(wallet.created_at).toLocaleDateString()}</span>
+                            </span>
+                          </button>
+                          {wallet.accounts.length > 0 && (
+                            <ul className="account-rows" aria-label={`${wallet.name} accounts`}>
+                              {wallet.accounts.map((account) => (
+                                <li className="account-row" key={`${account.network}/${account.id}`}>
+                                  <span className="account-id">
+                                    <AccountLabel name={account.name} displayId={account.display_id} />
+                                  </span>
+                                  <span className="account-balance">
+                                    {account.network === 'testnet'
+                                      ? accountBalanceText(wallet.id, account.id)
+                                      : ''}
+                                  </span>
+                                  <span className={account.network === 'mainnet' ? 'account-balance no-balance' : 'account-balance'}>
+                                    {account.network === 'mainnet' ? '—' : ''}
+                                  </span>
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                        </li>
+                      ))}
+                      <li className="wallet-item wallet-total">
+                        <div className="account-row total-row">
+                          <strong className="account-id">Total</strong>
+                          <span className="account-balance" aria-label="Total balance">{totalText}</span>
+                          <span className="account-balance" />
+                        </div>
                       </li>
-                    ))}
-                    <li className="wallet-item wallet-total">
-                      <div className="wallet-open-button">
-                        <span className="wallet-icon wallet-total-spacer" aria-hidden="true" />
-                        <span className="wallet-details">
-                          <strong>Total</strong>
-                        </span>
-                        <span className="wallet-balance" aria-label="Total balance">{totalText}</span>
-                        <span className="wallet-open-indicator wallet-total-spacer" aria-hidden="true">Open →</span>
-                      </div>
-                    </li>
-                  </ul>
+                    </ul>
+                  </>
                 )}
               </section>
             </section>
+          )}
+
+          {activeTab === 'addressbook' && isAddressBookTabOpen && (
+            <AddressBook
+              view={addressBook}
+              onChange={setAddressBook}
+              onRenamed={(accountId, newName) => setWallets((existing) => existing.map((item) => ({
+                ...item,
+                accounts: item.accounts.map((account) => (
+                  account.id === accountId ? { ...account, name: newName, named: true } : account
+                )),
+              })))}
+            />
           )}
 
           {activeTab === 'settings' && isSettingsTabOpen && (
@@ -1326,6 +1570,40 @@ function App() {
                   Activity in the app resets the timer.
                 </p>
                 <AutoLockSlider seconds={autoLockSeconds} onChange={handleAutoLockChange} />
+              </section>
+              <section className="panel settings-panel" aria-labelledby="external-sends-heading">
+                <div className="panel-heading">
+                  <div>
+                    <p className="eyebrow">SAFETY</p>
+                    <h2 id="external-sends-heading">Sending HBAR</h2>
+                  </div>
+                </div>
+                <label className="testnet-acknowledge settings-check" htmlFor="allow-external-sends">
+                  <input
+                    id="allow-external-sends"
+                    type="checkbox"
+                    checked={addressBook.allowExternalSends}
+                    onChange={(event) => void handleAllowExternalSends(event.target.checked)}
+                  />
+                  <span>Allow sending to accounts that are not in the address book</span>
+                </label>
+              </section>
+              <section className="panel settings-panel" aria-labelledby="external-deletes-heading">
+                <div className="panel-heading">
+                  <div>
+                    <p className="eyebrow">SAFETY</p>
+                    <h2 id="external-deletes-heading">Deleting accounts</h2>
+                  </div>
+                </div>
+                <label className="testnet-acknowledge settings-check" htmlFor="allow-external-deletes">
+                  <input
+                    id="allow-external-deletes"
+                    type="checkbox"
+                    checked={addressBook.allowExternalDeletes}
+                    onChange={(event) => void handleAllowExternalDeletes(event.target.checked)}
+                  />
+                  <span>Allow sending the funds of a deleted account to an account that is not in the address book</span>
+                </label>
               </section>
               <section className="panel settings-panel create-panel" aria-labelledby="change-password-heading">
                 <div className="panel-heading">
@@ -1634,7 +1912,6 @@ function App() {
                   {isSavingWallet
                     ? 'Saving securely...'
                     : walletMode === 'create' ? 'Create encrypted wallet' : 'Import encrypted wallet'}
-                  {!isSavingWallet && <span aria-hidden="true">-&gt;</span>}
                 </button>
               </form>
             </section>
@@ -1643,6 +1920,7 @@ function App() {
           {activeTab !== 'home' && activeTab !== 'create' && (() => {
             const wallet = wallets.find((item) => item.id === activeTab)
             if (!wallet) return null
+            const openAccount = selectedAccountOf(wallet)
             return (
               <section
                 className="vault-tab-panel wallet-tab-panel"
@@ -1650,15 +1928,32 @@ function App() {
                 role="tabpanel"
                 aria-labelledby={`tab-${wallet.id}`}
               >
-                <div className="wallet-tab-heading">
+                <div className={`wallet-tab-heading${openAccount ? ' compact' : ''}`}>
                   <div>
-                    <p className="eyebrow">WALLET</p>
-                    <h1>{wallet.name}</h1>
-                    <p className="wallet-date">Added {new Date(wallet.created_at).toLocaleDateString()}</p>
+                    <h1 className="section-title"><WalletsIcon />{wallet.name}</h1>
+                    {!openAccount && (
+                      <p className="wallet-date">Added {new Date(wallet.created_at).toLocaleDateString()}</p>
+                    )}
                   </div>
-                  <span className="wallet-icon wallet-icon-large" aria-hidden="true">H</span>
+                  <WalletBadge wallet={wallet} large />
                 </div>
+                {openAccount && (
+                  <div className="wallet-tab-actions">
+                    <button
+                      className="secondary-button"
+                      type="button"
+                      onClick={() => setSelectedAccounts((existing) => {
+                        const next = { ...existing }
+                        delete next[wallet.id]
+                        return next
+                      })}
+                    >
+                      Back to wallet
+                    </button>
+                  </div>
+                )}
                 {error && <p className="error-message" role="alert">{error}</p>}
+                {!openAccount && (
                 <dl className="wallet-key-details">
                   <dt>Key type</dt>
                   <dd>
@@ -1678,7 +1973,63 @@ function App() {
                     </>
                   )}
                 </dl>
-                {renamingWalletId === wallet.id && (
+                )}
+                {!openAccount && (
+                  <div className="wallet-button-row">
+                    <button
+                      className="reveal-button"
+                      type="button"
+                      disabled={isRefreshingAll}
+                      onClick={() => void handleFindAccounts(wallet)}
+                    >
+                      Find accounts from this wallet’s key
+                    </button>
+                    <button
+                      className="secondary-button refresh-all-button"
+                      type="button"
+                      disabled={isRefreshingAll}
+                      onClick={() => void handleRefreshAll(wallet)}
+                    >
+                      {isRefreshingAll ? 'Contacting Testnet...' : 'Refresh balances'}
+                    </button>
+                    <button
+                      className="reveal-button"
+                      type="button"
+                      onClick={() => {
+                        setRenameValue(wallet.name)
+                        setRenameError('')
+                        setRenamingWalletId(wallet.id)
+                      }}
+                    >
+                      Rename wallet
+                    </button>
+                    <button
+                      className="reveal-button"
+                      type="button"
+                      onClick={() => {
+                        closeReveal()
+                        setWalletToDelete(null)
+                        setWalletToReveal(wallet)
+                      }}
+                    >
+                      Reveal {wallet.secret_kind === 'privatekey' ? 'private key' : 'recovery phrase'}
+                    </button>
+                    <button
+                      className="reveal-button delete-wallet-button"
+                      type="button"
+                      onClick={() => {
+                        closeReveal()
+                        setError('')
+                        setDeleteError('')
+                        setWalletToDelete(wallet)
+                      }}
+                    >
+                      Delete wallet
+                    </button>
+                  </div>
+                )}
+                {!openAccount && findNotice && <p className="field-hint" role="status">{findNotice}</p>}
+                {!openAccount && renamingWalletId === wallet.id && (
                   <form className="rename-form" onSubmit={handleRenameWallet}>
                     <label htmlFor="rename-wallet-name">New wallet name</label>
                     <input
@@ -1712,48 +2063,65 @@ function App() {
                     </div>
                   </form>
                 )}
-                <div className="wallet-tab-actions">
-                  <button
-                    className="secondary-button"
-                    type="button"
-                    onClick={() => {
-                      setRenameValue(wallet.name)
-                      setRenameError('')
-                      setRenamingWalletId(wallet.id)
-                    }}
-                  >
-                    Rename wallet
-                  </button>
-                  <button
-                    className="reveal-button"
-                    type="button"
-                    onClick={() => {
-                      closeReveal()
-                      setWalletToDelete(null)
-                      setWalletToReveal(wallet)
-                    }}
-                  >
-                    Reveal {wallet.secret_kind === 'privatekey' ? 'private key' : 'recovery phrase'}
-                  </button>
-                  <button
-                    className="delete-wallet-button"
-                    type="button"
-                    onClick={() => {
-                      closeReveal()
-                      setError('')
-                      setDeleteError('')
-                      setWalletToDelete(wallet)
-                    }}
-                  >
-                    Delete wallet
-                  </button>
+                <div className="wallet-tab-summary">
+                  <div className={`wallet-accounts${openAccount ? '' : ' account-links'}`} role="group" aria-label="Accounts">
+                    <div className="account-columns">
+                      <span>Account no.</span>
+                      <span>Testnet</span>
+                      <span>Mainnet</span>
+                    </div>
+                    {wallet.accounts.length === 0 ? (
+                      <p className="field-hint">No accounts yet. Use Find accounts or create one below.</p>
+                    ) : (
+                      <ul className="account-rows">
+                        {wallet.accounts.map((account) => (
+                          <li key={`${account.network}/${account.id}`}>
+                            <button
+                              className="account-row account-row-button"
+                              type="button"
+                              aria-pressed={selectedAccountOf(wallet) === account.id}
+                              onClick={() => setSelectedAccounts((existing) => ({
+                                ...existing,
+                                [wallet.id]: account.id,
+                              }))}
+                            >
+                              <span className="account-id">
+                                <AccountLabel name={account.name} displayId={account.display_id} />
+                              </span>
+                              <span className="account-balance">
+                                {account.network === 'testnet'
+                                  ? accountBalanceText(wallet.id, account.id)
+                                  : ''}
+                              </span>
+                              <span className="account-balance">
+                                {account.network === 'mainnet' ? '—' : ''}
+                              </span>
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
                 </div>
+                {!openAccount && (
+                  <>
+                    <p className="wallet-date wallet-hint">
+                      Click on an account above to see further account information
+                    </p>
+                  </>
+                )}
                 <TestnetPanel
-                  key={wallet.id}
+                  key={`${wallet.id}/${selectedAccountOf(wallet) ?? ''}`}
                   wallet={wallet}
+                  account={selectedAccountOf(wallet)}
+                  otherWallets={wallets.filter((item) => item.id !== wallet.id)}
+                  onAccountMoved={handleAccountMoved}
+                  onAccountDeleted={handleAccountDeleted}
+                  addressBook={addressBook}
                   onBalance={(walletId, account, tinybars) => {
-                    fetchedBalances.current.set(walletId, account)
-                    setBalances((existing) => ({ ...existing, [walletId]: { account, tinybars } }))
+                    const key = balanceKey(walletId, account)
+                    fetchedBalances.current.add(key)
+                    setBalances((existing) => ({ ...existing, [key]: tinybars }))
                   }}
                   onWalletUpdated={(updated) => setWallets((existing) => existing.map((item) => (
                     item.id === updated.id ? updated : item
@@ -1913,10 +2281,18 @@ function App() {
               older storage copies or backups. Make sure its recovery phrase is
               backed up elsewhere before continuing.
             </p>
-            <p className="dialog-copy">
-              Confirm deletion of <strong>{walletToDelete.name}</strong>. This
-              action cannot be undone.
-            </p>
+            <label className="testnet-acknowledge" htmlFor="confirm-wallet-delete">
+              <input
+                id="confirm-wallet-delete"
+                type="checkbox"
+                checked={deleteConfirmed}
+                onChange={(event) => setDeleteConfirmed(event.target.checked)}
+              />
+              <span>
+                Check to confirm deletion of <strong>{walletToDelete.name}</strong>. This
+                action cannot be undone.
+              </span>
+            </label>
             {deleteError && (
               <p className="error-message" role="alert">{deleteError}</p>
             )}
@@ -1932,7 +2308,7 @@ function App() {
               <button
                 className="danger-button"
                 type="button"
-                disabled={isDeletingWallet}
+                disabled={isDeletingWallet || !deleteConfirmed}
                 onClick={() => void handleDeleteWallet()}
               >
                 {isDeletingWallet ? 'Deleting...' : 'Delete wallet'}
