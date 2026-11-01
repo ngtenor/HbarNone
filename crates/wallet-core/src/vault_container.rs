@@ -22,6 +22,41 @@ pub const DEFAULT_AUTO_LOCK_SECONDS: u32 = 300;
 pub const MIN_AUTO_LOCK_SECONDS: u32 = 30;
 pub const MAX_AUTO_LOCK_SECONDS: u32 = 1800;
 
+/// A Hedera network an account lives on. Only Testnet is reachable for now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Network {
+    #[default]
+    Testnet,
+    Mainnet,
+}
+
+/// An account that the wallet's key controls on one network. Two entries are
+/// the same account when network and ID match, whatever their names.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WalletAccount {
+    pub network: Network,
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+impl PartialEq for WalletAccount {
+    fn eq(&self, other: &Self) -> bool {
+        self.network == other.network && self.id == other.id
+    }
+}
+
+impl Eq for WalletAccount {}
+
+/// A named recipient outside this vault's wallets (a third party).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AddressBookEntry {
+    pub network: Network,
+    pub id: String,
+    pub name: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VaultWallet {
     pub id: String,
@@ -29,6 +64,10 @@ pub struct VaultWallet {
     pub created_at: String,
     pub updated_at: String,
     #[serde(default)]
+    pub accounts: Vec<WalletAccount>,
+    /// Single linked account of vaults saved before wallets held several.
+    /// Moved into `accounts` when the vault is opened and never written back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account_id: Option<String>,
     #[serde(default)]
     pub secret_kind: crate::key_import::SecretKind,
@@ -38,10 +77,34 @@ pub struct VaultWallet {
     pub(crate) ciphertext: String,
 }
 
+impl VaultWallet {
+    fn migrate_legacy_account(&mut self) {
+        if let Some(id) = self.account_id.take() {
+            let account = WalletAccount {
+                network: Network::Testnet,
+                id,
+                name: None,
+            };
+            if !self.accounts.contains(&account) {
+                self.accounts.push(account);
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VaultPayload {
     pub wallets: Vec<VaultWallet>,
     pub auto_lock_seconds: u32,
+    #[serde(default)]
+    pub address_book: Vec<AddressBookEntry>,
+    /// Whether HBAR may be sent to accounts that are not in the address book.
+    #[serde(default)]
+    pub allow_external_sends: bool,
+    /// Whether a deleted account's funds may go to an account that is not in
+    /// the address book.
+    #[serde(default)]
+    pub allow_external_deletes: bool,
 }
 
 impl Default for VaultPayload {
@@ -49,6 +112,9 @@ impl Default for VaultPayload {
         Self {
             wallets: Vec::new(),
             auto_lock_seconds: DEFAULT_AUTO_LOCK_SECONDS,
+            address_book: Vec::new(),
+            allow_external_sends: false,
+            allow_external_deletes: false,
         }
     }
 }
@@ -166,8 +232,11 @@ impl VaultContainer {
         master_key.copy_from_slice(&master_key_bytes);
 
         let plaintext = decrypt(&master_key, &self.payload_nonce, &self.payload_ciphertext)?;
-        let payload: VaultPayload = serde_json::from_slice(&plaintext)
+        let mut payload: VaultPayload = serde_json::from_slice(&plaintext)
             .map_err(|e| format!("deserialize vault contents failed: {e}"))?;
+        for wallet in &mut payload.wallets {
+            wallet.migrate_legacy_account();
+        }
         validate_auto_lock_seconds(payload.auto_lock_seconds)?;
         Ok((master_key, payload))
     }

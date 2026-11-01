@@ -3,7 +3,14 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 
-type Wallet = { id: string; name: string; created_at: string; account_id: string | null }
+type Account = {
+  network: 'testnet' | 'mainnet'
+  id: string
+  display_id: string
+  name: string
+  named: boolean
+}
+type Wallet = { id: string; name: string; created_at: string; accounts: Account[] }
 
 type Backend = {
   status: 'uninitialized' | 'locked' | 'unlocked'
@@ -12,10 +19,13 @@ type Backend = {
   backupWallets: Wallet[]
   exportSaved: boolean
   restoreCancelled: boolean
-  foundAccount: string | null
+  foundAccounts: string[]
   overview: unknown
   sendError: string | null
   detection: { keyType: string | null; accounts: string[] }
+  allowExternalSends: boolean
+  allowExternalDeletes: boolean
+  outside: { id: string; name: string }[]
   calls: { cmd: string; args?: Record<string, unknown> }[]
 }
 
@@ -24,8 +34,17 @@ const PHRASE = 'alpha bravo charlie delta echo foxtrot golf hotel india juliet k
 const invokeMock = vi.hoisted(() => vi.fn())
 vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }))
 
-function wallet(id: string, name: string, account_id: string | null = null): Wallet {
-  return { id, name, created_at: '2026-01-01T00:00:00Z', account_id }
+function testnetAccount(id: string): Account {
+  return { network: 'testnet', id, display_id: `${id}-abcde`, name: 'NONAME', named: false }
+}
+
+function wallet(id: string, name: string, accounts: string | string[] = []): Wallet {
+  return {
+    id,
+    name,
+    created_at: '2026-01-01T00:00:00Z',
+    accounts: [accounts].flat().map(testnetAccount),
+  }
 }
 
 let backend: Backend
@@ -39,6 +58,37 @@ function vaultState() {
   }
 }
 
+function addressBookView() {
+  const rows = [
+    ...backend.wallets.flatMap((owner) => owner.accounts.map((item) => ({
+      network: item.network,
+      id: item.id,
+      display_id: item.display_id,
+      name: item.name,
+      wallet_id: owner.id,
+      wallet_name: owner.name,
+    }))),
+    ...backend.outside.map((item) => ({
+      network: 'testnet',
+      id: item.id,
+      display_id: `${item.id}-abcde`,
+      name: item.name,
+      wallet_id: null,
+      wallet_name: null,
+    })),
+  ]
+  return {
+    rows,
+    allowExternalSends: backend.allowExternalSends,
+    allowExternalDeletes: backend.allowExternalDeletes,
+  }
+}
+
+async function typeRecipient(user: ReturnType<typeof userEvent.setup>, value: string) {
+  await user.click(await screen.findByLabelText('Check to send to a different account'))
+  await user.type(await screen.findByLabelText('Recipient account ID'), value)
+}
+
 function installBackend(overrides: Partial<Backend> = {}) {
   backend = {
     status: 'locked',
@@ -47,10 +97,13 @@ function installBackend(overrides: Partial<Backend> = {}) {
     backupWallets: [wallet('b1', 'Restored')],
     exportSaved: true,
     restoreCancelled: false,
-    foundAccount: null,
+    foundAccounts: [],
     overview: null,
     sendError: null,
     detection: { keyType: null, accounts: [] },
+    allowExternalSends: true,
+    allowExternalDeletes: false,
+    outside: [],
     calls: [],
     ...overrides,
   }
@@ -86,24 +139,109 @@ function installBackend(overrides: Partial<Backend> = {}) {
       }
       case 'link_wallet_account': {
         const target = backend.wallets.find((item) => item.id === args?.walletId)!
-        const accountId = args?.accountId as string | null
-        if (accountId !== null && !/^0\.0\.[1-9]\d*$/.test(accountId.trim())) {
+        const accountId = String(args?.accountId).trim()
+        if (!/^0\.0\.[1-9]\d*$/.test(accountId)) {
           throw new Error('account ID must look like 0.0.12345')
         }
-        target.account_id = accountId === null ? null : accountId.trim()
+        if (!target.accounts.some((item) => item.id === accountId)) {
+          target.accounts.push(testnetAccount(accountId))
+        }
         return { ...target }
       }
-      case 'find_wallet_account': {
-        if (!backend.foundAccount) throw new Error('no Testnet account uses this wallet\'s key yet')
+      case 'find_wallet_accounts': {
+        if (backend.foundAccounts.length === 0) {
+          throw new Error('no Testnet account uses this wallet\'s key yet')
+        }
         const target = backend.wallets.find((item) => item.id === args?.walletId)!
-        target.account_id = backend.foundAccount
+        for (const id of backend.foundAccounts) {
+          if (!target.accounts.some((item) => item.id === id)) {
+            target.accounts.push(testnetAccount(id))
+          }
+        }
         return { ...target }
       }
+      case 'get_account_balance':
+        return backend.overview
+          ? (backend.overview as { balance_tinybars: number }).balance_tinybars
+          : null
       case 'get_account_overview':
         return backend.overview
       case 'send_hbar':
         if (backend.sendError) throw new Error(backend.sendError)
         return { transactionId: '0.0.1001-1700000000-000000005' }
+      case 'create_account':
+        if (backend.sendError) throw new Error(backend.sendError)
+        return { transactionId: '0.0.1001-1700000000-000000006' }
+      case 'move_account':
+        if (backend.sendError) throw new Error(backend.sendError)
+        return { transactionId: '0.0.1001-1700000000-000000007' }
+      case 'finish_account_move': {
+        const from = backend.wallets.find((item) => item.id === args?.walletId)!
+        const to = backend.wallets.find((item) => item.id === args?.targetWalletId)!
+        from.accounts = from.accounts.filter((item) => item.id !== args?.accountId)
+        to.accounts.push(testnetAccount(String(args?.accountId)))
+        return { ...to }
+      }
+      case 'delete_account':
+        if (backend.sendError) throw new Error(backend.sendError)
+        return { transactionId: '0.0.1001-1700000000-000000008' }
+      case 'finish_account_delete': {
+        const owner = backend.wallets.find((item) => item.id === args?.walletId)!
+        owner.accounts = owner.accounts.filter((item) => item.id !== args?.accountId)
+        return { ...owner }
+      }
+      case 'check_recipient':
+        if (!/^0\.0\.[1-9]\d*-[a-z]{5}$/i.test(String(args?.recipient).trim())) {
+          throw new Error('Enter the account number with its checksum, like 0.0.12345-abcde.')
+        }
+        return String(args?.recipient).split('-')[0]
+      case 'rename_account': {
+        const name = String(args?.name).trim()
+        if (!name) throw new Error('an account name cannot be empty')
+        const owner = backend.wallets.find((item) => item.id === args?.walletId)!
+        const target = owner.accounts.find((item) => item.id === args?.accountId)!
+        target.name = name
+        target.named = true
+        return { ...owner }
+      }
+      case 'get_address_book':
+        return addressBookView()
+      case 'set_allow_external_sends':
+        backend.allowExternalSends = Boolean(args?.allowed)
+        return addressBookView()
+      case 'set_allow_external_deletes':
+        backend.allowExternalDeletes = Boolean(args?.allowed)
+        return addressBookView()
+      case 'add_address_book_entry': {
+        const id = String(args?.address).split('-')[0]
+        if (!String(args?.name).trim()) throw new Error('an address book name is required')
+        if (!/^0\.0\.[1-9]\d*-[a-z]{5}$/i.test(String(args?.address).trim())) {
+          throw new Error('Enter the account number with its checksum, like 0.0.12345-abcde.')
+        }
+        backend.outside.push({ id, name: String(args?.name).trim() })
+        return addressBookView()
+      }
+      case 'rename_address_book_account': {
+        const name = String(args?.name).trim()
+        if (!name) throw new Error('an account name cannot be empty')
+        for (const owner of backend.wallets) {
+          for (const item of owner.accounts) {
+            if (item.id === args?.accountId) {
+              item.name = name
+              item.named = true
+            }
+          }
+        }
+        for (const item of backend.outside) {
+          if (item.id === args?.accountId) item.name = name
+        }
+        return addressBookView()
+      }
+      case 'remove_address_book_entry':
+        backend.outside = backend.outside.filter((item) => item.id !== args?.accountId)
+        return addressBookView()
+      case 'get_address_balance':
+        return 250_000_000
       case 'get_wallet_keys':
         return { publicKey: 'ab'.repeat(32), evmAddress: null }
       case 'detect_private_key_type':
@@ -156,6 +294,18 @@ async function openWalletTab(user: ReturnType<typeof userEvent.setup>, name: str
   await screen.findByRole('heading', { level: 1, name })
 }
 
+async function openAccount(
+  user: ReturnType<typeof userEvent.setup>,
+  name: string,
+  section?: string,
+  accountId = '0\\.0\\.1001',
+) {
+  await openWalletTab(user, name)
+  await user.click(await screen.findByRole('button', { name: new RegExp(accountId) }))
+  await screen.findByRole('button', { name: 'Back to wallet' })
+  if (section) await user.click(screen.getByRole('button', { name: section }))
+}
+
 describe('vault gates', () => {
   beforeEach(() => installBackend())
 
@@ -166,6 +316,9 @@ describe('vault gates', () => {
     await user.click(screen.getByRole('button', { name: 'Unlock vault' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('incorrect vault password')
     expect(screen.queryByRole('tab', { name: 'HOME' })).not.toBeInTheDocument()
+    // Submitting the now-empty field clears the message and shows no browser prompt.
+    await user.click(screen.getByRole('button', { name: 'Unlock vault' }))
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 
   it('shows a locked padlock instead of unlock headings, then icon buttons once unlocked', async () => {
@@ -179,7 +332,7 @@ describe('vault gates', () => {
 
     await unlock(user)
     expect(screen.queryByRole('img', { name: 'Vault locked' })).not.toBeInTheDocument()
-    const actions = ['Create / import wallet', 'Settings', 'Lock vault']
+    const actions = ['Address book', 'Create / import wallet', 'Settings', 'Lock vault']
     const buttons = actions.map((name) => screen.getByRole('button', { name }))
     const header = buttons[0].parentElement!
     expect(Array.from(header.children)).toEqual(buttons)
@@ -210,8 +363,8 @@ describe('hedera testnet panel', () => {
     render(<App />)
     await unlock(user)
     await openWalletTab(user, 'Savings')
-    expect(screen.getByText(/when the vault\s+unlocks, when you open a wallet/)).toBeInTheDocument()
-    expect(commandsCalled('find_wallet_account')).toHaveLength(0)
+    expect(screen.getByRole('heading', { name: 'Create account' })).toBeInTheDocument()
+    expect(commandsCalled('find_wallet_accounts')).toHaveLength(0)
     expect(commandsCalled('get_account_overview')).toHaveLength(0)
   })
 
@@ -229,10 +382,172 @@ describe('hedera testnet panel', () => {
     await unlock(user)
     await waitFor(() => expect(screen.getAllByText('2.50 ℏ')).toHaveLength(2))
     expect(screen.getByLabelText('Total balance')).toHaveTextContent('5.00 ℏ')
-    expect(commandsCalled('get_account_overview')).toHaveLength(2)
+    expect(commandsCalled('get_account_balance')).toHaveLength(2)
 
     await openWalletTab(user, 'Savings')
-    await waitFor(() => expect(commandsCalled('get_account_overview')).toHaveLength(3))
+    expect(commandsCalled('get_account_overview')).toHaveLength(0)
+    await user.click(await screen.findByRole('button', { name: /0\.0\.1001/ }))
+    await waitFor(() => expect(commandsCalled('get_account_overview')).toHaveLength(1))
+  })
+
+  it('refreshes every account balance from the wallet page', async () => {
+    const user = userEvent.setup()
+    installBackend({
+      wallets: [wallet('w1', 'Savings', ['0.0.1001', '0.0.1002'])],
+      overview: { account_id: 'x', balance_tinybars: 100_000_000, transactions: [] },
+    })
+    render(<App />)
+    await unlock(user)
+    await openWalletTab(user, 'Savings')
+    expect(screen.getByText(/Click on an account above to see further account information/)).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Refresh balances' }))
+    await waitFor(() => expect(commandsCalled('get_account_overview')).toHaveLength(2))
+  })
+
+  it('shows one account section at a time and hides it when its button is clicked again', async () => {
+    const user = userEvent.setup()
+    installBackend({
+      wallets: [wallet('w1', 'Savings', '0.0.1001'), wallet('w2', 'Trading')],
+    })
+    render(<App />)
+    await unlock(user)
+    await openAccount(user, 'Savings')
+    expect(screen.queryByRole('heading', { name: 'Send HBAR' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Send' }))
+    await user.click(screen.getByRole('button', { name: 'Name this account' }))
+    expect(screen.queryByRole('heading', { name: 'Send HBAR' })).not.toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Name this account' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Send' }))
+    expect(screen.queryByRole('heading', { name: 'Name this account' })).not.toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Send HBAR' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Move account' }))
+    expect(screen.queryByRole('heading', { name: 'Send HBAR' })).not.toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Move account to another wallet' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Delete account' }))
+    expect(screen.queryByRole('heading', { name: 'Move account to another wallet' })).not.toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Delete account' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Delete account' }))
+    expect(screen.queryByRole('heading', { name: 'Delete account' })).not.toBeInTheDocument()
+  })
+
+  it('creates an account only after the confirmation is accepted', async () => {
+    const user = userEvent.setup()
+    installBackend({ wallets: [wallet('w1', 'Savings', '0.0.1001')] })
+    render(<App />)
+    await unlock(user)
+    await openWalletTab(user, 'Savings')
+    await user.selectOptions(await screen.findByLabelText('Fund from'), '0.0.1001-abcde')
+    expect(screen.getByLabelText('Opening balance (ℏ)')).toHaveAttribute('placeholder', '1.2345')
+    await user.type(screen.getByLabelText('Opening balance (ℏ)'), '2')
+    await user.click(screen.getByRole('button', { name: 'Review new account' }))
+    const confirm = screen.getByRole('group', { name: 'Confirm new account' })
+    expect(within(confirm).getByText('2 ℏ')).toBeInTheDocument()
+    expect(commandsCalled('create_account')).toHaveLength(0)
+
+    await user.click(screen.getByRole('button', { name: 'Sign and create' }))
+    expect(await screen.findByText(/Submitted 0\.0\.1001-1700000000-000000006/)).toBeInTheDocument()
+    expect(commandsCalled('create_account')[0].args).toEqual({
+      walletId: 'w1',
+      fromAccount: '0.0.1001-abcde',
+      initialHbar: '2',
+    })
+  })
+
+  it('moves an account to another wallet after confirmation and Testnet’s confirmation', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+      installBackend({ wallets: [wallet('w1', 'Savings', '0.0.1001'), wallet('w2', 'Trading')] })
+      render(<App />)
+      await unlock(user)
+      await openAccount(user, 'Savings', 'Move account')
+      await user.selectOptions(await screen.findByLabelText('New wallet'), 'w2')
+      await user.click(screen.getByRole('button', { name: 'Review move' }))
+      const confirm = screen.getByRole('group', { name: 'Confirm account move' })
+      expect(within(confirm).getByText('Trading')).toBeInTheDocument()
+      expect(commandsCalled('move_account')).toHaveLength(0)
+
+      expect(screen.getByRole('button', { name: 'Sign and move' })).toBeDisabled()
+      await user.click(within(confirm).getByRole('checkbox'))
+      await user.click(screen.getByRole('button', { name: 'Sign and move' }))
+      await screen.findByText(/Waiting for Testnet/)
+      expect(commandsCalled('move_account')[0].args).toEqual({
+        walletId: 'w1',
+        accountId: '0.0.1001',
+        targetWalletId: 'w2',
+      })
+      expect(commandsCalled('finish_account_move')).toHaveLength(0)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(8100)
+      })
+      await waitFor(() => expect(commandsCalled('finish_account_move')).toHaveLength(1))
+      await waitFor(() => expect(screen.queryByRole('button', { name: 'Sign and move' })).not.toBeInTheDocument())
+      expect(backend.wallets[0].accounts).toHaveLength(0)
+      expect(backend.wallets[1].accounts).toHaveLength(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('deletes an account only after the warning is acknowledged and Testnet confirms', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+      installBackend({ wallets: [wallet('w1', 'Savings', ['0.0.1001', '0.0.1002'])] })
+      render(<App />)
+      await unlock(user)
+      await openWalletTab(user, 'Savings')
+      await user.click(await screen.findByRole('button', { name: /0\.0\.1001/ }))
+      await user.click(screen.getByRole('button', { name: 'Delete account' }))
+      await user.selectOptions(
+        await screen.findByLabelText('Recipient from the address book'),
+        '0.0.1002-abcde',
+      )
+      await user.click(screen.getByRole('button', { name: 'Review deletion' }))
+      const confirm = await screen.findByRole('group', { name: 'Confirm account deletion' })
+      expect(within(confirm).getByRole('alert')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Sign and delete' })).toBeDisabled()
+      await user.click(within(confirm).getByRole('checkbox'))
+      await user.click(screen.getByRole('button', { name: 'Sign and delete' }))
+      await screen.findByText(/Waiting for Testnet/)
+      expect(commandsCalled('delete_account')[0].args).toEqual({
+        walletId: 'w1',
+        accountId: '0.0.1001',
+        recipient: '0.0.1002-abcde',
+      })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(8100)
+      })
+      await waitFor(() => expect(commandsCalled('finish_account_delete')).toHaveLength(1))
+      expect(backend.wallets[0].accounts.map((item) => item.id)).toEqual(['0.0.1002'])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('lists several accounts per wallet, totals them, and sends from the selected one', async () => {
+    const user = userEvent.setup()
+    installBackend({
+      wallets: [wallet('w1', 'Savings', ['0.0.1001', '0.0.1002'])],
+      overview: { account_id: 'x', balance_tinybars: 150_000_000, transactions: [] },
+    })
+    render(<App />)
+    await unlock(user)
+    const rows = await screen.findByRole('list', { name: 'Savings accounts' })
+    await waitFor(() => expect(within(rows).getAllByText('1.50 ℏ')).toHaveLength(2))
+    expect(screen.getByLabelText('Total balance')).toHaveTextContent('3.00 ℏ')
+
+    await openWalletTab(user, 'Savings')
+    expect(commandsCalled('get_account_overview')).toHaveLength(0)
+    expect(screen.queryByLabelText('Recipient account ID')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /0\.0\.1002/ }))
+    await user.click(screen.getByRole('button', { name: 'Send' }))
+    await typeRecipient(user, '0.0.2002-abcde')
+    await user.type(screen.getByLabelText('Amount (ℏ)'), '1')
+    await user.click(screen.getByRole('button', { name: 'Review transfer' }))
+    await user.click(await screen.findByRole('button', { name: 'Sign and send' }))
+    await screen.findByText(/Submitted/)
+    expect(commandsCalled('send_hbar')[0].args).toMatchObject({ fromAccount: '0.0.1002' })
   })
 
   it('leaves the total blank when no balance is known', async () => {
@@ -242,39 +557,20 @@ describe('hedera testnet panel', () => {
     expect(screen.getByLabelText('Total balance')).toHaveTextContent('')
   })
 
-  it('links an account ID, rejects a malformed one, and unlinks', async () => {
+  it('finds the accounts from the wallet key, or explains when none exist', async () => {
     const user = userEvent.setup()
     render(<App />)
     await unlock(user)
     await openWalletTab(user, 'Savings')
 
-    await user.type(screen.getByLabelText('Or link an account ID'), 'nonsense')
-    await user.click(screen.getByRole('button', { name: 'Link account' }))
-    expect(await screen.findByRole('alert')).toHaveTextContent('account ID must look like')
-
-    await user.clear(screen.getByLabelText('Or link an account ID'))
-    await user.type(screen.getByLabelText('Or link an account ID'), '0.0.1001')
-    await user.click(screen.getByRole('button', { name: 'Link account' }))
-    expect(await screen.findByText('0.0.1001')).toBeInTheDocument()
-    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
-
-    await user.click(screen.getByRole('button', { name: 'Unlink account' }))
-    expect(await screen.findByLabelText('Or link an account ID')).toBeInTheDocument()
-  })
-
-  it('finds the account from the wallet key, or explains when none exists', async () => {
-    const user = userEvent.setup()
-    render(<App />)
-    await unlock(user)
-    await openWalletTab(user, 'Savings')
-
-    const find = 'Find account from this wallet’s key'
+    const find = 'Find accounts from this wallet’s key'
     await user.click(screen.getByRole('button', { name: find }))
     expect(await screen.findByRole('alert')).toHaveTextContent('no Testnet account')
 
-    backend.foundAccount = '0.0.2002'
+    backend.foundAccounts = ['0.0.2002', '0.0.2003']
     await user.click(screen.getByRole('button', { name: find }))
-    expect(await screen.findByText('0.0.2002')).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: /0\.0\.2002/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /0\.0\.2003/ })).toBeInTheDocument()
   })
 
   it('shows the balance and recent transactions after Refresh', async () => {
@@ -297,9 +593,9 @@ describe('hedera testnet panel', () => {
     })
     render(<App />)
     await unlock(user)
-    await openWalletTab(user, 'Savings')
+    await openAccount(user, 'Savings')
     await user.click(screen.getByRole('button', { name: 'Refresh balance' }))
-    expect(await screen.findByText(/2\.50 ℏ/)).toBeInTheDocument()
+    expect((await screen.findAllByText(/2\.50 ℏ/)).length).toBeGreaterThan(0)
     const list = screen.getByRole('list', { name: 'Recent transactions' })
     expect(within(list).getByText('CRYPTOTRANSFER')).toBeInTheDocument()
     expect(within(list).getByText(/-1\.001 ℏ/)).toBeInTheDocument()
@@ -310,7 +606,7 @@ describe('hedera testnet panel', () => {
     installBackend({ wallets: [wallet('w1', 'Savings', '0.0.1001')], overview: null })
     render(<App />)
     await unlock(user)
-    await openWalletTab(user, 'Savings')
+    await openAccount(user, 'Savings')
     await user.click(screen.getByRole('button', { name: 'Refresh balance' }))
     expect(await screen.findByRole('status')).toHaveTextContent('not found on Hedera Testnet')
   })
@@ -319,26 +615,39 @@ describe('hedera testnet panel', () => {
     async function openSend(user: ReturnType<typeof userEvent.setup>) {
       render(<App />)
       await unlock(user)
-      await openWalletTab(user, 'Savings')
-      await user.type(await screen.findByLabelText('Recipient account ID'), '0.0.2002')
+      await openAccount(user, 'Savings', 'Send')
+      await typeRecipient(user, '0.0.2002-abcde')
       await user.type(screen.getByLabelText('Amount (ℏ)'), '1.5')
     }
+
+    it('rejects a recipient without a checksum at review', async () => {
+      const user = userEvent.setup()
+      installBackend({ wallets: [wallet('w1', 'Savings', '0.0.1001')] })
+      render(<App />)
+      await unlock(user)
+      await openAccount(user, 'Savings', 'Send')
+      await typeRecipient(user, '0.0.2002')
+      await user.type(screen.getByLabelText('Amount (ℏ)'), '1')
+      await user.click(screen.getByRole('button', { name: 'Review transfer' }))
+      expect(await screen.findByRole('alert')).toHaveTextContent('checksum')
+      expect(screen.queryByRole('group', { name: 'Confirm transfer' })).not.toBeInTheDocument()
+    })
 
     it('shows a confirmation and sends only after it is accepted', async () => {
       const user = userEvent.setup()
       installBackend({ wallets: [wallet('w1', 'Savings', '0.0.1001')] })
       await openSend(user)
       await user.click(screen.getByRole('button', { name: 'Review transfer' }))
-      const confirm = screen.getByRole('group', { name: 'Confirm transfer' })
-      expect(within(confirm).getByText('0.0.1001')).toBeInTheDocument()
-      expect(within(confirm).getByText('0.0.2002')).toBeInTheDocument()
+      const confirm = await screen.findByRole('group', { name: 'Confirm transfer' })
+      expect(within(confirm).getByText('NONAME 0.0.1001-abcde')).toBeInTheDocument()
+      expect(within(confirm).getByText('0.0.2002-abcde')).toBeInTheDocument()
       expect(within(confirm).getByText('1.5 ℏ')).toBeInTheDocument()
       expect(commandsCalled('send_hbar')).toHaveLength(0)
 
       await user.click(screen.getByRole('button', { name: 'Sign and send' }))
       expect(await screen.findByText(/Submitted 0\.0\.1001-1700000000-000000005/)).toBeInTheDocument()
       expect(commandsCalled('send_hbar').map((call) => call.args)).toEqual([
-        { walletId: 'w1', recipient: '0.0.2002', amountHbar: '1.5', memo: '' },
+        { walletId: 'w1', fromAccount: '0.0.1001', recipient: '0.0.2002-abcde', amountHbar: '1.5', memo: '' },
       ])
       expect(screen.queryByRole('group', { name: 'Confirm transfer' })).not.toBeInTheDocument()
     })
@@ -348,8 +657,8 @@ describe('hedera testnet panel', () => {
       installBackend({ wallets: [wallet('w1', 'Savings', '0.0.1001')] })
       await openSend(user)
       await user.click(screen.getByRole('button', { name: 'Review transfer' }))
-      await user.click(screen.getByRole('button', { name: 'Back' }))
-      expect(screen.getByLabelText('Recipient account ID')).toHaveValue('0.0.2002')
+      await user.click(await screen.findByRole('button', { name: 'Back' }))
+      expect(screen.getByLabelText('Recipient account ID')).toHaveValue('0.0.2002-abcde')
       expect(commandsCalled('send_hbar')).toHaveLength(0)
     })
 
@@ -358,8 +667,8 @@ describe('hedera testnet panel', () => {
       installBackend({ wallets: [wallet('w1', 'Savings', '0.0.1001')] })
       render(<App />)
       await unlock(user)
-      await openWalletTab(user, 'Savings')
-      await user.type(await screen.findByLabelText('Recipient account ID'), '0.0.1001')
+      await openAccount(user, 'Savings', 'Send')
+      await typeRecipient(user, '0.0.1001')
       await user.type(screen.getByLabelText('Amount (ℏ)'), '1')
       await user.click(screen.getByRole('button', { name: 'Review transfer' }))
       expect(await screen.findByRole('alert')).toHaveTextContent('different account')
@@ -374,8 +683,7 @@ describe('hedera testnet panel', () => {
       })
       await openSend(user)
       await user.click(screen.getByRole('button', { name: 'Review transfer' }))
-      await user.click(screen.getByRole('button', { name: 'Sign and send' }))
-      expect(await screen.findByRole('alert')).toHaveTextContent('INVALID_SIGNATURE')
+      await user.click(await screen.findByRole('button', { name: 'Sign and send' }))
       expect(screen.getByRole('group', { name: 'Confirm transfer' })).toBeInTheDocument()
     })
 
@@ -386,6 +694,149 @@ describe('hedera testnet panel', () => {
       await unlock(user)
       await openWalletTab(user, 'Savings')
       expect(screen.queryByText('Send HBAR')).not.toBeInTheDocument()
+    })
+
+    it('limits recipients to the address book when outside sends are disabled', async () => {
+      const user = userEvent.setup()
+      installBackend({
+        wallets: [wallet('w1', 'Savings', '0.0.1001'), wallet('w2', 'Trading', '0.0.1002')],
+        allowExternalSends: false,
+      })
+      render(<App />)
+      await unlock(user)
+      await openAccount(user, 'Savings', 'Send')
+      expect(await screen.findByLabelText('Check to send to a different account')).toBeDisabled()
+      expect(screen.getByText(/Send limited to accounts in the address book/)).toBeInTheDocument()
+      const book = screen.getByLabelText('Recipient from the address book')
+      expect(within(book).queryByRole('option', { name: /0\.0\.1001/ })).not.toBeInTheDocument()
+      await user.selectOptions(book, '0.0.1002-abcde')
+      await user.type(screen.getByLabelText('Amount (ℏ)'), '1')
+      await user.click(screen.getByRole('button', { name: 'Review transfer' }))
+      await user.click(await screen.findByRole('button', { name: 'Sign and send' }))
+      await screen.findByText(/Submitted/)
+      expect(commandsCalled('send_hbar')[0].args).toMatchObject({ recipient: '0.0.1002-abcde' })
+    })
+
+    it('wipes a reviewed transfer when another section is opened', async () => {
+      const user = userEvent.setup()
+      installBackend({
+        wallets: [wallet('w1', 'Savings', '0.0.1001'), wallet('w2', 'Trading', '0.0.1002')],
+      })
+      render(<App />)
+      await unlock(user)
+      await openAccount(user, 'Savings', 'Send')
+      await user.selectOptions(await screen.findByLabelText('Recipient from the address book'), '0.0.1002-abcde')
+      await user.type(screen.getByLabelText('Amount (ℏ)'), '1')
+      await user.click(screen.getByRole('button', { name: 'Review transfer' }))
+      await screen.findByRole('group', { name: 'Confirm transfer' })
+      await user.click(screen.getByRole('button', { name: 'Name this account' }))
+      await user.click(screen.getByRole('button', { name: 'Send' }))
+      expect(await screen.findByLabelText('Recipient from the address book')).toHaveValue('')
+      expect(screen.getByLabelText('Amount (ℏ)')).toHaveValue('')
+    })
+
+    it('asks for a recipient when nothing is chosen', async () => {
+      const user = userEvent.setup()
+      installBackend({ wallets: [wallet('w1', 'Savings', '0.0.1001')] })
+      render(<App />)
+      await unlock(user)
+      await openAccount(user, 'Savings', 'Send')
+      await user.type(await screen.findByLabelText('Amount (ℏ)'), '1')
+      await user.click(screen.getByRole('button', { name: 'Review transfer' }))
+      expect(await screen.findByRole('alert')).toHaveTextContent('Choose a recipient')
+    })
+  })
+
+  describe('account names and the address book', () => {
+    it('names and renames an account, showing the name first', async () => {
+      const user = userEvent.setup()
+      installBackend({ wallets: [wallet('w1', 'Savings', '0.0.1001')] })
+      render(<App />)
+      await unlock(user)
+      const rows = await screen.findByRole('list', { name: 'Savings accounts' })
+      expect(rows).toHaveTextContent('NONAME 0.0.1001-abcde')
+
+      await openAccount(user, 'Savings')
+      await user.click(await screen.findByRole('button', { name: 'Name this account' }))
+      expect(screen.getByRole('heading', { name: 'Name this account' })).toBeInTheDocument()
+      expect(screen.getByLabelText(/Account name/)).toHaveAttribute('maxLength', '25')
+      await user.type(screen.getByLabelText(/Account name/), 'Rent')
+      await user.click(screen.getByRole('button', { name: 'Save name' }))
+      expect(await screen.findByRole('button', { name: 'Rename account' })).toBeInTheDocument()
+      expect(screen.getAllByText('Rent').length).toBeGreaterThan(0)
+      expect(commandsCalled('rename_account')[0].args).toMatchObject({ accountId: '0.0.1001', name: 'Rent' })
+    })
+
+    it('lists wallet accounts and adds and removes an outside account', async () => {
+      const user = userEvent.setup()
+      installBackend({ wallets: [wallet('w1', 'Savings', '0.0.1001')] })
+      render(<App />)
+      await unlock(user)
+      await user.click(screen.getByRole('button', { name: 'Address book' }))
+      const list = await screen.findByRole('list', { name: 'Unnamed accounts' })
+      expect(within(list).getByText('Savings')).toBeInTheDocument()
+
+      await user.click(screen.getByRole('button', { name: 'Add to address book' }))
+      expect(await screen.findByRole('alert')).toHaveTextContent('name is required')
+
+      await user.type(screen.getByLabelText('Name'), 'Landlord')
+      await user.clear(screen.getByLabelText('Account number with checksum'))
+      await user.type(screen.getByLabelText('Account number with checksum'), '0.0.3003-abcde')
+      await user.click(screen.getByRole('button', { name: 'Add to address book' }))
+      expect(await within(await screen.findByRole('list', { name: 'Address book' })).findByText('Landlord'))
+        .toBeInTheDocument()
+      expect(await screen.findAllByText('2.50 ℏ')).not.toHaveLength(0)
+
+      await user.click(screen.getByRole('button', { name: 'Remove Landlord from the address book' }))
+      await waitFor(() => expect(screen.queryByText('Landlord')).not.toBeInTheDocument())
+    })
+
+    it('lists unnamed accounts below the named ones and renames from the address book', async () => {
+      const user = userEvent.setup()
+      installBackend({
+        wallets: [wallet('w1', 'Savings', ['0.0.1001', '0.0.1002'])],
+        outside: [{ id: '0.0.3003', name: 'Landlord' }],
+      })
+      render(<App />)
+      await unlock(user)
+      await user.click(screen.getByRole('button', { name: 'Address book' }))
+      const named = await screen.findByRole('list', { name: 'Address book' })
+      expect(within(named).getByText('Landlord')).toBeInTheDocument()
+      const unnamed = screen.getByRole('list', { name: 'Unnamed accounts' })
+      expect(within(unnamed).getAllByText('NONAME')).toHaveLength(2)
+
+      await user.click(within(unnamed).getAllByText('NONAME')[0])
+      await user.type(screen.getByLabelText('Name for 0.0.1001-abcde'), 'Rent')
+      await user.click(screen.getByRole('button', { name: 'Save' }))
+      await waitFor(() => expect(within(screen.getByRole('list', { name: 'Address book' })).getByText('Rent'))
+        .toBeInTheDocument())
+      expect(within(screen.getByRole('list', { name: 'Unnamed accounts' })).getAllByText('NONAME')).toHaveLength(1)
+
+      await user.click(within(screen.getByRole('list', { name: 'Address book' })).getByText('Landlord'))
+      await user.clear(screen.getByLabelText('Name for 0.0.3003-abcde'))
+      await user.type(screen.getByLabelText('Name for 0.0.3003-abcde'), 'Owner')
+      await user.click(screen.getByRole('button', { name: 'Save' }))
+      expect(await screen.findByText('Owner')).toBeInTheDocument()
+    })
+
+    it('changes the outside-send setting from Settings', async () => {
+      const user = userEvent.setup()
+      installBackend({ allowExternalSends: false })
+      render(<App />)
+      await unlock(user)
+      await user.click(screen.getByRole('button', { name: 'Settings' }))
+      await user.click(await screen.findByLabelText(/Allow sending to accounts/))
+      await waitFor(() => expect(backend.allowExternalSends).toBe(true))
+    })
+
+    it('changes the outside-delete setting from Settings', async () => {
+      const user = userEvent.setup()
+      installBackend({ allowExternalDeletes: false })
+      render(<App />)
+      await unlock(user)
+      await user.click(screen.getByRole('button', { name: 'Settings' }))
+      await user.click(await screen.findByLabelText(/funds of a deleted account/))
+      await waitFor(() => expect(backend.allowExternalDeletes).toBe(true))
     })
   })
 })
@@ -510,12 +961,24 @@ describe('delete flow', () => {
     expect(screen.getByRole('tab', { name: 'Savings' })).toBeInTheDocument()
   })
 
+  it('keeps Delete wallet disabled until the checkbox is ticked', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+    await openWalletTab(user, 'Savings')
+    await user.click(screen.getByRole('button', { name: 'Delete wallet' }))
+    const dialog = await screen.findByRole('alertdialog')
+    expect(within(dialog).getByRole('button', { name: 'Delete wallet' })).toBeDisabled()
+    await user.click(within(dialog).getByRole('checkbox'))
+    expect(within(dialog).getByRole('button', { name: 'Delete wallet' })).toBeEnabled()
+  })
+
   it('deletes the wallet, closes its tab and returns to HOME', async () => {
     const user = userEvent.setup()
     render(<App />)
     await openWalletTab(user, 'Savings')
     await user.click(screen.getByRole('button', { name: 'Delete wallet' }))
     const dialog = await screen.findByRole('alertdialog')
+    await user.click(within(dialog).getByRole('checkbox'))
     await user.click(within(dialog).getByRole('button', { name: 'Delete wallet' }))
 
     await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
@@ -533,6 +996,7 @@ describe('delete flow', () => {
     await user.click(screen.getByRole('button', { name: 'Delete wallet' }))
     const dialog = await screen.findByRole('alertdialog')
     invokeMock.mockRejectedValueOnce(new Error('could not save vault'))
+    await user.click(within(dialog).getByRole('checkbox'))
     await user.click(within(dialog).getByRole('button', { name: 'Delete wallet' }))
     expect(await within(dialog).findByText('could not save vault')).toBeInTheDocument()
     expect(screen.getByRole('tab', { name: 'Savings' })).toBeInTheDocument()
@@ -550,8 +1014,9 @@ describe('private key import', () => {
     await user.click(screen.getByRole('button', { name: 'Private key' }))
   }
 
-  it('detects the key type, imports the key and links the single account found', async () => {
+  it('detects the key type, imports the key and links every account found', async () => {
     backend.detection = { keyType: 'ecdsa', accounts: ['0.0.555'] }
+    backend.foundAccounts = ['0.0.555', '0.0.556']
     const user = userEvent.setup()
     await openKeyImport(user)
     await user.type(screen.getByLabelText('Private key (hex or DER)'), '11'.repeat(32))
@@ -564,10 +1029,8 @@ describe('private key import', () => {
       privateKey: '11'.repeat(32),
       keyType: 'ecdsa',
     })
-    expect(commandsCalled('link_wallet_account')[0].args).toEqual({
-      walletId: 'k3',
-      accountId: '0.0.555',
-    })
+    expect(commandsCalled('find_wallet_accounts')[0].args).toEqual({ walletId: 'k3' })
+    expect((await screen.findAllByText('0.0.556-abcde')).length).toBeGreaterThan(0)
   })
 
   it('asks the user to choose when the type cannot be detected, then imports', async () => {

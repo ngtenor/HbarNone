@@ -7,8 +7,13 @@ use serde::{Deserialize, Serialize};
 use tauri::{Manager, State};
 use tauri_plugin_dialog::DialogExt;
 use wallet_core::{
+    account_checksum::parse_account_input,
     key_import::{KeyType, is_valid_ecdsa_secret, parse_private_key, public_key_hex},
-    wallet_service::{LegacyWalletPassword, MAX_BACKUP_BYTES, WalletService, WalletSummary},
+    vault_container::Network,
+    wallet_service::{
+        AddressBookRow, LegacyWalletPassword, MAX_BACKUP_BYTES, WalletService, WalletSummary,
+        validate_account_id,
+    },
 };
 use zeroize::Zeroizing;
 
@@ -280,20 +285,45 @@ fn delete_wallet(wallet_id: String, state: State<'_, AppState>) -> Result<(), St
 #[tauri::command]
 fn link_wallet_account(
     wallet_id: String,
-    account_id: Option<String>,
+    account_id: String,
     state: State<'_, AppState>,
 ) -> Result<WalletSummary, String> {
-    lock_service(&state)?.set_wallet_account_id_and_save(
+    let account_id = parse_account_input(&account_id, Network::Testnet, false)?;
+    lock_service(&state)?.add_wallet_accounts_and_save(
         &wallet_id,
-        account_id.as_deref(),
+        Network::Testnet,
+        &[account_id],
         &state.store_path.to_string_lossy(),
     )
 }
 
-// Network commands run only when the user clicks; the webview never sees the
-// mirror URL, and only the public key or account ID leaves the app.
+/// The wallet's linked Testnet account, or an error if it is not one of them.
+fn testnet_account_of(
+    state: &AppState,
+    wallet_id: &str,
+    account_id: &str,
+) -> Result<String, String> {
+    let account_id = validate_account_id(account_id)?;
+    let linked = lock_service(state)?
+        .list_wallets()?
+        .into_iter()
+        .find(|wallet| wallet.id == wallet_id)
+        .ok_or_else(|| format!("wallet not found: {wallet_id}"))?
+        .accounts
+        .iter()
+        .any(|a| a.network == Network::Testnet && a.id == account_id);
+    if linked {
+        Ok(account_id)
+    } else {
+        Err(format!("account {account_id} is not linked to this wallet"))
+    }
+}
+
+// Network commands run only when the user clicks or opens a wallet; the
+// webview never sees the mirror URL, and only the public key or account ID
+// leaves the app.
 #[tauri::command]
-async fn find_wallet_account(
+async fn find_wallet_accounts(
     wallet_id: String,
     state: State<'_, AppState>,
 ) -> Result<WalletSummary, String> {
@@ -301,30 +331,35 @@ async fn find_wallet_account(
     let matches = MirrorClient::testnet()?
         .find_accounts_by_public_key(&public_key)
         .await?;
-    match matches.as_slice() {
-        [] => Err("no Testnet account uses this wallet's key yet; an account is created when the key's address first receives HBAR".to_string()),
-        [account_id] => lock_service(&state)?.set_wallet_account_id_and_save(
-            &wallet_id,
-            Some(account_id),
-            &state.store_path.to_string_lossy(),
-        ),
-        _ => Err("several Testnet accounts use this key; link the one you want by its account ID".to_string()),
+    if matches.is_empty() {
+        return Err("no Testnet account uses this wallet's key yet; an account is created when the key's address first receives HBAR".to_string());
     }
+    lock_service(&state)?.add_wallet_accounts_and_save(
+        &wallet_id,
+        Network::Testnet,
+        &matches,
+        &state.store_path.to_string_lossy(),
+    )
 }
 
 #[tauri::command]
 async fn get_account_overview(
     wallet_id: String,
+    account_id: String,
     state: State<'_, AppState>,
 ) -> Result<Option<AccountOverview>, String> {
-    let account_id = lock_service(&state)?
-        .list_wallets()?
-        .into_iter()
-        .find(|wallet| wallet.id == wallet_id)
-        .ok_or_else(|| format!("wallet not found: {wallet_id}"))?
-        .account_id
-        .ok_or_else(|| "link a Hedera account to this wallet first".to_string())?;
+    let account_id = testnet_account_of(&state, &wallet_id, &account_id)?;
     MirrorClient::testnet()?.account_overview(&account_id).await
+}
+
+#[tauri::command]
+async fn get_account_balance(
+    wallet_id: String,
+    account_id: String,
+    state: State<'_, AppState>,
+) -> Result<Option<u64>, String> {
+    let account_id = testnet_account_of(&state, &wallet_id, &account_id)?;
+    MirrorClient::testnet()?.account_balance(&account_id).await
 }
 
 #[derive(Serialize)]
@@ -337,26 +372,20 @@ struct SendResult {
 #[tauri::command]
 async fn send_hbar(
     wallet_id: String,
+    from_account: String,
     recipient: String,
     amount_hbar: String,
     memo: String,
     state: State<'_, AppState>,
 ) -> Result<SendResult, String> {
     let tinybars = hedera_tx::submit::parse_hbar(&amount_hbar)?;
-    let sender = {
-        let mut service = lock_service(&state)?;
-        service
-            .list_wallets()?
-            .into_iter()
-            .find(|wallet| wallet.id == wallet_id)
-            .ok_or_else(|| format!("wallet not found: {wallet_id}"))?
-            .account_id
-            .ok_or_else(|| "link a Hedera account to this wallet first".to_string())?
-    };
+    let sender = testnet_account_of(&state, &wallet_id, &from_account)?;
     let (key_type, secret) = lock_service(&state)?
         .with_wallet_key(&wallet_id, |key_type, secret| {
             Ok((key_type, Zeroizing::new(*secret)))
         })?;
+    let recipient = parse_account_input(&recipient, Network::Testnet, true)?;
+    ensure_send_allowed(&state, &recipient)?;
     let receipt = hedera_tx::submit::send_testnet_transfer(
         key_type, &secret, &sender, &recipient, tinybars, &memo,
     )
@@ -364,6 +393,353 @@ async fn send_hbar(
     Ok(SendResult {
         transaction_id: receipt.transaction_id,
     })
+}
+
+/// Creates an account controlled by this wallet's key. The funding account must
+/// belong to a wallet in the vault, whose key signs and pays.
+#[tauri::command]
+async fn create_account(
+    wallet_id: String,
+    from_account: String,
+    initial_hbar: String,
+    state: State<'_, AppState>,
+) -> Result<SendResult, String> {
+    let tinybars = hedera_tx::submit::parse_hbar(&initial_hbar)?;
+    let payer = parse_account_input(&from_account, Network::Testnet, false)?;
+    let payer_wallet_id = lock_service(&state)?
+        .list_wallets()?
+        .into_iter()
+        .find(|wallet| {
+            wallet
+                .accounts
+                .iter()
+                .any(|a| a.network == Network::Testnet && a.id == payer)
+        })
+        .map(|wallet| wallet.id)
+        .ok_or_else(|| "The funding account must belong to a wallet in this vault.".to_string())?;
+    let (new_type, new_secret) = lock_service(&state)?
+        .with_wallet_key(&wallet_id, |key_type, secret| {
+            Ok((key_type, Zeroizing::new(*secret)))
+        })?;
+    let (payer_type, payer_secret) = lock_service(&state)?
+        .with_wallet_key(&payer_wallet_id, |key_type, secret| {
+            Ok((key_type, Zeroizing::new(*secret)))
+        })?;
+    let receipt = hedera_tx::submit::create_testnet_account(
+        (new_type, &new_secret),
+        &payer,
+        (payer_type, &payer_secret),
+        tinybars,
+    )
+    .await?;
+    Ok(SendResult {
+        transaction_id: receipt.transaction_id,
+    })
+}
+
+/// Submits a key change for one of the wallet's Testnet accounts, moving it to
+/// the key of another wallet in this vault. Both keys sign. The link between
+/// wallets only moves later, in `finish_account_move`, once Testnet confirms.
+#[tauri::command]
+async fn move_account(
+    wallet_id: String,
+    account_id: String,
+    target_wallet_id: String,
+    state: State<'_, AppState>,
+) -> Result<SendResult, String> {
+    if wallet_id == target_wallet_id {
+        return Err("Choose a different wallet.".to_string());
+    }
+    let account = testnet_account_of(&state, &wallet_id, &account_id)?;
+    let (current_type, current_secret) = lock_service(&state)?
+        .with_wallet_key(&wallet_id, |key_type, secret| {
+            Ok((key_type, Zeroizing::new(*secret)))
+        })?;
+    let (new_type, new_secret) = lock_service(&state)?
+        .with_wallet_key(&target_wallet_id, |key_type, secret| {
+            Ok((key_type, Zeroizing::new(*secret)))
+        })?;
+    let receipt = hedera_tx::submit::change_testnet_account_key(
+        &account,
+        (current_type, &current_secret),
+        (new_type, &new_secret),
+    )
+    .await?;
+    Ok(SendResult {
+        transaction_id: receipt.transaction_id,
+    })
+}
+
+/// Moves the account's link to the target wallet, but only if Testnet now
+/// shows the target wallet's key on the account.
+#[tauri::command]
+async fn finish_account_move(
+    wallet_id: String,
+    account_id: String,
+    target_wallet_id: String,
+    state: State<'_, AppState>,
+) -> Result<WalletSummary, String> {
+    let account = testnet_account_of(&state, &wallet_id, &account_id)?;
+    let target_key = lock_service(&state)?.wallet_public_key(&target_wallet_id)?;
+    let owned = MirrorClient::testnet()?
+        .find_accounts_by_public_key(&target_key)
+        .await?;
+    if !owned.contains(&account) {
+        return Err("Testnet has not confirmed the key change yet.".to_string());
+    }
+    lock_service(&state)?.move_wallet_account_and_save(
+        &wallet_id,
+        &target_wallet_id,
+        &account,
+        &state.store_path.to_string_lossy(),
+    )
+}
+
+/// Deletes one of the wallet's Testnet accounts and sends its remaining HBAR
+/// to `recipient`. The deleted account's key signs; if the recipient is also in
+/// this vault, its key signs too (the same key signs only once).
+#[tauri::command]
+async fn delete_account(
+    wallet_id: String,
+    account_id: String,
+    recipient: String,
+    state: State<'_, AppState>,
+) -> Result<SendResult, String> {
+    let account = testnet_account_of(&state, &wallet_id, &account_id)?;
+    let recipient = parse_account_input(&recipient, Network::Testnet, true)?;
+    ensure_delete_recipient_allowed(&state, &recipient)?;
+    if recipient == account {
+        return Err("Choose a different recipient account.".to_string());
+    }
+    let recipient_wallet = lock_service(&state)?
+        .list_wallets()?
+        .into_iter()
+        .find(|w| {
+            w.accounts
+                .iter()
+                .any(|a| a.network == Network::Testnet && a.id == recipient)
+        })
+        .map(|w| w.id);
+    let (own_type, own_secret) = lock_service(&state)?
+        .with_wallet_key(&wallet_id, |key_type, secret| {
+            Ok((key_type, Zeroizing::new(*secret)))
+        })?;
+    let other = match &recipient_wallet {
+        Some(id) if *id != wallet_id => Some(
+            lock_service(&state)?.with_wallet_key(id, |key_type, secret| {
+                Ok((key_type, Zeroizing::new(*secret)))
+            })?,
+        ),
+        _ => None,
+    };
+    let mut signers: Vec<(KeyType, &[u8; 32])> = vec![(own_type, &own_secret)];
+    if let Some((kind, secret)) = &other {
+        signers.push((*kind, secret));
+    }
+    let receipt = hedera_tx::submit::delete_testnet_account(
+        &account,
+        &recipient,
+        recipient_wallet.is_some(),
+        &signers,
+    )
+    .await?;
+    Ok(SendResult {
+        transaction_id: receipt.transaction_id,
+    })
+}
+
+/// Removes the account's link, but only if Testnet reports it deleted.
+#[tauri::command]
+async fn finish_account_delete(
+    wallet_id: String,
+    account_id: String,
+    state: State<'_, AppState>,
+) -> Result<WalletSummary, String> {
+    let account = testnet_account_of(&state, &wallet_id, &account_id)?;
+    if !MirrorClient::testnet()?
+        .account_is_deleted(&account)
+        .await?
+    {
+        return Err("Testnet has not confirmed the deletion yet.".to_string());
+    }
+    lock_service(&state)?.remove_wallet_account_and_save(
+        &wallet_id,
+        Network::Testnet,
+        &account,
+        &state.store_path.to_string_lossy(),
+    )
+}
+
+/// Checks a typed destination account (checksum required). A send or a delete
+/// also enforces the matching address-book limit.
+#[tauri::command]
+fn check_recipient(
+    recipient: String,
+    for_send: bool,
+    for_delete: Option<bool>,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let id = parse_account_input(&recipient, Network::Testnet, true)?;
+    if for_send {
+        ensure_send_allowed(&state, &id)?;
+    }
+    if for_delete.unwrap_or(false) {
+        ensure_delete_recipient_allowed(&state, &id)?;
+    }
+    Ok(id)
+}
+
+fn ensure_delete_recipient_allowed(state: &AppState, recipient: &str) -> Result<(), String> {
+    let mut service = lock_service(state)?;
+    if service.allow_external_deletes()?
+        || service.address_book_contains(Network::Testnet, recipient)?
+    {
+        Ok(())
+    } else {
+        Err(
+            "Funds from a deleted account can only go to accounts in the address book. \
+             Remove this limit in Settings."
+                .to_string(),
+        )
+    }
+}
+
+fn ensure_send_allowed(state: &AppState, recipient: &str) -> Result<(), String> {
+    let mut service = lock_service(state)?;
+    if service.allow_external_sends()?
+        || service.address_book_contains(Network::Testnet, recipient)?
+    {
+        Ok(())
+    } else {
+        Err(
+            "Send is limited to accounts in the address book. Remove this limit in Settings."
+                .to_string(),
+        )
+    }
+}
+
+#[tauri::command]
+fn rename_account(
+    wallet_id: String,
+    account_id: String,
+    name: String,
+    state: State<'_, AppState>,
+) -> Result<WalletSummary, String> {
+    lock_service(&state)?.rename_wallet_account_and_save(
+        &wallet_id,
+        Network::Testnet,
+        &account_id,
+        &name,
+        &state.store_path.to_string_lossy(),
+    )
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AddressBookView {
+    rows: Vec<AddressBookRow>,
+    allow_external_sends: bool,
+    allow_external_deletes: bool,
+}
+
+fn address_book_view(state: &AppState) -> Result<AddressBookView, String> {
+    let mut service = lock_service(state)?;
+    Ok(AddressBookView {
+        rows: service.address_book()?,
+        allow_external_sends: service.allow_external_sends()?,
+        allow_external_deletes: service.allow_external_deletes()?,
+    })
+}
+
+#[tauri::command]
+fn get_address_book(state: State<'_, AppState>) -> Result<AddressBookView, String> {
+    address_book_view(&state)
+}
+
+#[tauri::command]
+fn set_allow_external_deletes(
+    allowed: bool,
+    state: State<'_, AppState>,
+) -> Result<AddressBookView, String> {
+    lock_service(&state)?
+        .set_allow_external_deletes(allowed, &state.store_path.to_string_lossy())?;
+    address_book_view(&state)
+}
+
+#[tauri::command]
+fn set_allow_external_sends(
+    allowed: bool,
+    state: State<'_, AppState>,
+) -> Result<AddressBookView, String> {
+    lock_service(&state)?.set_allow_external_sends(allowed, &state.store_path.to_string_lossy())?;
+    address_book_view(&state)
+}
+
+/// Adds a third-party recipient. The checksum is required, and the account
+/// must exist on Testnet, so a mistyped address is caught now.
+#[tauri::command]
+async fn add_address_book_entry(
+    name: String,
+    address: String,
+    state: State<'_, AppState>,
+) -> Result<AddressBookView, String> {
+    let id = parse_account_input(&address, Network::Testnet, true)?;
+    wallet_core::wallet_service::validate_account_name(&name)?;
+    if MirrorClient::testnet()?
+        .account_balance(&id)
+        .await?
+        .is_none()
+    {
+        return Err(format!("Account {id} was not found on Hedera Testnet."));
+    }
+    lock_service(&state)?.add_address_book_entry(
+        Network::Testnet,
+        &id,
+        &name,
+        &state.store_path.to_string_lossy(),
+    )?;
+    address_book_view(&state)
+}
+
+#[tauri::command]
+fn rename_address_book_account(
+    account_id: String,
+    name: String,
+    state: State<'_, AppState>,
+) -> Result<AddressBookView, String> {
+    lock_service(&state)?.rename_address_book_account(
+        Network::Testnet,
+        &account_id,
+        &name,
+        &state.store_path.to_string_lossy(),
+    )?;
+    address_book_view(&state)
+}
+
+#[tauri::command]
+fn remove_address_book_entry(
+    account_id: String,
+    state: State<'_, AppState>,
+) -> Result<AddressBookView, String> {
+    lock_service(&state)?.remove_address_book_entry(
+        Network::Testnet,
+        &account_id,
+        &state.store_path.to_string_lossy(),
+    )?;
+    address_book_view(&state)
+}
+
+/// Balance of any account in the address book (wallet account or outside entry).
+#[tauri::command]
+async fn get_address_balance(
+    account_id: String,
+    state: State<'_, AppState>,
+) -> Result<Option<u64>, String> {
+    let id = validate_account_id(&account_id)?;
+    if !lock_service(&state)?.address_book_contains(Network::Testnet, &id)? {
+        return Err(format!("account {id} is not in the address book"));
+    }
+    MirrorClient::testnet()?.account_balance(&id).await
 }
 
 #[tauri::command]
@@ -540,9 +916,24 @@ fn main() {
             delete_wallet,
             rename_wallet,
             link_wallet_account,
-            find_wallet_account,
+            find_wallet_accounts,
+            get_account_balance,
             get_account_overview,
             send_hbar,
+            create_account,
+            move_account,
+            finish_account_move,
+            delete_account,
+            finish_account_delete,
+            check_recipient,
+            rename_account,
+            get_address_book,
+            set_allow_external_sends,
+            set_allow_external_deletes,
+            add_address_book_entry,
+            remove_address_book_entry,
+            rename_address_book_account,
+            get_address_balance,
             import_wallet,
             import_private_key,
             detect_private_key_type,

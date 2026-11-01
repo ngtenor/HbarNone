@@ -3,8 +3,9 @@ use crate::{
         KeyType, SecretKind, evm_address, is_valid_ecdsa_secret, parse_private_key, public_key_hex,
     },
     vault_container::{
-        DEFAULT_AUTO_LOCK_SECONDS, VaultContainer, VaultPayload, VaultWallet,
-        decrypt_wallet_secret, encrypt_wallet_secret, validate_auto_lock_seconds,
+        AddressBookEntry, DEFAULT_AUTO_LOCK_SECONDS, Network, VaultContainer, VaultPayload,
+        VaultWallet, WalletAccount, decrypt_wallet_secret, encrypt_wallet_secret,
+        validate_auto_lock_seconds,
     },
     wallet::Wallet,
     wallet_store::WalletStore,
@@ -32,12 +33,71 @@ fn unlock_delay(failed_attempts: u32) -> Option<Duration> {
     Some(Duration::from_secs(seconds))
 }
 
+pub const UNNAMED_ACCOUNT: &str = "NONAME";
+pub const MAX_ACCOUNT_NAME_CHARS: usize = 25;
+pub const MAX_ADDRESS_BOOK_ENTRIES: usize = 200;
+
+/// An account as shown to the user: `display_id` carries the checksum.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AccountSummary {
+    pub network: Network,
+    pub id: String,
+    pub display_id: String,
+    /// The user's name for the account, or `NONAME`.
+    pub name: String,
+    pub named: bool,
+}
+
+impl From<&WalletAccount> for AccountSummary {
+    fn from(account: &WalletAccount) -> Self {
+        Self {
+            network: account.network,
+            id: account.id.clone(),
+            display_id: crate::account_checksum::with_checksum(account.network, &account.id)
+                .unwrap_or_else(|_| account.id.clone()),
+            name: account
+                .name
+                .clone()
+                .unwrap_or_else(|| UNNAMED_ACCOUNT.to_string()),
+            named: account.name.is_some(),
+        }
+    }
+}
+
+/// One row of the address book: an account of one of the vault's wallets, or a
+/// third-party recipient (`wallet_id` is `None`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AddressBookRow {
+    pub network: Network,
+    pub id: String,
+    pub display_id: String,
+    pub name: String,
+    pub wallet_id: Option<String>,
+    pub wallet_name: Option<String>,
+}
+
+pub fn validate_account_name(name: &str) -> Result<String, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("the name cannot be empty".to_string());
+    }
+    if name.chars().count() > MAX_ACCOUNT_NAME_CHARS {
+        return Err(format!(
+            "the name cannot exceed {MAX_ACCOUNT_NAME_CHARS} characters"
+        ));
+    }
+    if name.chars().any(char::is_control) {
+        return Err("the name cannot contain control characters".to_string());
+    }
+    Ok(name.to_string())
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct WalletSummary {
     pub id: String,
     pub name: String,
     pub created_at: String,
-    pub account_id: Option<String>,
+    pub accounts: Vec<AccountSummary>,
     pub secret_kind: SecretKind,
     pub key_type: KeyType,
 }
@@ -48,7 +108,7 @@ impl WalletSummary {
             id: wallet.id.clone(),
             name: wallet.name.clone(),
             created_at: wallet.created_at.clone(),
-            account_id: wallet.account_id.clone(),
+            accounts: wallet.accounts.iter().map(AccountSummary::from).collect(),
             secret_kind: wallet.secret_kind,
             key_type: wallet.key_type,
         }
@@ -81,6 +141,7 @@ fn wallet_identity(
 }
 
 const MAX_ACCOUNT_NUM_DIGITS: usize = 19;
+pub const MAX_ACCOUNTS_PER_WALLET: usize = 50;
 
 /// Accepts a Hedera account ID of the form `0.0.<num>` and returns it normalised.
 pub fn validate_account_id(input: &str) -> Result<String, String> {
@@ -201,7 +262,7 @@ impl WalletService {
                         id: wallet.id.clone(),
                         name: wallet.name.clone(),
                         created_at: wallet.created_at.clone(),
-                        account_id: None,
+                        accounts: Vec::new(),
                         secret_kind: SecretKind::Mnemonic,
                         key_type: KeyType::Ed25519,
                     })
@@ -351,6 +412,7 @@ impl WalletService {
                 name: legacy_wallet.name.clone(),
                 created_at: legacy_wallet.created_at.clone(),
                 updated_at: legacy_wallet.updated_at.clone(),
+                accounts: Vec::new(),
                 account_id: None,
                 secret_kind: SecretKind::Mnemonic,
                 key_type: KeyType::Ed25519,
@@ -616,6 +678,7 @@ impl WalletService {
             name,
             created_at: now.clone(),
             updated_at: now,
+            accounts: Vec::new(),
             account_id: None,
             secret_kind,
             key_type: new_type,
@@ -652,33 +715,342 @@ impl WalletService {
 
     /// Links (or, with `None`, unlinks) a Hedera account ID. An account can
     /// be linked to one wallet only, to avoid confusing balances.
-    pub fn set_wallet_account_id_and_save(
+    /// Links accounts to a wallet on one network. Accounts already on this
+    /// wallet are skipped; one linked to another wallet is an error and
+    /// nothing is saved.
+    pub fn add_wallet_accounts_and_save(
         &mut self,
         wallet_id: &str,
-        account_id: Option<&str>,
+        network: Network,
+        account_ids: &[String],
         path: &str,
     ) -> Result<WalletSummary, String> {
         self.ensure_unlocked()?;
-        let account_id = account_id.map(validate_account_id).transpose()?;
+        let account_ids = account_ids
+            .iter()
+            .map(|id| validate_account_id(id))
+            .collect::<Result<Vec<_>, _>>()?;
         let mut next_payload = self.payload.as_ref().expect("checked unlocked").clone();
-        if let Some(account_id) = &account_id
-            && let Some(other) = next_payload.wallets.iter().find(|wallet| {
-                wallet.id != wallet_id && wallet.account_id.as_deref() == Some(account_id)
-            })
-        {
-            return Err(format!(
-                "account {account_id} is already linked to wallet '{}'",
-                other.name
-            ));
+        for account_id in &account_ids {
+            if let Some(other) = next_payload.wallets.iter().find(|wallet| {
+                wallet.id != wallet_id
+                    && wallet
+                        .accounts
+                        .iter()
+                        .any(|a| a.network == network && &a.id == account_id)
+            }) {
+                return Err(format!(
+                    "account {account_id} is already linked to wallet '{}'",
+                    other.name
+                ));
+            }
         }
         let wallet = next_payload
             .wallets
             .iter_mut()
             .find(|wallet| wallet.id == wallet_id)
             .ok_or_else(|| format!("wallet not found: {wallet_id}"))?;
-        wallet.account_id = account_id;
+        for id in account_ids {
+            let account = WalletAccount {
+                network,
+                id,
+                name: None,
+            };
+            if !wallet.accounts.contains(&account) {
+                wallet.accounts.push(account);
+            }
+        }
+        if wallet.accounts.len() > MAX_ACCOUNTS_PER_WALLET {
+            return Err(format!(
+                "a wallet can hold at most {MAX_ACCOUNTS_PER_WALLET} accounts"
+            ));
+        }
         wallet.updated_at = chrono::Utc::now().to_rfc3339();
         let summary = WalletSummary::from_wallet(wallet);
+        self.persist_payload(next_payload, path)?;
+        Ok(summary)
+    }
+
+    /// Names one of the wallet's accounts (or renames it).
+    pub fn rename_wallet_account_and_save(
+        &mut self,
+        wallet_id: &str,
+        network: Network,
+        account_id: &str,
+        name: &str,
+        path: &str,
+    ) -> Result<WalletSummary, String> {
+        self.ensure_unlocked()?;
+        let account_id = validate_account_id(account_id)?;
+        let name = validate_account_name(name)?;
+        let mut next_payload = self.payload.as_ref().expect("checked unlocked").clone();
+        let wallet = next_payload
+            .wallets
+            .iter_mut()
+            .find(|wallet| wallet.id == wallet_id)
+            .ok_or_else(|| format!("wallet not found: {wallet_id}"))?;
+        let account = wallet
+            .accounts
+            .iter_mut()
+            .find(|a| a.network == network && a.id == account_id)
+            .ok_or_else(|| format!("account {account_id} is not linked to this wallet"))?;
+        account.name = Some(name);
+        wallet.updated_at = chrono::Utc::now().to_rfc3339();
+        let summary = WalletSummary::from_wallet(wallet);
+        self.persist_payload(next_payload, path)?;
+        Ok(summary)
+    }
+
+    /// Every wallet account, then every third-party entry.
+    pub fn address_book(&mut self) -> Result<Vec<AddressBookRow>, String> {
+        self.ensure_unlocked()?;
+        let payload = self.payload.as_ref().expect("checked unlocked");
+        let mut rows = Vec::new();
+        for wallet in &payload.wallets {
+            for account in &wallet.accounts {
+                let summary = AccountSummary::from(account);
+                rows.push(AddressBookRow {
+                    network: summary.network,
+                    id: summary.id,
+                    display_id: summary.display_id,
+                    name: summary.name,
+                    wallet_id: Some(wallet.id.clone()),
+                    wallet_name: Some(wallet.name.clone()),
+                });
+            }
+        }
+        for entry in &payload.address_book {
+            rows.push(AddressBookRow {
+                network: entry.network,
+                id: entry.id.clone(),
+                display_id: crate::account_checksum::with_checksum(entry.network, &entry.id)
+                    .unwrap_or_else(|_| entry.id.clone()),
+                name: entry.name.clone(),
+                wallet_id: None,
+                wallet_name: None,
+            });
+        }
+        Ok(rows)
+    }
+
+    pub fn allow_external_sends(&mut self) -> Result<bool, String> {
+        self.ensure_unlocked()?;
+        Ok(self
+            .payload
+            .as_ref()
+            .expect("checked unlocked")
+            .allow_external_sends)
+    }
+
+    pub fn set_allow_external_sends(&mut self, allowed: bool, path: &str) -> Result<(), String> {
+        self.ensure_unlocked()?;
+        let mut next_payload = self.payload.as_ref().expect("checked unlocked").clone();
+        next_payload.allow_external_sends = allowed;
+        self.persist_payload(next_payload, path)
+    }
+
+    pub fn allow_external_deletes(&mut self) -> Result<bool, String> {
+        self.ensure_unlocked()?;
+        Ok(self
+            .payload
+            .as_ref()
+            .expect("checked unlocked")
+            .allow_external_deletes)
+    }
+
+    pub fn set_allow_external_deletes(&mut self, allowed: bool, path: &str) -> Result<(), String> {
+        self.ensure_unlocked()?;
+        let mut next_payload = self.payload.as_ref().expect("checked unlocked").clone();
+        next_payload.allow_external_deletes = allowed;
+        self.persist_payload(next_payload, path)
+    }
+
+    /// Whether the account is in the address book (a wallet account or a
+    /// third-party entry).
+    pub fn address_book_contains(
+        &mut self,
+        network: Network,
+        account_id: &str,
+    ) -> Result<bool, String> {
+        self.ensure_unlocked()?;
+        let account_id = validate_account_id(account_id)?;
+        let payload = self.payload.as_ref().expect("checked unlocked");
+        Ok(payload
+            .wallets
+            .iter()
+            .flat_map(|wallet| wallet.accounts.iter())
+            .any(|a| a.network == network && a.id == account_id)
+            || payload
+                .address_book
+                .iter()
+                .any(|e| e.network == network && e.id == account_id))
+    }
+
+    pub fn add_address_book_entry(
+        &mut self,
+        network: Network,
+        account_id: &str,
+        name: &str,
+        path: &str,
+    ) -> Result<(), String> {
+        self.ensure_unlocked()?;
+        let account_id = validate_account_id(account_id)?;
+        let name = validate_account_name(name)?;
+        if self.address_book_contains(network, &account_id)? {
+            return Err(format!(
+                "account {account_id} is already in the address book"
+            ));
+        }
+        let mut next_payload = self.payload.as_ref().expect("checked unlocked").clone();
+        if next_payload.address_book.len() >= MAX_ADDRESS_BOOK_ENTRIES {
+            return Err(format!(
+                "the address book can hold at most {MAX_ADDRESS_BOOK_ENTRIES} outside accounts"
+            ));
+        }
+        next_payload.address_book.push(AddressBookEntry {
+            network,
+            id: account_id,
+            name,
+        });
+        self.persist_payload(next_payload, path)
+    }
+
+    /// Renames any address book account: a wallet account or an outside entry.
+    pub fn rename_address_book_account(
+        &mut self,
+        network: Network,
+        account_id: &str,
+        name: &str,
+        path: &str,
+    ) -> Result<(), String> {
+        self.ensure_unlocked()?;
+        let account_id = validate_account_id(account_id)?;
+        let name = validate_account_name(name)?;
+        let mut next_payload = self.payload.as_ref().expect("checked unlocked").clone();
+        let now = chrono::Utc::now().to_rfc3339();
+        let mut found = false;
+        for wallet in &mut next_payload.wallets {
+            if let Some(account) = wallet
+                .accounts
+                .iter_mut()
+                .find(|a| a.network == network && a.id == account_id)
+            {
+                account.name = Some(name.clone());
+                wallet.updated_at = now.clone();
+                found = true;
+            }
+        }
+        if let Some(entry) = next_payload
+            .address_book
+            .iter_mut()
+            .find(|e| e.network == network && e.id == account_id)
+        {
+            entry.name = name;
+            found = true;
+        }
+        if !found {
+            return Err(format!("account {account_id} is not in the address book"));
+        }
+        self.persist_payload(next_payload, path)
+    }
+
+    /// Removes a third-party entry. Wallet accounts cannot be removed here.
+    pub fn remove_address_book_entry(
+        &mut self,
+        network: Network,
+        account_id: &str,
+        path: &str,
+    ) -> Result<(), String> {
+        self.ensure_unlocked()?;
+        let account_id = validate_account_id(account_id)?;
+        let mut next_payload = self.payload.as_ref().expect("checked unlocked").clone();
+        let before = next_payload.address_book.len();
+        next_payload
+            .address_book
+            .retain(|e| !(e.network == network && e.id == account_id));
+        if next_payload.address_book.len() == before {
+            return Err(format!("account {account_id} is not an outside entry"));
+        }
+        self.persist_payload(next_payload, path)
+    }
+
+    pub fn remove_wallet_account_and_save(
+        &mut self,
+        wallet_id: &str,
+        network: Network,
+        account_id: &str,
+        path: &str,
+    ) -> Result<WalletSummary, String> {
+        self.ensure_unlocked()?;
+        let account_id = validate_account_id(account_id)?;
+        let mut next_payload = self.payload.as_ref().expect("checked unlocked").clone();
+        let wallet = next_payload
+            .wallets
+            .iter_mut()
+            .find(|wallet| wallet.id == wallet_id)
+            .ok_or_else(|| format!("wallet not found: {wallet_id}"))?;
+        let before = wallet.accounts.len();
+        wallet
+            .accounts
+            .retain(|a| !(a.network == network && a.id == account_id));
+        if wallet.accounts.len() == before {
+            return Err(format!("account {account_id} is not linked to this wallet"));
+        }
+        wallet.updated_at = chrono::Utc::now().to_rfc3339();
+        let summary = WalletSummary::from_wallet(wallet);
+        self.persist_payload(next_payload, path)?;
+        Ok(summary)
+    }
+
+    /// Moves a Testnet account link from one wallet to another in a single
+    /// save, once the account's key has been changed on the network.
+    pub fn move_wallet_account_and_save(
+        &mut self,
+        from_wallet_id: &str,
+        to_wallet_id: &str,
+        account_id: &str,
+        path: &str,
+    ) -> Result<WalletSummary, String> {
+        self.ensure_unlocked()?;
+        if from_wallet_id == to_wallet_id {
+            return Err("choose a different wallet".to_string());
+        }
+        let account_id = validate_account_id(account_id)?;
+        let mut next_payload = self.payload.as_ref().expect("checked unlocked").clone();
+        if !next_payload.wallets.iter().any(|w| w.id == to_wallet_id) {
+            return Err(format!("wallet not found: {to_wallet_id}"));
+        }
+        let source = next_payload
+            .wallets
+            .iter_mut()
+            .find(|w| w.id == from_wallet_id)
+            .ok_or_else(|| format!("wallet not found: {from_wallet_id}"))?;
+        let target_id = account_id.clone();
+        let position = source
+            .accounts
+            .iter()
+            .position(|a| a.network == Network::Testnet && a.id == target_id);
+        let Some(position) = position else {
+            return Err(format!("account {account_id} is not linked to this wallet"));
+        };
+        // The account keeps its name in the new wallet.
+        let moved = source.accounts.remove(position);
+        source.updated_at = chrono::Utc::now().to_rfc3339();
+        let target = next_payload
+            .wallets
+            .iter_mut()
+            .find(|w| w.id == to_wallet_id)
+            .expect("checked above");
+        if target.accounts.len() >= MAX_ACCOUNTS_PER_WALLET {
+            return Err(format!(
+                "a wallet can hold at most {MAX_ACCOUNTS_PER_WALLET} accounts"
+            ));
+        }
+        if !target.accounts.contains(&moved) {
+            target.accounts.push(moved);
+        }
+        target.updated_at = chrono::Utc::now().to_rfc3339();
+        let summary = WalletSummary::from_wallet(target);
         self.persist_payload(next_payload, path)?;
         Ok(summary)
     }
@@ -832,7 +1204,10 @@ fn summarize(payload: &VaultPayload) -> Vec<WalletSummary> {
 
 #[cfg(test)]
 mod tests {
-    use super::{KeyType, LegacyWalletPassword, MAX_WALLET_NAME_CHARS, SecretKind, WalletService};
+    use super::{
+        KeyType, LegacyWalletPassword, MAX_ACCOUNT_NAME_CHARS, MAX_ACCOUNTS_PER_WALLET,
+        MAX_WALLET_NAME_CHARS, Network, SecretKind, WalletAccount, WalletService,
+    };
     use crate::{vault::VaultFile, wallet::Wallet, wallet_store::WalletStore};
     use std::time::{Duration, Instant};
     use zeroize::Zeroizing;
@@ -967,6 +1342,151 @@ mod tests {
     }
 
     #[test]
+    fn account_names_and_the_address_book_persist_and_follow_moves() {
+        let (_directory, path) = temp_path();
+        let path = path.to_str().unwrap();
+        let mut service = WalletService::new();
+        service.create_vault("vault password", path).unwrap();
+        let first = service.create_and_save_wallet("First", path).unwrap();
+        let second = service.create_and_save_wallet("Second", path).unwrap();
+        service
+            .add_wallet_accounts_and_save(&first.id, Network::Testnet, &["0.0.1001".into()], path)
+            .unwrap();
+        let unnamed = &service.list_wallets().unwrap()[0].accounts[0];
+        assert_eq!((unnamed.name.as_str(), unnamed.named), ("NONAME", false));
+
+        let renamed = service
+            .rename_wallet_account_and_save(&first.id, Network::Testnet, "0.0.1001", " Rent ", path)
+            .unwrap();
+        assert_eq!(renamed.accounts[0].name, "Rent");
+        assert!(renamed.accounts[0].named);
+        for bad in [
+            "",
+            "  ",
+            "bad\nname",
+            &"x".repeat(MAX_ACCOUNT_NAME_CHARS + 1),
+        ] {
+            assert!(
+                service
+                    .rename_wallet_account_and_save(
+                        &first.id,
+                        Network::Testnet,
+                        "0.0.1001",
+                        bad,
+                        path
+                    )
+                    .is_err()
+            );
+        }
+        service
+            .rename_wallet_account_and_save(
+                &first.id,
+                Network::Testnet,
+                "0.0.1001",
+                &"x".repeat(MAX_ACCOUNT_NAME_CHARS),
+                path,
+            )
+            .unwrap();
+
+        service
+            .add_address_book_entry(Network::Testnet, "0.0.77", "Landlord", path)
+            .unwrap();
+        service
+            .rename_address_book_account(Network::Testnet, "0.0.77", "Owner", path)
+            .unwrap();
+        service
+            .rename_address_book_account(Network::Testnet, "0.0.1001", "Rent", path)
+            .unwrap();
+        assert!(
+            service
+                .rename_address_book_account(Network::Testnet, "0.0.999", "Nobody", path)
+                .is_err()
+        );
+        let rows = service.address_book().unwrap();
+        assert!(rows.iter().any(|r| r.id == "0.0.77" && r.name == "Owner"));
+        let long = "x".repeat(MAX_ACCOUNT_NAME_CHARS);
+        service
+            .rename_address_book_account(Network::Testnet, "0.0.1001", &long, path)
+            .unwrap();
+        assert!(
+            service
+                .address_book()
+                .unwrap()
+                .iter()
+                .any(|r| r.id == "0.0.1001" && r.name == long)
+        );
+        service
+            .rename_address_book_account(Network::Testnet, "0.0.77", "Landlord", path)
+            .unwrap();
+        assert!(
+            service
+                .add_address_book_entry(Network::Testnet, "0.0.77", "Again", path)
+                .is_err()
+        );
+        assert!(
+            service
+                .add_address_book_entry(Network::Testnet, "0.0.1001", "Mine", path)
+                .is_err()
+        );
+        assert!(
+            service
+                .add_address_book_entry(Network::Testnet, "0.0.78", " ", path)
+                .is_err()
+        );
+        assert!(
+            service
+                .address_book_contains(Network::Testnet, "0.0.77")
+                .unwrap()
+        );
+        assert!(
+            service
+                .address_book_contains(Network::Testnet, "0.0.1001")
+                .unwrap()
+        );
+        assert!(
+            !service
+                .address_book_contains(Network::Testnet, "0.0.5")
+                .unwrap()
+        );
+        assert!(!service.allow_external_sends().unwrap());
+        service.set_allow_external_sends(true, path).unwrap();
+
+        service
+            .rename_wallet_account_and_save(&first.id, Network::Testnet, "0.0.1001", "Rent", path)
+            .unwrap();
+        service
+            .move_wallet_account_and_save(&first.id, &second.id, "0.0.1001", path)
+            .unwrap();
+        service.lock();
+        let mut again = WalletService::load_store(path).unwrap();
+        again.unlock_vault("vault password").unwrap();
+        let rows = again.address_book().unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            (rows[0].name.as_str(), rows[0].wallet_name.as_deref()),
+            ("Rent", Some("Second"))
+        );
+        assert_eq!(
+            (rows[1].name.as_str(), rows[1].wallet_id.clone()),
+            ("Landlord", None)
+        );
+        assert!(again.allow_external_sends().unwrap());
+        assert!(!again.allow_external_deletes().unwrap());
+        again.set_allow_external_deletes(true, path).unwrap();
+        assert!(again.allow_external_deletes().unwrap());
+
+        again
+            .remove_address_book_entry(Network::Testnet, "0.0.77", path)
+            .unwrap();
+        assert!(
+            again
+                .remove_address_book_entry(Network::Testnet, "0.0.1001", path)
+                .is_err()
+        );
+        assert_eq!(again.address_book().unwrap().len(), 1);
+    }
+
+    #[test]
     fn wallet_names_are_validated_and_unique() {
         let (_directory, path) = temp_path();
         let path = path.to_str().unwrap();
@@ -1045,41 +1565,170 @@ mod tests {
         service.create_vault("vault password", path).unwrap();
         let first = service.create_and_save_wallet("First", path).unwrap();
         let second = service.create_and_save_wallet("Second", path).unwrap();
-        assert!(first.account_id.is_none());
+        assert!(first.accounts.is_empty());
 
+        let ids = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         let linked = service
-            .set_wallet_account_id_and_save(&first.id, Some("0.0.1001"), path)
+            .add_wallet_accounts_and_save(
+                &first.id,
+                Network::Testnet,
+                &ids(&["0.0.1001", "0.0.1002"]),
+                path,
+            )
             .unwrap();
-        assert_eq!(linked.account_id.as_deref(), Some("0.0.1001"));
+        assert_eq!(linked.accounts.len(), 2);
+        // Adding again is idempotent.
+        let again = service
+            .add_wallet_accounts_and_save(&first.id, Network::Testnet, &ids(&["0.0.1001"]), path)
+            .unwrap();
+        assert_eq!(again.accounts.len(), 2);
+        // The same number on another network is a different account.
+        let mainnet = service
+            .add_wallet_accounts_and_save(&second.id, Network::Mainnet, &ids(&["0.0.1001"]), path)
+            .unwrap();
+        assert_eq!(mainnet.accounts[0].network, Network::Mainnet);
         let error = service
-            .set_wallet_account_id_and_save(&second.id, Some("0.0.1001"), path)
+            .add_wallet_accounts_and_save(&second.id, Network::Testnet, &ids(&["0.0.1002"]), path)
             .unwrap_err();
         assert!(error.contains("'First'"));
         assert!(
             service
-                .set_wallet_account_id_and_save("missing", Some("0.0.5"), path)
+                .add_wallet_accounts_and_save("missing", Network::Testnet, &ids(&["0.0.5"]), path)
                 .is_err()
         );
         let invalid_path = format!("{path}.missing/vault.json");
         assert!(
             service
-                .set_wallet_account_id_and_save(&second.id, Some("0.0.7"), &invalid_path)
+                .add_wallet_accounts_and_save(
+                    &second.id,
+                    Network::Testnet,
+                    &ids(&["0.0.7"]),
+                    &invalid_path
+                )
                 .is_err()
         );
-        assert!(service.list_wallets().unwrap()[1].account_id.is_none());
+        assert_eq!(service.list_wallets().unwrap()[1].accounts.len(), 1);
 
         service.lock();
         let mut reloaded = WalletService::load_store(path).unwrap();
         let wallets = reloaded.unlock_vault("vault password").unwrap();
-        assert_eq!(wallets[0].account_id.as_deref(), Some("0.0.1001"));
+        assert_eq!(wallets[0].accounts.len(), 2);
 
         let unlinked = reloaded
-            .set_wallet_account_id_and_save(&first.id, None, path)
+            .remove_wallet_account_and_save(&first.id, Network::Testnet, "0.0.1002", path)
             .unwrap();
-        assert!(unlinked.account_id.is_none());
+        assert_eq!(unlinked.accounts.len(), 1);
+        assert!(
+            reloaded
+                .remove_wallet_account_and_save(&first.id, Network::Testnet, "0.0.1002", path)
+                .is_err()
+        );
         reloaded
-            .set_wallet_account_id_and_save(&second.id, Some("0.0.1001"), path)
+            .add_wallet_accounts_and_save(&second.id, Network::Testnet, &ids(&["0.0.1002"]), path)
             .unwrap();
+    }
+
+    #[test]
+    fn a_wallet_cannot_hold_more_than_the_account_limit() {
+        let (_directory, path) = temp_path();
+        let path = path.to_str().unwrap();
+        let mut service = WalletService::new();
+        service.create_vault("vault password", path).unwrap();
+        let wallet = service.create_and_save_wallet("Wallet", path).unwrap();
+        let many: Vec<String> = (1..=(MAX_ACCOUNTS_PER_WALLET + 1))
+            .map(|n| format!("0.0.{n}"))
+            .collect();
+        assert!(
+            service
+                .add_wallet_accounts_and_save(&wallet.id, Network::Testnet, &many, path)
+                .is_err()
+        );
+        assert!(service.list_wallets().unwrap()[0].accounts.is_empty());
+    }
+
+    #[test]
+    fn an_account_moves_between_wallets_in_one_save() {
+        let (_directory, path) = temp_path();
+        let path = path.to_str().unwrap();
+        let mut service = WalletService::new();
+        service.create_vault("vault password", path).unwrap();
+        let first = service.create_and_save_wallet("First", path).unwrap();
+        let second = service.create_and_save_wallet("Second", path).unwrap();
+        service
+            .add_wallet_accounts_and_save(
+                &first.id,
+                Network::Testnet,
+                &["0.0.1001".to_string()],
+                path,
+            )
+            .unwrap();
+
+        assert!(
+            service
+                .move_wallet_account_and_save(&first.id, &first.id, "0.0.1001", path)
+                .is_err()
+        );
+        assert!(
+            service
+                .move_wallet_account_and_save(&first.id, &second.id, "0.0.9", path)
+                .is_err()
+        );
+        let moved = service
+            .move_wallet_account_and_save(&first.id, &second.id, "0.0.1001", path)
+            .unwrap();
+        assert_eq!(moved.id, second.id);
+        assert_eq!(moved.accounts.len(), 1);
+        let wallets = service.list_wallets().unwrap();
+        assert!(
+            wallets
+                .iter()
+                .find(|w| w.id == first.id)
+                .unwrap()
+                .accounts
+                .is_empty()
+        );
+        assert_eq!(
+            wallets
+                .iter()
+                .find(|w| w.id == second.id)
+                .unwrap()
+                .accounts
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn a_legacy_single_account_moves_into_the_account_list() {
+        let (_directory, path) = temp_path();
+        let path = path.to_str().unwrap();
+        let mut service = WalletService::new();
+        service.create_vault("vault password", path).unwrap();
+        let wallet = service.create_and_save_wallet("Old", path).unwrap();
+        let mut legacy = service.payload.clone().unwrap();
+        legacy.wallets[0].account_id = Some("0.0.1001".to_string());
+        service.persist_payload(legacy, path).unwrap();
+        service.lock();
+
+        let mut reloaded = WalletService::load_store(path).unwrap();
+        let wallets = reloaded.unlock_vault("vault password").unwrap();
+        assert_eq!(wallets[0].id, wallet.id);
+        assert_eq!(
+            wallets[0].accounts,
+            vec![super::AccountSummary::from(&WalletAccount {
+                network: Network::Testnet,
+                id: "0.0.1001".to_string(),
+                name: None,
+            })]
+        );
+        // The migrated vault is saved in the new format and still loads.
+        reloaded
+            .rename_wallet_and_save(&wallet.id, "Renamed", path)
+            .unwrap();
+        reloaded.lock();
+        let mut again = WalletService::load_store(path).unwrap();
+        let wallets = again.unlock_vault("vault password").unwrap();
+        assert_eq!(wallets[0].accounts.len(), 1);
     }
 
     #[test]

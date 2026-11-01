@@ -16,7 +16,7 @@ pub const TRANSACTION_LIMIT: usize = 10;
 const MAX_RESPONSE_BYTES: usize = 512 * 1024;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_TEXT_CHARS: usize = 64;
-const MAX_ACCOUNT_MATCHES: usize = 5;
+const MAX_ACCOUNT_MATCHES: usize = 25;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TransactionSummary {
@@ -44,6 +44,8 @@ struct AccountsResponse {
 struct AccountEntry {
     account: String,
     balance: Option<BalanceEntry>,
+    #[serde(default)]
+    deleted: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -106,9 +108,20 @@ pub fn parse_account_matches(body: &[u8]) -> Result<Vec<String>, String> {
     response
         .accounts
         .iter()
+        .filter(|entry| entry.deleted != Some(true))
         .take(MAX_ACCOUNT_MATCHES)
         .map(|entry| validate_account_id(&entry.account))
         .collect()
+}
+
+/// Whether the mirror node reports this account as deleted.
+pub fn parse_deleted(body: &[u8], expected_account: &str) -> Result<bool, String> {
+    let response: AccountEntry = serde_json::from_slice(body)
+        .map_err(|_| "unexpected response from the mirror node".to_string())?;
+    if validate_account_id(&response.account)? != expected_account {
+        return Err("the mirror node returned a different account".to_string());
+    }
+    Ok(response.deleted == Some(true))
 }
 
 pub fn parse_balance(body: &[u8], expected_account: &str) -> Result<u64, String> {
@@ -212,6 +225,24 @@ impl MirrorClient {
         }
     }
 
+    /// Whether the account is marked deleted on Testnet (`false` if unknown).
+    pub async fn account_is_deleted(&self, account_id: &str) -> Result<bool, String> {
+        let account_id = validate_account_id(account_id)?;
+        match self.get(&format!("/api/v1/accounts/{account_id}")).await? {
+            Some(body) => parse_deleted(&body, &account_id),
+            None => Ok(false),
+        }
+    }
+
+    /// Balance only (one request), or `None` if the account is unknown on Testnet.
+    pub async fn account_balance(&self, account_id: &str) -> Result<Option<u64>, String> {
+        let account_id = validate_account_id(account_id)?;
+        match self.get(&format!("/api/v1/accounts/{account_id}")).await? {
+            Some(body) => parse_balance(&body, &account_id).map(Some),
+            None => Ok(None),
+        }
+    }
+
     /// Balance and recent transactions, or `None` if the account is unknown on Testnet.
     pub async fn account_overview(
         &self,
@@ -240,6 +271,14 @@ impl MirrorClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_the_deleted_flag_and_checks_the_account() {
+        assert!(parse_deleted(br#"{"account":"0.0.5","deleted":true}"#, "0.0.5").unwrap());
+        assert!(!parse_deleted(br#"{"account":"0.0.5","deleted":false}"#, "0.0.5").unwrap());
+        assert!(!parse_deleted(br#"{"account":"0.0.5"}"#, "0.0.5").unwrap());
+        assert!(parse_deleted(br#"{"account":"0.0.6","deleted":true}"#, "0.0.5").is_err());
+    }
 
     #[test]
     fn parses_account_matches_and_rejects_bad_ids() {
