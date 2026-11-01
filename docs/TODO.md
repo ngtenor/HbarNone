@@ -100,6 +100,59 @@ Password change and encrypted backup export/restore are now tracked under
 3. **Hardware key**: FIDO2 `hmac-secret` design on an RP2350 board, after the board arrives.
 4. Mainnet only after the above has been reviewed.
 
+## Cold signer (SeedSigner) design notes
+Goal: a small, fully readable signer. It signs only what it can show in full and rejects everything else. Value is held cold; contracts, token management and experiments are done from small hot wallets.
+
+**v1 whitelist (the device can display every field)**
+1. HBAR transfer (`CryptoTransfer`, HBAR only).
+2. Fungible HTS token transfer (same body). Show token ID and the raw amount; a token name or decimals from the QR is an unverified hint only.
+3. NFT transfer (token ID and serial number).
+4. Token association and dissociation.
+5. Account create, update (key change) and delete. Show the full key (or key structure) being set.
+6. Optional later: approve/delete allowance, and `ScheduleCreate`/`ScheduleSign` (needed for multisig collection over days).
+
+**Rejected by default**
+- Smart-contract calls and creation, and EVM transactions (opaque call data cannot be displayed).
+- Token creation and management (create, mint, burn, freeze, wipe, update, fees, pause).
+- Consensus service, file service, staking changes, node/system and batch transactions.
+- Anything with custom fees or fields the parser does not recognise. Unknown means reject.
+- Possible later: a clearly labelled "blind signing" mode, off by default.
+
+**Parser rules**
+- Show every line of a multi-party transfer, with a hard cap on the number of lines accepted.
+- Check the whole body for fields beyond the whitelist (for example a key change or allowance hidden in a transfer) and reject if any exist.
+- Fuzz the parser.
+
+**Multisig**
+- The device signs the same body bytes as for a single key, and returns one signature. The desktop app is the coordinator: it builds the body, collects signatures (QR transport), merges them and submits.
+- The device must show the whole key structure (threshold and every public key) when an account is created or its key is changed.
+- A transaction is valid for at most about 180 seconds from its start time, and the start time cannot be in the future. Signing across devices in different places therefore needs scheduled transactions, or all signers in one place within that window.
+
+**Planned workflow: three keys, two signatures, one device**
+- Three independent keys are kept in separate places (three separate seeds, never derived from one mnemonic), with a 2-of-3 threshold account.
+- The device is stateless. The desktop app shows the transaction as a QR; the device scans it and shows the summary. The user loads key A (scan its engraved SeedQR), the device signs and wipes the key from memory, then the same for key B. The device returns both signatures and the desktop app merges and submits.
+- Load keys by SeedQR scan, not typed words, so both fit inside the 180-second window. Alternatively the desktop app sets the transaction start time only after the device reports ready.
+- The desktop app sends the account's key structure with the transaction. The device derives the public key from each loaded seed, checks it is one of the listed keys, shows "key N of M matched", and refuses to sign with a key that is not part of the account.
+- Optional per-key passphrase (a BIP39-style extra word), so a stolen plate alone is useless.
+- Each key is backed up as a steel plate engraved with its SeedQR, generated on the device and shown only in the backup mode.
+- Protects against the loss or compromise of one location. It does not protect against a compromised signer, because one device sees both keys in a session. That makes signed firmware, secure boot and a small readable codebase essential. A stricter mode for large amounts could have each key sign on a different device (2-3 devices are planned).
+
+**Secrets never reach the screen or any export**
+- The key type has no `Display`, `Debug`, `Serialize` or byte-access; only the signing function can use it.
+- The UI crate must not depend on the key crate (checked in CI). Use TrustZone separation on the RP2350 where possible.
+- The screen renders only whitelisted summary types. No generic text-from-buffer path, hex view or debug output in production.
+- Seed/key backups are generated on the signer only, in a separate mode with its own PIN and warning, never reachable from the signing flow.
+- Tests: a canary-key build that scans the framebuffer, QR output, SD writes and logs for key bytes; property tests; parser fuzzing; signed, reproducible firmware.
+
+**Exports and engraving (later)**
+- QR images to microSD, GRBL G-code (for UGS) to engrave QR codes in steel, and optional printing. A shared `no_std` Rust crate generates the QR and toolpaths and is tested on the PC first.
+- Secret backups are produced on the signer only; public engravings (addresses, watch-only keys) can come from the desktop app. Every export needs an explicit confirmation.
+- Print support comes last; writing a PBM/PNG/PDF to the SD card comes first.
+
+**Code size and readability**
+- Aim for a few thousand lines of our own code, few dependencies, `no_std`, no `unsafe` outside the hardware layer, and fewest concepts per function. Track the line count in CI.
+- Each module gets a short walkthrough so it can be read line by line, starting with the signer core.
+
 ## Later roadmap
 - [x] Integrate read-only Hedera Testnet access (balance and transaction history)
 - [ ] Implement transaction creation and signing
