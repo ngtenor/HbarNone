@@ -1,7 +1,25 @@
 import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { invoke } from '@tauri-apps/api/core'
+import type { TxProgress } from './TransactionProgress'
 import type { AddressBookView, WalletSummary } from './types'
+
+const POLL_INTERVAL_MS = 2000
+const POLL_ATTEMPTS = 45
+
+const sleep = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms))
+
+// The mirror node trails consensus by a few seconds, so bookkeeping steps retry.
+async function retry<T>(task: () => Promise<T>, attempts: number): Promise<T> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await task()
+    } catch (failure) {
+      if (attempt >= attempts) throw failure
+      await sleep(3000)
+    }
+  }
+}
 
 type TransactionSummary = {
   transaction_id: string
@@ -44,6 +62,7 @@ type Props = {
   onAccountMoved: (target: WalletSummary, sourceWalletId: string, accountId: string) => void
   onAccountDeleted: (updated: WalletSummary, accountId: string) => void
   onBalance?: (walletId: string, accountId: string, tinybars: number) => void
+  onProgress: (progress: TxProgress | null) => void
 }
 
 export function TestnetPanel({
@@ -55,6 +74,7 @@ export function TestnetPanel({
   onAccountMoved,
   onAccountDeleted,
   onBalance,
+  onProgress,
 }: Props) {
   const [overview, setOverview] = useState<AccountOverview | null>(null)
   const [error, setError] = useState('')
@@ -97,10 +117,7 @@ export function TestnetPanel({
     setError('')
     setNotice('')
   }
-  const moveTimer = useRef(0)
-  const deleteTimer = useRef(0)
-  const refreshTimer = useRef(0)
-  const createTimer = useRef(0)
+  const alive = useRef(true)
   async function run(task: () => Promise<void>) {
     if (isBusy) return
     setError('')
@@ -115,7 +132,7 @@ export function TestnetPanel({
     }
   }
 
-  const handleRefresh = () => run(async () => {
+  async function loadOverview() {
     if (!account) return
     const result = await invoke<AccountOverview | null>('get_account_overview', {
       walletId: wallet.id,
@@ -124,7 +141,9 @@ export function TestnetPanel({
     setOverview(result)
     if (result) onBalance?.(wallet.id, account, result.balance_tinybars)
     if (!result) setNotice('This account was not found on Hedera Testnet.')
-  })
+  }
+
+  const handleRefresh = () => run(loadOverview)
 
   // Selecting an account refreshes its balance; the panel remounts per account.
   useEffect(() => {
@@ -132,12 +151,41 @@ export function TestnetPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [wallet.id, account])
 
-  useEffect(() => () => {
-    window.clearTimeout(refreshTimer.current)
-    window.clearTimeout(createTimer.current)
-    window.clearTimeout(moveTimer.current)
-    window.clearTimeout(deleteTimer.current)
+  useEffect(() => {
+    alive.current = true
+    return () => {
+      alive.current = false
+    }
   }, [])
+
+  // Shows the progress popup until Testnet reports a consensus result, then
+  // runs `onConfirmed` (which may return a detail line for the popup).
+  async function watchTransaction(
+    transactionId: string,
+    title: string,
+    onConfirmed: () => Promise<string | void>,
+  ) {
+    onProgress({ phase: 'waiting', title })
+    for (let attempt = 0; attempt < POLL_ATTEMPTS && alive.current; attempt += 1) {
+      if (attempt > 0) await sleep(POLL_INTERVAL_MS)
+      if (!alive.current) return
+      let result: string | null = null
+      try {
+        result = await invoke<string | null>('get_transaction_result', { transactionId })
+      } catch {
+        result = null
+      }
+      if (!result) continue
+      if (result !== 'SUCCESS') {
+        onProgress({ phase: 'failed', title, detail: `Testnet result: ${result}` })
+        return
+      }
+      const detail = await onConfirmed().catch(() => undefined)
+      onProgress({ phase: 'success', title, detail: detail || undefined })
+      return
+    }
+    if (alive.current) onProgress({ phase: 'timeout', title, detail: transactionId })
+  }
 
   const targetName = otherWallets.find((item) => item.id === moveTarget)?.name ?? ''
   const accountSummary = wallet.accounts.find((item) => item.id === account)
@@ -163,55 +211,47 @@ export function TestnetPanel({
     })
   }
 
-  // Testnet needs a few seconds to reach consensus on the key change.
-  async function finishMove(target: string, attemptsLeft: number) {
+  // The mirror node trails consensus, so the wallet bookkeeping retries a few times.
+  async function completeMove(target: string) {
     if (!account) return
     try {
-      const updated = await invoke<WalletSummary>('finish_account_move', {
+      const updated = await retry(() => invoke<WalletSummary>('finish_account_move', {
         walletId: wallet.id,
         accountId: account,
         targetWalletId: target,
-      })
+      }), 4)
       onAccountMoved(updated, wallet.id, account)
     } catch (failure) {
-      if (attemptsLeft > 0) {
-        moveTimer.current = window.setTimeout(() => void finishMove(target, attemptsLeft - 1), 6000)
-      } else {
-        setError(`${errorMessage(failure)} Use “Check again” in a moment.`)
-        setPendingMove(target)
-      }
+      setError(`${errorMessage(failure)} Use “Check again” in a moment.`)
+      setPendingMove(target)
+      return 'Confirmed on Testnet, but the wallet could not be updated yet. Use “Check again”.'
     }
   }
 
-  async function finishDelete(attemptsLeft: number) {
+  async function completeDelete() {
     if (!account) return
     try {
-      const updated = await invoke<WalletSummary>('finish_account_delete', {
+      const updated = await retry(() => invoke<WalletSummary>('finish_account_delete', {
         walletId: wallet.id,
         accountId: account,
-      })
+      }), 4)
       onAccountDeleted(updated, account)
     } catch (failure) {
-      if (attemptsLeft > 0) {
-        deleteTimer.current = window.setTimeout(() => void finishDelete(attemptsLeft - 1), 6000)
-      } else {
-        setError(`${errorMessage(failure)} Use “Check again” in a moment.`)
-        setPendingDelete(true)
-      }
+      setError(`${errorMessage(failure)} Use “Check again” in a moment.`)
+      setPendingDelete(true)
+      return 'Confirmed on Testnet, but the wallet could not be updated yet. Use “Check again”.'
     }
   }
 
   const handleDelete = () => run(async () => {
-    await invoke<{ transactionId: string }>('delete_account', {
+    const result = await invoke<{ transactionId: string }>('delete_account', {
       walletId: wallet.id,
       accountId: account,
       recipient: deleteRecipient.trim(),
     })
     setConfirmingDelete(false)
     setDeleteAcknowledged(false)
-    setNotice('Deletion submitted. Waiting for Testnet to confirm it...')
-    window.clearTimeout(deleteTimer.current)
-    deleteTimer.current = window.setTimeout(() => void finishDelete(3), 8000)
+    void watchTransaction(result.transactionId, 'Deleting account', completeDelete)
   })
 
   const handleCheckDelete = () => run(async () => {
@@ -224,16 +264,15 @@ export function TestnetPanel({
   })
 
   const handleMove = () => run(async () => {
-    await invoke<{ transactionId: string }>('move_account', {
+    const result = await invoke<{ transactionId: string }>('move_account', {
       walletId: wallet.id,
       accountId: account,
       targetWalletId: moveTarget,
     })
+    const target = moveTarget
     setConfirmingMove(false)
     setMoveAcknowledged(false)
-    setNotice('Key change submitted. Waiting for Testnet to confirm it...')
-    window.clearTimeout(moveTimer.current)
-    moveTimer.current = window.setTimeout(() => void finishMove(moveTarget, 3), 8000)
+    void watchTransaction(result.transactionId, 'Moving account', () => completeMove(target))
   })
 
   const handleCheckMove = () => run(async () => {
@@ -281,12 +320,9 @@ export function TestnetPanel({
       memo,
     })
     resetSend()
-    setNotice(
-      `Submitted ${result.transactionId}. Testnet usually confirms within a few seconds; ` +
-        'the balance refreshes automatically.',
-    )
-    window.clearTimeout(refreshTimer.current)
-    refreshTimer.current = window.setTimeout(() => void handleRefresh(), 8000)
+    void watchTransaction(result.transactionId, 'Sending HBAR', async () => {
+      await retry(loadOverview, 2)
+    })
   })
 
   const handleCreate = () => run(async () => {
@@ -295,18 +331,18 @@ export function TestnetPanel({
       fromAccount: funder,
       initialHbar: openingBalance.trim(),
     })
+    const accountsBefore = wallet.accounts.length
     setOpeningBalance('')
     setConfirmingCreate(false)
-    setNotice(
-      `Submitted ${result.transactionId}. The new account appears here in a few seconds ` +
-        'once Testnet confirms it.',
-    )
-    window.clearTimeout(createTimer.current)
-    createTimer.current = window.setTimeout(() => {
-      void invoke<WalletSummary>('find_wallet_accounts', { walletId: wallet.id })
-        .then(onWalletUpdated)
-        .catch(() => undefined)
-    }, 8000)
+    void watchTransaction(result.transactionId, 'Creating account', async () => {
+      const updated = await retry(async () => {
+        const found = await invoke<WalletSummary>('find_wallet_accounts', { walletId: wallet.id })
+        if (found.accounts.length <= accountsBefore) throw new Error('not listed yet')
+        return found
+      }, 4).catch(() => null)
+      if (!updated) return 'The new account is not listed yet. Use Find accounts in a moment.'
+      onWalletUpdated(updated)
+    })
   })
 
   return (

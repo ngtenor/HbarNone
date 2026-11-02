@@ -5,6 +5,8 @@ import { generatePassphrase } from './passphrase'
 import { TestnetPanel } from './TestnetPanel'
 import { AddressBook } from './AddressBook'
 import { AccountLabel } from './AccountLabel'
+import { TransactionProgress } from './TransactionProgress'
+import type { TxProgress } from './TransactionProgress'
 import { WalletBadge } from './WalletBadge'
 import type { AddressBookView, KeyDetection, WalletKeys, WalletSummary } from './types'
 import './App.css'
@@ -189,6 +191,13 @@ function App() {
   const [isDeletingWallet, setIsDeletingWallet] = useState(false)
   const [deleteError, setDeleteError] = useState('')
   const [deleteConfirmed, setDeleteConfirmed] = useState(false)
+  const [txProgress, setTxProgress] = useState<TxProgress | null>(null)
+  const [txKey, setTxKey] = useState(0)
+  const closeProgress = useCallback(() => setTxProgress(null), [])
+  const updateProgress = useCallback((next: TxProgress | null) => {
+    if (next?.phase === 'waiting') setTxKey((key) => key + 1)
+    setTxProgress(next)
+  }, [])
   const [mnemonic, setMnemonic] = useState('')
   const [revealError, setRevealError] = useState('')
   const [isRevealing, setIsRevealing] = useState(false)
@@ -295,6 +304,7 @@ function App() {
     setIsAddressBookTabOpen(false)
     setAddressBook({ rows: [], allowExternalSends: false, allowExternalDeletes: false })
     setOpenWalletTabs([])
+    setTxProgress(null)
     try {
       await invoke('lock_vault')
       setError('')
@@ -1502,18 +1512,27 @@ function App() {
                           {wallet.accounts.length > 0 && (
                             <ul className="account-rows" aria-label={`${wallet.name} accounts`}>
                               {wallet.accounts.map((account) => (
-                                <li className="account-row" key={`${account.network}/${account.id}`}>
-                                  <span className="account-id">
-                                    <AccountLabel name={account.name} displayId={account.display_id} />
-                                  </span>
-                                  <span className="account-balance">
-                                    {account.network === 'testnet'
-                                      ? accountBalanceText(wallet.id, account.id)
-                                      : ''}
-                                  </span>
-                                  <span className={account.network === 'mainnet' ? 'account-balance no-balance' : 'account-balance'}>
-                                    {account.network === 'mainnet' ? '—' : ''}
-                                  </span>
+                                <li key={`${account.network}/${account.id}`}>
+                                  <button
+                                    className="account-row account-row-button"
+                                    type="button"
+                                    onClick={() => {
+                                      setSelectedAccounts((existing) => ({ ...existing, [wallet.id]: account.id }))
+                                      openWalletTab(wallet.id)
+                                    }}
+                                  >
+                                    <span className="account-id">
+                                      <AccountLabel name={account.name} displayId={account.display_id} />
+                                    </span>
+                                    <span className="account-balance">
+                                      {account.network === 'testnet'
+                                        ? accountBalanceText(wallet.id, account.id)
+                                        : ''}
+                                    </span>
+                                    <span className={account.network === 'mainnet' ? 'account-balance no-balance' : 'account-balance'}>
+                                      {account.network === 'mainnet' ? '—' : ''}
+                                    </span>
+                                  </button>
                                 </li>
                               ))}
                             </ul>
@@ -2118,6 +2137,7 @@ function App() {
                   onAccountMoved={handleAccountMoved}
                   onAccountDeleted={handleAccountDeleted}
                   addressBook={addressBook}
+                  onProgress={updateProgress}
                   onBalance={(walletId, account, tinybars) => {
                     const key = balanceKey(walletId, account)
                     fetchedBalances.current.add(key)
@@ -2245,6 +2265,10 @@ function App() {
             )}
           </section>
         </div>
+      )}
+
+      {txProgress && (
+        <TransactionProgress key={txKey} progress={txProgress} onClose={closeProgress} />
       )}
 
       {walletToDelete && (

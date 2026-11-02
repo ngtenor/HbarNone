@@ -22,6 +22,7 @@ type Backend = {
   foundAccounts: string[]
   overview: unknown
   sendError: string | null
+  transactionResult?: string
   detection: { keyType: string | null; accounts: string[] }
   allowExternalSends: boolean
   allowExternalDeletes: boolean
@@ -160,6 +161,8 @@ function installBackend(overrides: Partial<Backend> = {}) {
         }
         return { ...target }
       }
+      case 'get_transaction_result':
+        return backend.transactionResult ?? 'SUCCESS'
       case 'get_account_balance':
         return backend.overview
           ? (backend.overview as { balance_tinybars: number }).balance_tinybars
@@ -306,6 +309,18 @@ async function openAccount(
   if (section) await user.click(screen.getByRole('button', { name: section }))
 }
 
+describe('home account links', () => {
+  it('opens the account page when an account is clicked on HOME', async () => {
+    const user = userEvent.setup()
+    installBackend({ wallets: [wallet('w1', 'Savings', ['0.0.1001', '0.0.1002'])] })
+    render(<App />)
+    await unlock(user)
+    await user.click(await screen.findByRole('button', { name: /0\.0\.1002/ }))
+    expect(await screen.findByRole('button', { name: 'Back to wallet' })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'Savings' })).toHaveAttribute('aria-selected', 'true')
+  })
+})
+
 describe('vault gates', () => {
   beforeEach(() => installBackend())
 
@@ -432,7 +447,7 @@ describe('hedera testnet panel', () => {
 
   it('creates an account only after the confirmation is accepted', async () => {
     const user = userEvent.setup()
-    installBackend({ wallets: [wallet('w1', 'Savings', '0.0.1001')] })
+    installBackend({ wallets: [wallet('w1', 'Savings', '0.0.1001')], foundAccounts: ['0.0.1003'] })
     render(<App />)
     await unlock(user)
     await openWalletTab(user, 'Savings')
@@ -445,7 +460,7 @@ describe('hedera testnet panel', () => {
     expect(commandsCalled('create_account')).toHaveLength(0)
 
     await user.click(screen.getByRole('button', { name: 'Sign and create' }))
-    expect(await screen.findByText(/Submitted 0\.0\.1001-1700000000-000000006/)).toBeInTheDocument()
+    expect(await screen.findByText('SUCCESS!')).toBeInTheDocument()
     expect(commandsCalled('create_account')[0].args).toEqual({
       walletId: 'w1',
       fromAccount: '0.0.1001-abcde',
@@ -470,15 +485,11 @@ describe('hedera testnet panel', () => {
       expect(screen.getByRole('button', { name: 'Sign and move' })).toBeDisabled()
       await user.click(within(confirm).getByRole('checkbox'))
       await user.click(screen.getByRole('button', { name: 'Sign and move' }))
-      await screen.findByText(/Waiting for Testnet/)
+      await screen.findByText('SUCCESS!')
       expect(commandsCalled('move_account')[0].args).toEqual({
         walletId: 'w1',
         accountId: '0.0.1001',
         targetWalletId: 'w2',
-      })
-      expect(commandsCalled('finish_account_move')).toHaveLength(0)
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(8100)
       })
       await waitFor(() => expect(commandsCalled('finish_account_move')).toHaveLength(1))
       await waitFor(() => expect(screen.queryByRole('button', { name: 'Sign and move' })).not.toBeInTheDocument())
@@ -509,14 +520,11 @@ describe('hedera testnet panel', () => {
       expect(screen.getByRole('button', { name: 'Sign and delete' })).toBeDisabled()
       await user.click(within(confirm).getByRole('checkbox'))
       await user.click(screen.getByRole('button', { name: 'Sign and delete' }))
-      await screen.findByText(/Waiting for Testnet/)
+      await screen.findByText('SUCCESS!')
       expect(commandsCalled('delete_account')[0].args).toEqual({
         walletId: 'w1',
         accountId: '0.0.1001',
         recipient: '0.0.1002-abcde',
-      })
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(8100)
       })
       await waitFor(() => expect(commandsCalled('finish_account_delete')).toHaveLength(1))
       expect(backend.wallets[0].accounts.map((item) => item.id)).toEqual(['0.0.1002'])
@@ -546,7 +554,7 @@ describe('hedera testnet panel', () => {
     await user.type(screen.getByLabelText('Amount (ℏ)'), '1')
     await user.click(screen.getByRole('button', { name: 'Review transfer' }))
     await user.click(await screen.findByRole('button', { name: 'Sign and send' }))
-    await screen.findByText(/Submitted/)
+    await screen.findByText('SUCCESS!')
     expect(commandsCalled('send_hbar')[0].args).toMatchObject({ fromAccount: '0.0.1002' })
   })
 
@@ -645,11 +653,41 @@ describe('hedera testnet panel', () => {
       expect(commandsCalled('send_hbar')).toHaveLength(0)
 
       await user.click(screen.getByRole('button', { name: 'Sign and send' }))
-      expect(await screen.findByText(/Submitted 0\.0\.1001-1700000000-000000005/)).toBeInTheDocument()
+      expect(await screen.findByText('SUCCESS!')).toBeInTheDocument()
+      expect(commandsCalled('get_transaction_result')[0].args).toEqual({
+        transactionId: '0.0.1001-1700000000-000000005',
+      })
       expect(commandsCalled('send_hbar').map((call) => call.args)).toEqual([
         { walletId: 'w1', fromAccount: '0.0.1001', recipient: '0.0.2002-abcde', amountHbar: '1.5', memo: '' },
       ])
       expect(screen.queryByRole('group', { name: 'Confirm transfer' })).not.toBeInTheDocument()
+    })
+
+    it('reports a transaction that Testnet rejects', async () => {
+      const user = userEvent.setup()
+      installBackend({ wallets: [wallet('w1', 'Savings', '0.0.1001')], transactionResult: 'INSUFFICIENT_PAYER_BALANCE' })
+      await openSend(user)
+      await user.click(screen.getByRole('button', { name: 'Review transfer' }))
+      await user.click(await screen.findByRole('button', { name: 'Sign and send' }))
+      expect(await screen.findByText(/The transaction failed/)).toBeInTheDocument()
+      expect(screen.getByText(/INSUFFICIENT_PAYER_BALANCE/)).toBeInTheDocument()
+      expect(screen.queryByText('SUCCESS!')).not.toBeInTheDocument()
+      await user.click(screen.getByRole('alertdialog').parentElement!)
+      expect(screen.queryByText(/The transaction failed/)).not.toBeInTheDocument()
+    })
+
+    it('shrinks to a corner spinner when clicked away, then shows a thumbs up and fades', async () => {
+      const user = userEvent.setup()
+      installBackend({ wallets: [wallet('w1', 'Savings', '0.0.1001')] })
+      await openSend(user)
+      await user.click(screen.getByRole('button', { name: 'Review transfer' }))
+      await user.click(await screen.findByRole('button', { name: 'Sign and send' }))
+      await user.click((await screen.findByRole('alertdialog')).parentElement!)
+      expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+      expect(await screen.findByLabelText('Transaction succeeded')).toBeInTheDocument()
+      await waitFor(() => expect(screen.queryByLabelText('Transaction succeeded')).not.toBeInTheDocument(), {
+        timeout: 4000,
+      })
     })
 
     it('can go back from the confirmation without sending', async () => {
@@ -713,7 +751,7 @@ describe('hedera testnet panel', () => {
       await user.type(screen.getByLabelText('Amount (ℏ)'), '1')
       await user.click(screen.getByRole('button', { name: 'Review transfer' }))
       await user.click(await screen.findByRole('button', { name: 'Sign and send' }))
-      await screen.findByText(/Submitted/)
+      await screen.findByText('SUCCESS!')
       expect(commandsCalled('send_hbar')[0].args).toMatchObject({ recipient: '0.0.1002-abcde' })
     })
 

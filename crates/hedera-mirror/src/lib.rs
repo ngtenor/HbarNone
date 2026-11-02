@@ -161,6 +161,35 @@ pub fn parse_transactions(
         .collect())
 }
 
+/// Accepts only `shard.realm.num-seconds-nanos`, so the value is safe in a URL path.
+pub fn validate_transaction_id(id: &str) -> Result<String, String> {
+    let trimmed = id.trim();
+    let mut dashes = trimmed.split('-');
+    let (Some(account), Some(seconds), Some(nanos), None) =
+        (dashes.next(), dashes.next(), dashes.next(), dashes.next())
+    else {
+        return Err("invalid transaction ID".to_string());
+    };
+    let digits = |text: &str| !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit());
+    if validate_account_id(account).is_err() || !digits(seconds) || !digits(nanos) {
+        return Err("invalid transaction ID".to_string());
+    }
+    Ok(trimmed.to_string())
+}
+
+/// The consensus result (for example `SUCCESS`) of the first record for this
+/// transaction, or `None` if the mirror node has not seen it yet.
+pub fn parse_transaction_result(body: &[u8], expected_id: &str) -> Result<Option<String>, String> {
+    let response: TransactionsResponse = serde_json::from_slice(body)
+        .map_err(|_| "unexpected response from the mirror node".to_string())?;
+    Ok(response
+        .transactions
+        .iter()
+        .find(|entry| entry.transaction_id == expected_id)
+        .and_then(|entry| entry.result.as_deref())
+        .map(clean_text))
+}
+
 pub struct MirrorClient {
     http: reqwest::Client,
     base_url: &'static str,
@@ -234,6 +263,15 @@ impl MirrorClient {
         }
     }
 
+    /// Consensus result of a submitted transaction; `None` until Testnet has it.
+    pub async fn transaction_result(&self, transaction_id: &str) -> Result<Option<String>, String> {
+        let id = validate_transaction_id(transaction_id)?;
+        match self.get(&format!("/api/v1/transactions/{id}")).await? {
+            Some(body) => parse_transaction_result(&body, &id),
+            None => Ok(None),
+        }
+    }
+
     /// Balance only (one request), or `None` if the account is unknown on Testnet.
     pub async fn account_balance(&self, account_id: &str) -> Result<Option<u64>, String> {
         let account_id = validate_account_id(account_id)?;
@@ -295,6 +333,23 @@ mod tests {
         assert!(parse_account_matches(br#"{"accounts":[{"account":"1.2.3"}]}"#).is_err());
         assert!(parse_account_matches(b"not json").is_err());
         assert!(parse_account_matches(br#"{"nope":1}"#).is_err());
+    }
+
+    #[test]
+    fn validates_transaction_ids_and_reads_the_result() {
+        assert!(validate_transaction_id("0.0.1001-1700000000-123").is_ok());
+        assert!(validate_transaction_id("0.0.1001-1700000000").is_err());
+        assert!(validate_transaction_id("0.0.1001-17/../x-1").is_err());
+        let body = br#"{"transactions":[{"transaction_id":"0.0.1001-1700000000-123","result":"SUCCESS"}]}"#;
+        assert_eq!(
+            parse_transaction_result(body, "0.0.1001-1700000000-123").unwrap(),
+            Some("SUCCESS".to_string())
+        );
+        assert_eq!(
+            parse_transaction_result(body, "0.0.1001-1700000000-124").unwrap(),
+            None
+        );
+        assert!(parse_transaction_result(b"nope", "0.0.1001-1-1").is_err());
     }
 
     #[test]
