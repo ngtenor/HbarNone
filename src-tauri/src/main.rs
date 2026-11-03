@@ -8,7 +8,7 @@ use tauri::{Manager, State};
 use tauri_plugin_dialog::DialogExt;
 use wallet_core::{
     account_checksum::parse_account_input,
-    key_import::{KeyType, is_valid_ecdsa_secret, parse_private_key, public_key_hex},
+    key_import::{KeyType, SecretKind, is_valid_ecdsa_secret, parse_private_key, public_key_hex},
     vault_container::Network,
     wallet_service::{
         AddressBookRow, LegacyWalletPassword, MAX_BACKUP_BYTES, WalletService, WalletSummary,
@@ -400,6 +400,96 @@ async fn send_hbar(
     Ok(SendResult {
         transaction_id: receipt.transaction_id,
     })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SigningRequest {
+    payload: String,
+    qr_size: usize,
+    /// One flag per module, row by row; true is dark.
+    qr_modules: Vec<bool>,
+    sender: String,
+    receiver: String,
+    tinybars: i64,
+    memo: String,
+    expires_at_seconds: i64,
+}
+
+/// Builds an unsigned transfer for a watch-only wallet to be signed elsewhere.
+#[tauri::command]
+fn prepare_unsigned_transfer(
+    wallet_id: String,
+    from_account: String,
+    recipient: String,
+    amount_hbar: String,
+    memo: String,
+    state: State<'_, AppState>,
+) -> Result<SigningRequest, String> {
+    let tinybars = hedera_tx::submit::parse_hbar(&amount_hbar)?;
+    let sender = testnet_account_of(&state, &wallet_id, &from_account)?;
+    let is_watch_only = lock_service(&state)?
+        .list_wallets()?
+        .iter()
+        .any(|w| w.id == wallet_id && w.secret_kind == SecretKind::WatchOnly);
+    if !is_watch_only {
+        return Err("Signing requests are only for watch-only wallets.".to_string());
+    }
+    let recipient = parse_account_input(&recipient, Network::Testnet, true)?;
+    ensure_send_allowed(&state, &recipient)?;
+    let request = hedera_tx::offline::build_request(&sender, &recipient, tinybars, &memo)?;
+    let code =
+        qrcode::QrCode::with_error_correction_level(request.payload.as_bytes(), qrcode::EcLevel::L)
+            .map_err(|_| {
+                "The request is too large for a QR code. Use a shorter memo.".to_string()
+            })?;
+    let d = request.description;
+    Ok(SigningRequest {
+        payload: request.payload,
+        qr_size: code.width(),
+        qr_modules: code
+            .to_colors()
+            .into_iter()
+            .map(|c| c == qrcode::Color::Dark)
+            .collect(),
+        sender: d.sender,
+        receiver: d.receiver,
+        tinybars: d.tinybars,
+        memo: d.memo,
+        expires_at_seconds: d.expires_at_seconds,
+    })
+}
+
+/// Verifies the signer's response against the request and submits to Testnet.
+#[tauri::command]
+async fn submit_signed_transfer(
+    request: String,
+    response: String,
+    state: State<'_, AppState>,
+) -> Result<SendResult, String> {
+    let verified = hedera_tx::offline::assemble(&request, &response)?;
+    if hedera_tx::offline::seconds_remaining(&verified.description)? <= 0 {
+        return Err("The signing request has expired. Create a new one.".to_string());
+    }
+    let sender = verified.description.sender.clone();
+    let wallets = lock_service(&state)?.list_wallets()?;
+    let wallet_id = wallets
+        .iter()
+        .find(|w| {
+            w.secret_kind == SecretKind::WatchOnly
+                && w.accounts
+                    .iter()
+                    .any(|a| a.network == Network::Testnet && a.id == sender)
+        })
+        .map(|w| w.id.clone())
+        .ok_or_else(|| "The paying account is not in a watch-only wallet here.".to_string())?;
+    let wallet_key = lock_service(&state)?.wallet_public_key(&wallet_id)?;
+    if !wallet_key.eq_ignore_ascii_case(&verified.public_key_hex) {
+        return Err("The signature was made with a different key than this wallet's.".to_string());
+    }
+    ensure_send_allowed(&state, &verified.description.receiver)?;
+    let transaction_id = hedera_tx::offline::submit_verified(&verified).await?;
+    Ok(SendResult { transaction_id })
 }
 
 /// Creates an account controlled by this wallet's key. The funding account must
@@ -864,6 +954,24 @@ fn import_private_key(
 }
 
 #[tauri::command]
+fn import_watch_only_wallet(
+    name: String,
+    public_key: String,
+    key_type: KeyType,
+    state: State<'_, AppState>,
+) -> Result<WalletSummary, String> {
+    if public_key.len() > 130 {
+        return Err("public key cannot exceed 130 characters".to_string());
+    }
+    lock_service(&state)?.import_watch_only_and_save(
+        &name,
+        &public_key,
+        key_type,
+        &state.store_path.to_string_lossy(),
+    )
+}
+
+#[tauri::command]
 fn get_wallet_keys(wallet_id: String, state: State<'_, AppState>) -> Result<WalletKeys, String> {
     let mut service = lock_service(&state)?;
     Ok(WalletKeys {
@@ -876,6 +984,16 @@ fn get_wallet_keys(wallet_id: String, state: State<'_, AppState>) -> Result<Wall
 fn reveal_wallet_mnemonic(wallet_id: String, state: State<'_, AppState>) -> Result<String, String> {
     Ok(lock_service(&state)?
         .reveal_mnemonic(&wallet_id)?
+        .to_string())
+}
+
+#[tauri::command]
+fn reveal_wallet_private_key(
+    wallet_id: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    Ok(lock_service(&state)?
+        .reveal_derived_private_key(&wallet_id)?
         .to_string())
 }
 
@@ -923,6 +1041,8 @@ fn main() {
             delete_wallet,
             rename_wallet,
             link_wallet_account,
+            prepare_unsigned_transfer,
+            submit_signed_transfer,
             find_wallet_accounts,
             get_account_balance,
             get_transaction_result,
@@ -944,10 +1064,12 @@ fn main() {
             get_address_balance,
             import_wallet,
             import_private_key,
+            import_watch_only_wallet,
             detect_private_key_type,
             get_wallet_keys,
             list_wallets,
             reveal_wallet_mnemonic,
+            reveal_wallet_private_key,
             get_vault_state
         ])
         .run(tauri::generate_context!())

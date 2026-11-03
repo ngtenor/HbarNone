@@ -31,6 +31,7 @@
 - [x] Unify button text/background styling and distinguish risky actions
 - [x] Replace the account-page "Back to wallet" button with a wallet-name link
 - [x] Show funding-account HBAR balances in the Create account dropdown
+- [x] Add watch-only wallets with validated public-key import, Testnet account discovery, a gold wallet badge, read-only account controls, and backend signing/reveal guards
 
 ## Security, reliability, and desktop verification
 1. **Security and reliability review**
@@ -55,6 +56,7 @@
    - [x] Verify persistence across restarts automatically with a Rust integration test (`crates/wallet-core/tests/wallet_persistence.rs`): it drops and reloads the service from disk across five sessions, checking auto-lock, rename, delete, re-import, password change (old password rejected, keys unchanged) and export followed by restore into a fresh store. A true GUI end-to-end test of the packaged app (e.g. `tauri-driver`/WebDriver) is deferred as impractical on Windows and Ubuntu CI for now.
    - [x] Build the updated standalone Windows production app and NSIS/MSI installers without overwriting the running app; the latest build includes the HOME, wallet, create/import, and Settings tabs.
    - [x] Manually launch and test the updated Windows app without the Vite development server; use only disposable wallets.
+   - [x] Manually verify watch-only public-key import, Testnet account discovery, gold badge, balance viewing, and the absence of signing controls (verified on Windows with a public key found on HashScan).
    - Use the release executable or installed app for standalone testing. A debug executable requires the Vite server and is expected to show a connection error if launched without it.
    - The browser smoke test uses mocked Tauri commands; it does not replace real-app verification.
 3. **Wallet recovery and backup**
@@ -103,7 +105,7 @@ Password change and encrypted backup export/restore are tracked under
 
 ## Next steps
 1. Complete the remaining Linux manual verification above, including legacy migration and Backup and erase.
-2. Implement watch-only wallets and unsigned-transaction export.
+2. (Done) Watch-only wallets and unsigned-transaction export.
 3. Design and build QR-based offline transaction transport and a signer application.
 4. Consider HTS tokens/NFTs and hardware work after the current HBAR flows are fully verified.
 5. Defer Mainnet until the implementation has been reviewed and tested.
@@ -164,22 +166,26 @@ Goal: a small, fully readable signer. It signs only what it can show in full and
 ## Later roadmap
 - [x] Integrate read-only Hedera Testnet access (balance and transaction history)
 - [x] Implement and manually verify HBAR transfers and account create/move/delete on Testnet
-- [ ] Add watch-only wallets and unsigned-transaction export
+- [x] Add watch-only wallets
+- [x] Add unsigned-transaction export (HBAR sends, QR request, pasted signature, 180 s window). Manually verified end to end on Testnet with the example signer; camera scanning not included
 - [ ] Build QR-based offline transaction transport
-- [ ] Create an offline signer application
+- [ ] Create an offline signer application (first iteration done: `crates/offline-signer` CLI + `crates/signer-core`, HBAR transfers only, keys typed in; still needed: dedicated air-gapped device, camera/QR scanning)
 - [ ] Add HTS token, NFT, and smart-contract support
 - [ ] Design a reproducible hardware prototype
 
 ## Validation status
 The source security reviews found no substantiated vulnerabilities. The
 implemented desktop app includes the encrypted shared vault, wallet recovery
-and backup, safety controls, account management, and Testnet HBAR transaction
-flows. Linux app-data permissions are hardened to `0700`/`0600`.
+and backup, safety controls, account management, watch-only wallets, and
+Testnet HBAR transaction flows. Linux app-data permissions are hardened to
+`0700`/`0600`.
 
 The latest Windows release build produced both NSIS and MSI installers.
-Frontend lint and production build passed, and all 65 frontend tests passed.
-Workspace Rust tests, formatting, and checks passed previously; see CI for the
-Windows and Ubuntu jobs. The latest Testnet account flows were manually
+Frontend lint and production build passed, and all 67 frontend tests passed.
+All 47 wallet-core tests, Rust formatting, and a workspace check passed for
+the watch-only implementation; see CI for the Windows and Ubuntu jobs.
+Watch-only support was manually verified on Windows against Testnet but has not
+yet been included in a packaged release. The other Testnet account flows were manually
 verified on Windows with disposable accounts. Remaining manual checks are
 listed above; do not use real funds or recovery phrases.
 

@@ -187,7 +187,7 @@ function App() {
   const [isRenaming, setIsRenaming] = useState(false)
   const [name, setName] = useState('')
   const [importMnemonic, setImportMnemonic] = useState('')
-  const [importKind, setImportKind] = useState<'phrase' | 'key'>('phrase')
+  const [importKind, setImportKind] = useState<'phrase' | 'key' | 'watchonly'>('phrase')
   const [importKeyType, setImportKeyType] = useState<'auto' | 'ed25519' | 'ecdsa'>('auto')
   const [walletKeys, setWalletKeys] = useState<{ id: string, keys: WalletKeys } | null>(null)
   const [balances, setBalances] = useState<Record<string, number>>({})
@@ -198,6 +198,8 @@ function App() {
   const [error, setError] = useState('')
   const [isSavingWallet, setIsSavingWallet] = useState(false)
   const [walletToReveal, setWalletToReveal] = useState<WalletSummary | null>(null)
+  const [revealKey, setRevealKey] = useState(false)
+  const showsKey = walletToReveal?.secret_kind === 'privatekey' || revealKey
   const [walletToDelete, setWalletToDelete] = useState<WalletSummary | null>(null)
   const [isDeletingWallet, setIsDeletingWallet] = useState(false)
   const [deleteError, setDeleteError] = useState('')
@@ -261,6 +263,7 @@ function App() {
   const closeReveal = useCallback(() => {
     revealRequestId.current += 1
     setWalletToReveal(null)
+    setRevealKey(false)
     setMnemonic('')
     setRevealError('')
     setIsRevealing(false)
@@ -669,7 +672,7 @@ function App() {
           name,
           mnemonic: importMnemonic,
         })
-      } else {
+      } else if (importKind === 'key') {
         let keyType: 'ed25519' | 'ecdsa' | null = importKeyType === 'auto' ? null : importKeyType
         if (keyType === null) {
           let detection: KeyDetection
@@ -693,6 +696,12 @@ function App() {
           name,
           privateKey: importMnemonic,
           keyType,
+        })
+      } else {
+        wallet = await invoke<WalletSummary>('import_watch_only_wallet', {
+          name,
+          publicKey: importMnemonic,
+          keyType: importKeyType === 'ecdsa' ? 'ecdsa' : 'ed25519',
         })
       }
       if (walletMode === 'import') {
@@ -919,7 +928,7 @@ function App() {
     setIsRevealing(true)
     const requestId = ++revealRequestId.current
     try {
-      const recoveredMnemonic = await invoke<string>('reveal_wallet_mnemonic', {
+      const recoveredMnemonic = await invoke<string>(revealKey ? 'reveal_wallet_private_key' : 'reveal_wallet_mnemonic', {
         walletId: walletToReveal.id,
       })
       if (requestId === revealRequestId.current) {
@@ -1082,6 +1091,7 @@ function App() {
     if (activeTab === 'create') setActiveTab('home')
     setName('')
     setImportMnemonic('')
+    setImportKeyType('auto')
     setError('')
   }
 
@@ -1930,6 +1940,20 @@ function App() {
                     >
                       Private key
                     </button>
+                    <button
+                      className={importKind === 'watchonly' ? 'mode-button active' : 'mode-button'}
+                      type="button"
+                      aria-pressed={importKind === 'watchonly'}
+                      disabled={isSavingWallet}
+                      onClick={() => {
+                        setImportKind('watchonly')
+                        setImportMnemonic('')
+                        setImportKeyType('ed25519')
+                        setError('')
+                      }}
+                    >
+                      Watch-only public key
+                    </button>
                   </div>
                 )}
 
@@ -1986,6 +2010,34 @@ function App() {
                   </>
                 )}
 
+                {walletMode === 'import' && importKind === 'watchonly' && (
+                  <>
+                    <label htmlFor="import-watch-public-key">Public key (hex)</label>
+                    <input
+                      id="import-watch-public-key"
+                      autoComplete="off"
+                      autoCapitalize="none"
+                      maxLength={130}
+                      spellCheck={false}
+                      required
+                      value={importMnemonic}
+                      onChange={(event) => setImportMnemonic(event.target.value)}
+                    />
+                    <label htmlFor="import-watch-key-type">Key type</label>
+                    <select
+                      id="import-watch-key-type"
+                      value={importKeyType === 'auto' ? 'ed25519' : importKeyType}
+                      onChange={(event) => setImportKeyType(event.target.value as 'ed25519' | 'ecdsa')}
+                    >
+                      <option value="ed25519">Ed25519</option>
+                      <option value="ecdsa">ECDSA (secp256k1)</option>
+                    </select>
+                    <p className="field-hint">
+                      Stores only this public key. It can monitor matching Testnet accounts but cannot sign or spend.
+                    </p>
+                  </>
+                )}
+
                 <label htmlFor="wallet-name">Wallet name</label>
                 <input
                   id="wallet-name"
@@ -1997,11 +2049,23 @@ function App() {
                   onChange={(event) => setName(event.target.value)}
                 />
                 {error && <p className="error-message" role="alert">{error}</p>}
-                <button className="primary-button" type="submit" disabled={isSavingWallet}>
-                  {isSavingWallet
-                    ? 'Saving securely...'
-                    : walletMode === 'create' ? 'Create encrypted wallet' : 'Import encrypted wallet'}
-                </button>
+                <div className="button-pair">
+                  <button className="primary-button" type="submit" disabled={isSavingWallet}>
+                    {isSavingWallet
+                      ? 'Saving securely...'
+                      : walletMode === 'create'
+                        ? 'Create encrypted wallet'
+                        : importKind === 'watchonly' ? 'Add watch-only wallet' : 'Import encrypted wallet'}
+                  </button>
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    disabled={isSavingWallet}
+                    onClick={closeCreateTab}
+                  >
+                    Cancel
+                  </button>
+                </div>
               </form>
             </section>
           )}
@@ -2021,8 +2085,12 @@ function App() {
                   <div>
                     <h1 className="section-title">
                       <span
-                        className={`title-wallet ${wallet.custody === 'cold' ? 'wallet-cold' : 'wallet-hot'}`}
-                        title={wallet.custody === 'cold' ? 'Cold wallet' : 'Hot wallet'}
+                        className={`title-wallet ${wallet.secret_kind === 'watchonly'
+                          ? 'wallet-watch-only'
+                          : wallet.custody === 'cold' ? 'wallet-cold' : 'wallet-hot'}`}
+                        title={wallet.secret_kind === 'watchonly'
+                          ? 'Watch-only wallet'
+                          : wallet.custody === 'cold' ? 'Cold wallet' : 'Hot wallet'}
                       >
                         <WalletsIcon />
                       </span>
@@ -2039,7 +2107,20 @@ function App() {
                         >
                           {wallet.name}
                         </button>
-                      ) : wallet.name}
+                      ) : (
+                        <button
+                          className="wallet-name-link"
+                          type="button"
+                          title="Click to rename this wallet"
+                          onClick={() => {
+                            setRenameValue(wallet.name)
+                            setRenameError('')
+                            setRenamingWalletId(wallet.id)
+                          }}
+                        >
+                          {wallet.name}
+                        </button>
+                      )}
                     </h1>
                     {!openAccount && (
                       <p className="wallet-date">Added {new Date(wallet.created_at).toLocaleDateString()}</p>
@@ -2052,7 +2133,9 @@ function App() {
                   <dt>Key type</dt>
                   <dd>
                     {wallet.key_type === 'ecdsa' ? 'ECDSA (secp256k1)' : 'Ed25519'}
-                    {wallet.secret_kind === 'privatekey' ? ', imported private key' : ', recovery phrase'}
+                    {wallet.secret_kind === 'watchonly'
+                      ? ', watch-only public key'
+                      : wallet.secret_kind === 'privatekey' ? ', imported private key' : ', recovery phrase'}
                   </dd>
                   {walletKeys?.id === wallet.id && (
                     <>
@@ -2076,7 +2159,9 @@ function App() {
                       disabled={isRefreshingAll}
                       onClick={() => void handleFindAccounts(wallet)}
                     >
-                      Find accounts from this wallet’s key
+                      {wallet.secret_kind === 'watchonly'
+                        ? 'Find accounts for public key'
+                        : 'Find accounts from this wallet’s key'}
                     </button>
                     <button
                       className="secondary-button refresh-all-button"
@@ -2086,18 +2171,7 @@ function App() {
                     >
                       {isRefreshingAll ? 'Contacting Testnet...' : 'Refresh balances'}
                     </button>
-                    <button
-                      className="reveal-button"
-                      type="button"
-                      onClick={() => {
-                        setRenameValue(wallet.name)
-                        setRenameError('')
-                        setRenamingWalletId(wallet.id)
-                      }}
-                    >
-                      Rename wallet
-                    </button>
-                    <button
+                    {wallet.secret_kind !== 'watchonly' && <button
                       className="reveal-button risky-button"
                       type="button"
                       onClick={() => {
@@ -2107,7 +2181,19 @@ function App() {
                       }}
                     >
                       Reveal {wallet.secret_kind === 'privatekey' ? 'private key' : 'recovery phrase'}
-                    </button>
+                    </button>}
+                    {wallet.secret_kind === 'mnemonic' && <button
+                      className="reveal-button risky-button"
+                      type="button"
+                      onClick={() => {
+                        closeReveal()
+                        setWalletToDelete(null)
+                        setRevealKey(true)
+                        setWalletToReveal(wallet)
+                      }}
+                    >
+                      Reveal private key
+                    </button>}
                     <button
                       className="reveal-button delete-wallet-button"
                       type="button"
@@ -2251,13 +2337,13 @@ function App() {
               <div>
                 <p className="eyebrow">SENSITIVE WALLET DATA</p>
                 <h2 id="recovery-title">
-                  {walletToReveal.secret_kind === 'privatekey' ? 'Private key' : 'Recovery phrase'}
+                  {showsKey ? 'Private key' : 'Recovery phrase'}
                 </h2>
               </div>
               <button
                 className="close-button"
                 type="button"
-                aria-label={`Close and hide ${walletToReveal.secret_kind === 'privatekey' ? 'private key' : 'recovery phrase'}`}
+                aria-label={`Close and hide ${showsKey ? 'private key' : 'recovery phrase'}`}
                 onClick={closeReveal}
               >
                 ×
@@ -2267,18 +2353,18 @@ function App() {
             {mnemonic ? (
               <>
                 <p className="recovery-warning" role="alert">
-                  Anyone who sees this {walletToReveal.secret_kind === 'privatekey' ? 'private key' : 'phrase'} can take this wallet. Write it
+                  Anyone who sees this {showsKey ? 'private key' : 'phrase'} can take this wallet. Write it
                   down privately and store it securely. Never share it or enter
                   it on a device you do not trust.
                 </p>
                 <ol
-                  className="mnemonic-grid"
-                  onCopy={(event) => event.preventDefault()}
+                  className={`mnemonic-grid${revealKey ? ' selectable-secret' : ''}`}
+                  onCopy={(event) => { if (!revealKey) event.preventDefault() }}
                   onCut={(event) => event.preventDefault()}
-                  onContextMenu={(event) => event.preventDefault()}
+                  onContextMenu={(event) => { if (!revealKey) event.preventDefault() }}
                   onDragStart={(event) => event.preventDefault()}
                 >
-                  {walletToReveal.secret_kind === 'privatekey' ? (
+                  {showsKey ? (
                     <li className="private-key-value"><strong>{mnemonic}</strong></li>
                   ) : mnemonic.split(' ').map((word, index) => (
                     <li key={`${index}-${word}`}>
@@ -2288,8 +2374,9 @@ function App() {
                   ))}
                 </ol>
                 <p className="recovery-warning secondary-warning">
-                  Malware may capture passwords or screen contents. This reveal
-                  does not make a compromised computer safe.
+                  {revealKey
+                    ? 'You can copy this key to test with. A recovery phrase wallet is only as safe as this key, so use it for Testnet only, and clear your clipboard afterwards.'
+                    : 'Malware may capture passwords or screen contents. This reveal does not make a compromised computer safe.'}
                 </p>
                 <label className="write-down-confirmation">
                   <input
@@ -2298,7 +2385,7 @@ function App() {
                     onChange={(event) => setHasConfirmedWriteDown(event.target.checked)}
                   />
                   <span>
-                    I have written down this {walletToReveal.secret_kind === 'privatekey' ? 'private key' : 'recovery phrase'} and stored it safely.
+                    I have written down this {showsKey ? 'private key' : 'recovery phrase'} and stored it safely.
                   </span>
                 </label>
                 <p className="confirmation-hint">
@@ -2314,14 +2401,14 @@ function App() {
                     disabled={!hasConfirmedWriteDown}
                     onClick={closeReveal}
                   >
-                    Confirm and hide {walletToReveal.secret_kind === 'privatekey' ? 'private key' : 'phrase'}
+                    Confirm and hide {showsKey ? 'private key' : 'phrase'}
                   </button>
                 </div>
               </>
             ) : (
               <div>
                 <p className="dialog-copy">
-                  The vault is unlocked. Reveal this wallet’s {walletToReveal.secret_kind === 'privatekey' ? 'private key' : 'recovery phrase'}
+                  The vault is unlocked. Reveal this wallet’s {showsKey ? 'private key' : 'recovery phrase'}
                   only if you can keep it private from people and software
                   viewing this device.
                 </p>
@@ -2340,7 +2427,7 @@ function App() {
                   >
                     {isRevealing
                       ? 'Revealing...'
-                      : `Reveal ${walletToReveal.secret_kind === 'privatekey' ? 'private key' : 'recovery phrase'}`}
+                      : `Reveal ${showsKey ? 'private key' : 'recovery phrase'}`}
                   </button>
                 </div>
               </div>

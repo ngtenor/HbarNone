@@ -9,6 +9,7 @@ use prost::Message;
 use sha3::{Digest, Keccak256};
 use wallet_core::key_import::{KeyType, public_key_bytes};
 
+pub mod offline;
 pub mod submit;
 
 #[derive(Clone, PartialEq, Message)]
@@ -182,6 +183,14 @@ fn account(id: (i64, i64, i64)) -> AccountId {
 
 /// Serialised `TransactionBody` for a transfer of `tinybars` from sender to receiver.
 pub fn transfer_body_bytes(p: &TransferParams) -> Result<Vec<u8>, String> {
+    transfer_body_bytes_valid_for(p, 120)
+}
+
+/// Like [`transfer_body_bytes`], but valid for `valid_seconds` after its start time.
+pub fn transfer_body_bytes_valid_for(
+    p: &TransferParams,
+    valid_seconds: i64,
+) -> Result<Vec<u8>, String> {
     if p.tinybars <= 0 {
         return Err("Amount must be greater than zero.".into());
     }
@@ -198,7 +207,9 @@ pub fn transfer_body_bytes(p: &TransferParams) -> Result<Vec<u8>, String> {
         }),
         node_account: Some(account(p.node)),
         fee: p.max_fee_tinybars,
-        valid_duration: Some(Duration { seconds: 120 }),
+        valid_duration: Some(Duration {
+            seconds: valid_seconds,
+        }),
         memo: p.memo.clone(),
         crypto_create: None,
         crypto_delete: None,
@@ -394,7 +405,7 @@ pub fn sign_body_multi(
     .encode_to_vec())
 }
 
-fn signature_pair(
+pub(crate) fn signature_pair(
     body_bytes: &[u8],
     key_type: KeyType,
     secret: &[u8; 32],

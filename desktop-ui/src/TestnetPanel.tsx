@@ -54,6 +54,46 @@ function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error)
 }
 
+type SigningRequest = {
+  payload: string
+  qrSize: number
+  qrModules: boolean[]
+  sender: string
+  receiver: string
+  tinybars: number
+  memo: string
+  expiresAtSeconds: number
+}
+
+const QUIET_ZONE = 4
+
+function QrCode({ request }: { request: SigningRequest }) {
+  const span = request.qrSize + QUIET_ZONE * 2
+  return (
+    <svg
+      className="qr-code"
+      role="img"
+      aria-label="Signing request QR code"
+      viewBox={`0 0 ${span} ${span}`}
+      shapeRendering="crispEdges"
+    >
+      <rect width={span} height={span} fill="#fff" />
+      {request.qrModules.map((dark, index) =>
+        dark ? (
+          <rect
+            key={index}
+            x={(index % request.qrSize) + QUIET_ZONE}
+            y={Math.floor(index / request.qrSize) + QUIET_ZONE}
+            width="1"
+            height="1"
+            fill="#000"
+          />
+        ) : null,
+      )}
+    </svg>
+  )
+}
+
 type Props = {
   wallet: WalletSummary
   account: string | null
@@ -88,6 +128,7 @@ export function TestnetPanel({
   const [memo, setMemo] = useState('')
   const [confirming, setConfirming] = useState(false)
   const [openingBalance, setOpeningBalance] = useState('')
+  const [newAccountName, setNewAccountName] = useState('')
   const [funder, setFunder] = useState('')
   const [funderBalances, setFunderBalances] = useState<Record<string, number>>({})
   const [confirmingCreate, setConfirmingCreate] = useState(false)
@@ -101,6 +142,18 @@ export function TestnetPanel({
   const [deleteAcknowledged, setDeleteAcknowledged] = useState(false)
   const [pendingDelete, setPendingDelete] = useState(false)
   const [section, setSection] = useState<'send' | 'rename' | 'move' | 'delete' | null>(null)
+  const isWatchOnly = wallet.secret_kind === 'watchonly'
+  const [signing, setSigning] = useState<SigningRequest | null>(null)
+  const [signatureText, setSignatureText] = useState('')
+  const [secondsLeft, setSecondsLeft] = useState(0)
+  useEffect(() => {
+    if (!signing) return
+    const tick = () =>
+      setSecondsLeft(Math.max(0, signing.expiresAtSeconds - Math.floor(Date.now() / 1000)))
+    tick()
+    const timer = window.setInterval(tick, 1000)
+    return () => window.clearInterval(timer)
+  }, [signing])
   const toggleSection = (next: 'send' | 'rename' | 'move' | 'delete') => {
     setSection((current) => (current === next ? null : next))
     // Leaving a section discards anything typed into it and any pending review.
@@ -109,6 +162,8 @@ export function TestnetPanel({
     setAmount('')
     setMemo('')
     setConfirming(false)
+    setSigning(null)
+    setSignatureText('')
     setMoveTarget('')
     setConfirmingMove(false)
     setMoveAcknowledged(false)
@@ -311,7 +366,33 @@ export function TestnetPanel({
     setAmount('')
     setMemo('')
     setConfirming(false)
+    setSigning(null)
+    setSignatureText('')
   }
+
+  const handlePrepare = () => run(async () => {
+    const request = await invoke<SigningRequest>('prepare_unsigned_transfer', {
+      walletId: wallet.id,
+      fromAccount: account,
+      recipient: recipient.trim(),
+      amountHbar: amount.trim(),
+      memo,
+    })
+    setSignatureText('')
+    setSigning(request)
+  })
+
+  const handleSubmitSigned = () => run(async () => {
+    if (!signing) return
+    const result = await invoke<{ transactionId: string }>('submit_signed_transfer', {
+      request: signing.payload,
+      response: signatureText.trim(),
+    })
+    resetSend()
+    void watchTransaction(result.transactionId, 'Sending HBAR', async () => {
+      await retry(loadOverview, 2)
+    })
+  })
 
   const handleReview = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -384,15 +465,31 @@ export function TestnetPanel({
       initialHbar: openingBalance.trim(),
     })
     const accountsBefore = wallet.accounts.length
+    const idsBefore = new Set(wallet.accounts.map((item) => item.id))
+    const chosenName = newAccountName.trim()
     setOpeningBalance('')
+    setNewAccountName('')
     setConfirmingCreate(false)
     void watchTransaction(result.transactionId, 'Creating account', async () => {
-      const updated = await retry(async () => {
+      let updated = await retry(async () => {
         const found = await invoke<WalletSummary>('find_wallet_accounts', { walletId: wallet.id })
         if (found.accounts.length <= accountsBefore) throw new Error('not listed yet')
         return found
       }, 4).catch(() => null)
       if (!updated) return 'The new account is not listed yet. Use Find accounts in a moment.'
+      const created = updated.accounts.find((item) => !idsBefore.has(item.id))
+      if (chosenName && created) {
+        try {
+          updated = await invoke<WalletSummary>('rename_account', {
+            walletId: wallet.id,
+            accountId: created.id,
+            name: chosenName,
+          })
+        } catch (renameError) {
+          onWalletUpdated(updated)
+          return `The account was created but could not be named: ${errorMessage(renameError)}`
+        }
+      }
       onWalletUpdated(updated)
     })
   })
@@ -429,7 +526,7 @@ export function TestnetPanel({
             >
               {accountSummary?.named ? 'Rename account' : 'Name this account'}
             </button>
-            {otherWallets.length > 0 && (
+            {!isWatchOnly && otherWallets.length > 0 && (
               <button
                 className="secondary-button risky-button"
                 type="button"
@@ -439,14 +536,16 @@ export function TestnetPanel({
                 Move account
               </button>
             )}
-            <button
-              className="secondary-button risky-button"
-              type="button"
-              aria-expanded={section === 'delete'}
-              onClick={() => toggleSection('delete')}
-            >
-              Delete account
-            </button>
+            {!isWatchOnly && (
+              <button
+                className="secondary-button risky-button"
+                type="button"
+                aria-expanded={section === 'delete'}
+                onClick={() => toggleSection('delete')}
+              >
+                Delete account
+              </button>
+            )}
           </div>
         </>
       ) : null}
@@ -481,7 +580,61 @@ export function TestnetPanel({
       {account && section === 'send' && (
         <div className="testnet-send">
           <h3 className="section-title">Send HBAR</h3>
-          {confirming ? (
+          {signing ? (
+            <div className="testnet-confirm" role="group" aria-label="Signing request">
+              <p>
+                Scan this code with your offline signer, check the details it shows, then paste its
+                reply below.
+              </p>
+              <QrCode request={signing} />
+              <p className="field-hint" role="timer">
+                {secondsLeft > 0
+                  ? `Valid for ${secondsLeft} more seconds.`
+                  : 'This request has expired. Go back and create a new one.'}
+              </p>
+              <dl>
+                <dt>From</dt>
+                <dd>{signing.sender}</dd>
+                <dt>To</dt>
+                <dd>{signing.receiver}</dd>
+                <dt>Amount</dt>
+                <dd>{formatHbar(signing.tinybars)} ℏ</dd>
+                {signing.memo && (
+                  <>
+                    <dt>Memo</dt>
+                    <dd>{signing.memo}</dd>
+                  </>
+                )}
+              </dl>
+              <details>
+                <summary>Show request as text</summary>
+                <textarea readOnly rows={4} aria-label="Signing request text" value={signing.payload} />
+              </details>
+              <label htmlFor={`signature-${wallet.id}`}>Signature from the signer</label>
+              <textarea
+                id={`signature-${wallet.id}`}
+                rows={3}
+                autoComplete="off"
+                spellCheck={false}
+                placeholder="HVTX1-SIG:..."
+                value={signatureText}
+                onChange={(event) => setSignatureText(event.target.value)}
+              />
+              <div className="button-pair">
+                <button
+                  className="primary-button"
+                  type="button"
+                  disabled={isBusy || secondsLeft === 0 || !signatureText.trim()}
+                  onClick={handleSubmitSigned}
+                >
+                  {isBusy ? 'Submitting...' : 'Submit signed transfer'}
+                </button>
+                <button className="secondary-button" type="button" disabled={isBusy} onClick={resetSend}>
+                  Cancel
+                </button>
+              </div>
+            </div>
+          ) : confirming ? (
             <div className="testnet-confirm" role="group" aria-label="Confirm transfer">
               <p>Please check the details. A transfer cannot be undone.</p>
               <dl>
@@ -503,8 +656,15 @@ export function TestnetPanel({
                 <dd>1 ℏ (the real fee is far lower)</dd>
               </dl>
               <div className="button-pair">
-                <button className="primary-button" type="button" disabled={isBusy} onClick={handleSend}>
-                  {isBusy ? 'Sending...' : 'Sign and send'}
+                <button
+                  className="primary-button"
+                  type="button"
+                  disabled={isBusy}
+                  onClick={isWatchOnly ? handlePrepare : handleSend}
+                >
+                  {isWatchOnly
+                    ? isBusy ? 'Preparing...' : 'Create signing request'
+                    : isBusy ? 'Sending...' : 'Sign and send'}
                 </button>
                 <button className="secondary-button" type="button" disabled={isBusy} onClick={() => setConfirming(false)}>
                   Back
@@ -594,7 +754,14 @@ export function TestnetPanel({
         </div>
       )}
 
-      {!account && (
+      {!account && isWatchOnly && (
+        <p className="field-hint">
+          Watch-only wallet: linked Testnet accounts and balances can be viewed, but this wallet
+          cannot sign or submit transactions.
+        </p>
+      )}
+
+      {!account && !isWatchOnly && (
         <div className="testnet-send create-account">
           <h3 className="section-title">Create account</h3>
           <p className="field-hint">
@@ -609,6 +776,12 @@ export function TestnetPanel({
                 <dd>Hedera Testnet (no real value)</dd>
                 <dt>Funded from</dt>
                 <dd>{funderLabel}</dd>
+                {newAccountName.trim() && (
+                  <>
+                    <dt>Account name</dt>
+                    <dd>{newAccountName.trim()}</dd>
+                  </>
+                )}
                 <dt>Opening balance</dt>
                 <dd>{openingBalance.trim()} ℏ</dd>
                 <dt>Key</dt>
@@ -630,6 +803,15 @@ export function TestnetPanel({
               className="testnet-send-form"
               onSubmit={handleReviewCreate}
             >
+              <label htmlFor={`create-name-${wallet.id}`}>Account name</label>
+              <input
+                id={`create-name-${wallet.id}`}
+                autoComplete="off"
+                maxLength={25}
+                placeholder="Optional, up to 25 characters"
+                value={newAccountName}
+                onChange={(event) => setNewAccountName(event.target.value)}
+              />
               <label htmlFor={`create-funder-${wallet.id}`}>Fund from</label>
               <select
                 id={`create-funder-${wallet.id}`}
@@ -666,7 +848,7 @@ export function TestnetPanel({
         </div>
       )}
 
-      {account && section === 'move' && otherWallets.length > 0 && (
+      {account && !isWatchOnly && section === 'move' && otherWallets.length > 0 && (
         <div className="testnet-send">
           <h3 className="section-title">Move account to another wallet</h3>
           <p className="field-hint">
@@ -751,7 +933,7 @@ export function TestnetPanel({
         </div>
       )}
 
-      {account && section === 'delete' && (
+      {account && !isWatchOnly && section === 'delete' && (
         <div className="testnet-send">
           <h3 className="section-title">Delete account</h3>
           <p className="field-hint">

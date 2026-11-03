@@ -568,6 +568,10 @@ h2.section-title,
   color: #2b6cb0;
 }
 
+.wallet-watch-only {
+  color: #b8860b;
+}
+
 .title-wallet {
   display: inline-flex;
 }
@@ -1424,6 +1428,10 @@ h2 {
   background: var(--wash);
 }
 
+.mode-switch[aria-label='What to import'] {
+  grid-template-columns: repeat(3, 1fr);
+}
+
 .mode-button {
   height: 34px;
   border: 0;
@@ -2157,4 +2165,25 @@ button.secondary-button:disabled,
 button.danger-button:disabled {
   cursor: not-allowed;
   opacity: 0.65;
+}
+
+.qr-code {
+  width: 260px;
+  height: 260px;
+  max-width: 100%;
+  background: #fff;
+  border-radius: 6px;
+}
+
+.testnet-confirm textarea {
+  width: 100%;
+  font-family: monospace;
+  font-size: 0.8rem;
+}
+
+.mnemonic-grid.selectable-secret,
+.mnemonic-grid.selectable-secret li,
+.mnemonic-grid.selectable-secret li strong {
+  user-select: text;
+  -webkit-user-select: text;
 }

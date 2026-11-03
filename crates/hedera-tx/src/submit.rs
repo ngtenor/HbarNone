@@ -22,9 +22,9 @@ pub const TESTNET_NODE_ACCOUNT: (i64, i64, i64) = (0, 0, 3);
 pub const TESTNET_NODE_URL: &str = "http://34.94.106.61:50211";
 /// Upper bound on the fee the payer agrees to (1 HBAR). The real fee is far lower.
 pub const MAX_FEE_TINYBARS: u64 = 100_000_000;
-const MAX_MEMO_BYTES: usize = 100;
+pub const MAX_MEMO_BYTES: usize = 100;
 const TINYBARS_PER_HBAR: u64 = 100_000_000;
-const TRANSFER_PATH: &str = "/proto.CryptoService/cryptoTransfer";
+pub(crate) const TRANSFER_PATH: &str = "/proto.CryptoService/cryptoTransfer";
 const CREATE_PATH: &str = "/proto.CryptoService/createAccount";
 const UPDATE_PATH: &str = "/proto.CryptoService/updateAccount";
 const DELETE_PATH: &str = "/proto.CryptoService/cryptoDelete";
@@ -68,7 +68,7 @@ pub fn parse_hbar(input: &str) -> Result<i64, String> {
     Ok(tinybars)
 }
 
-fn parse_account(id: &str) -> Result<(i64, i64, i64), String> {
+pub(crate) fn parse_account(id: &str) -> Result<(i64, i64, i64), String> {
     let normal = validate_account_id(id)?;
     let num = normal
         .rsplit('.')
@@ -305,7 +305,7 @@ pub async fn delete_testnet_account(
     })
 }
 
-async fn submit(
+pub(crate) async fn submit(
     transaction: Transaction,
     path: &'static str,
 ) -> Result<TransactionResponse, String> {

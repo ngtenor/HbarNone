@@ -9,17 +9,18 @@ const glyph = {
   strokeLinejoin: 'round',
 } as const
 
-// The wallet symbol: red when the key is hot, blue when it is cold.
-// Wallets without a recorded type are hot.
+// The wallet symbol: red for hot, blue for cold, and gold for watch-only.
 export function WalletBadge({ wallet, large = false }: { wallet: WalletSummary; large?: boolean }) {
+  const watchOnly = wallet.secret_kind === 'watchonly'
   const cold = wallet.custody === 'cold'
+  const label = watchOnly ? 'Watch-only wallet' : cold ? 'Cold wallet' : 'Hot wallet'
   const size = large ? ' wallet-badge-large' : ''
   return (
     <span
-      className={`wallet-badge ${cold ? 'wallet-cold' : 'wallet-hot'}${size}`}
+      className={`wallet-badge ${watchOnly ? 'wallet-watch-only' : cold ? 'wallet-cold' : 'wallet-hot'}${size}`}
       role="img"
-      aria-label={cold ? 'Cold wallet' : 'Hot wallet'}
-      title={cold ? 'Cold wallet' : 'Hot wallet'}
+      aria-label={label}
+      title={label}
     >
       <svg {...glyph} width="100%" height="100%">
         <path d="M4 7a2 2 0 0 1 2-2h11v3" />
