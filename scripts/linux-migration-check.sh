@@ -36,7 +36,7 @@ case "${1:-}" in
     fi
     cd "$OLD_DIR"
     npm ci
-    echo
+    npm ci --prefix desktop-ui
     echo ">>> In the old app: create 3 wallets, each with a DIFFERENT password, then close the app."
     npm run tauri:dev || true
     sum > "$STATE/legacy.sha"
