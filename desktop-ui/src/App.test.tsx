@@ -1029,7 +1029,7 @@ describe('reveal flow', () => {
     await screen.findByText('alpha')
   }
 
-  it('shows the phrase, allows copying, and requires acknowledgment to confirm', async () => {
+  it('shows the phrase, blocks copying, and requires acknowledgment to confirm', async () => {
     const user = userEvent.setup()
     await openReveal(user)
     expect(commandsCalled('reveal_wallet_mnemonic')[0].args).toEqual({ walletId: 'w1' })
@@ -1037,8 +1037,8 @@ describe('reveal flow', () => {
 
     const grid = document.querySelector('.mnemonic-grid')!
     const copy = new Event('copy', { bubbles: true, cancelable: true })
-    expect(grid.dispatchEvent(copy)).toBe(true)
-    expect(grid).toHaveClass('selectable-secret')
+    expect(grid.dispatchEvent(copy)).toBe(false)
+    expect(grid).not.toHaveClass('selectable-secret')
 
     const confirm = screen.getByRole('button', { name: 'Confirm and hide phrase' })
     expect(confirm).toBeDisabled()

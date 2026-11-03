@@ -2358,7 +2358,10 @@ function App() {
                   it on a device you do not trust.
                 </p>
                 <ol
-                  className="mnemonic-grid selectable-secret"
+                  className={`mnemonic-grid${revealKey ? ' selectable-secret' : ''}`}
+                  onCopy={(event) => { if (!revealKey) event.preventDefault() }}
+                  onCut={(event) => event.preventDefault()}
+                  onContextMenu={(event) => { if (!revealKey) event.preventDefault() }}
                   onDragStart={(event) => event.preventDefault()}
                 >
                   {showsKey ? (
@@ -2373,7 +2376,7 @@ function App() {
                 <p className="recovery-warning secondary-warning">
                   {revealKey
                     ? 'You can copy this key to test with. A recovery phrase wallet is only as safe as this key, so use it for Testnet only, and clear your clipboard afterwards.'
-                    : 'Copying is currently enabled for testing. Clear your clipboard afterwards. Malware may capture passwords or screen contents, and this reveal does not make a compromised computer safe.'}
+                    : 'Malware may capture passwords or screen contents. This reveal does not make a compromised computer safe.'}
                 </p>
                 <label className="write-down-confirmation">
                   <input
