@@ -169,7 +169,7 @@ Goal: a small, fully readable signer. It signs only what it can show in full and
 - [x] Add watch-only wallets
 - [x] Add unsigned-transaction export (HBAR sends, QR request, pasted signature, 180 s window). Manually verified end to end on Testnet with the example signer; camera scanning not included
 - [ ] Build QR-based offline transaction transport
-- [ ] Create an offline signer application
+- [ ] Create an offline signer application (first iteration done: `crates/offline-signer` CLI + `crates/signer-core`, HBAR transfers only, keys typed in; still needed: dedicated air-gapped device, camera/QR scanning)
 - [ ] Add HTS token, NFT, and smart-contract support
 - [ ] Design a reproducible hardware prototype
 

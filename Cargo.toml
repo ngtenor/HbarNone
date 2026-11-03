@@ -3,6 +3,8 @@ members = [
     "crates/wallet-core",
     "crates/hedera-mirror",
     "crates/hedera-tx",
+    "crates/signer-core",
+    "crates/offline-signer",
     "src-tauri",
 ]
 

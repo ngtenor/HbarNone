@@ -1,0 +1,16 @@
+[package]
+name = "offline-signer"
+version = "0.1.0"
+edition = "2024"
+description = "Command-line offline signer for HederaVault signing requests (test build: keys are typed in)."
+
+[[bin]]
+name = "hedera-offline-signer"
+path = "src/main.rs"
+
+[dependencies]
+signer-core = { path = "../signer-core" }
+# Only to turn a recovery phrase or key text into key bytes, the same way the app does.
+wallet-core = { path = "../wallet-core" }
+rpassword = "7"
+zeroize = "1.9"
