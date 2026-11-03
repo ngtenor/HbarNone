@@ -68,7 +68,7 @@
    - [x] Add wallet rename, with names required to be non-empty, at most 40 characters, free of control characters, and unique within the vault ignoring capitalisation (enforced for create, import and rename). Rename is saved atomically and rolled back on failure. Unit-tested and manually verified.
 4. **Automated testing and CI**
 
-   - [x] Add Settings "Back up and erase this device": saves an encrypted backup via the file dialog, reads it back to verify, then deletes `wallets.json` and `wallets.json.pre-restore` and returns the app to the create-vault screen. Nothing is erased if the dialog is cancelled, the write or verification fails, the vault is locked, or the vault changed since the export. Requires a confirmation checkbox. Deletion is not a forensic wipe. Unit and Vitest tests added; awaiting manual test.
+   - [x] Add Settings "Back up and erase this device": saves an encrypted backup via the file dialog, reads it back to verify, then deletes `wallets.json` and `wallets.json.pre-restore` and returns the app to the create-vault screen. Nothing is erased if the dialog is cancelled, the write or verification fails, the vault is locked, or the vault changed since the export. Requires a confirmation checkbox. Deletion is not a forensic wipe. Unit and Vitest tests added; manually verified on Linux.
    - [x] Add frontend component tests (Vitest and React Testing Library, jsdom) in `desktop-ui/src/App.test.tsx` with a stateful fake `invoke`. The suite covers unlock/lock gates, tab logic and keyboard navigation, auto-lock, reveal, delete, rename, backup/restore, password change, Testnet account flows, and account navigation. The latest run passed all 65 tests.
    - [x] Add a GitHub Actions workflow (`.github/workflows/ci.yml`) running `cargo fmt --check`, `cargo test --workspace`, `cargo check --workspace`, frontend lint, frontend tests and frontend build on both Windows and Ubuntu. Passed on GitHub (Windows and Ubuntu) in the first run on PR #1.
 5. **Linux readiness**
@@ -82,8 +82,8 @@
 
 ## Remaining manual verification
 - [ ] In Linux, verify legacy-wallet migration with multiple old passwords; confirm a wrong password preserves the original wallets.
-- [ ] In Linux, verify Backup and erase saves a usable backup, erases the vault, and permits restore.
-- [ ] On the current Linux build, verify launch, app-data permissions, rename, duplicate-import rejection, and lock behavior.
+- [x] In Linux, verify Backup and erase saves a usable backup, erases the vault, and permits restore. Verified on Ubuntu: the backup was `-rw-------`, the app returned to the create-vault screen, and restoring the backup brought back all wallets and accounts.
+- [x] On the current Linux build, verify launch, app-data permissions, rename, duplicate-import rejection, and lock behavior. Verified on Ubuntu.
 - [x] Manually test the current Testnet account flows on Windows with disposable accounts: create, send HBAR, move, delete, refresh balances/transactions, and review transaction status.
 - [ ] Add a screenshot or short walkthrough to the README.
 - [ ] A GUI-level restart test of the packaged app remains deferred; persistence across sessions is covered by Rust integration tests.
@@ -100,11 +100,11 @@ Password change and encrypted backup export/restore are tracked under
 - [x] Multi-account wallets: each wallet (key) holds a list of `(network, account)` entries, unique per network across wallets, up to 50 per wallet; a legacy single account is migrated to Testnet on unlock. Import finds accounts for the key (single-key accounts only). Account creation (`CryptoCreate`), moving an account to another wallet's key (`CryptoUpdate`, signed by both keys), and account deletion (`CryptoDelete`) were implemented and manually verified on Testnet with disposable accounts. Mainnet is a data-model column only; multisig accounts are deferred to QR transport.
 - [x] `hedera-mirror` crate: read-only client for the public Testnet mirror node (fixed URL, https only, no redirects, 15 s timeout, 512 KB cap); contacts the network only when the user clicks a button
 - [x] Testnet panel on each wallet tab: link an account by ID, find an account by key (Ed25519), refresh balance and recent transactions. Verified manually against the real Testnet (1000 ℏ shown)
-- [x] Implement Settings "Back up and erase this device"; manual verification is still pending in the Linux session listed above.
+- [x] Implement Settings "Back up and erase this device"; manually verified on Linux.
 - [x] First-run, unlock and Settings layout polish (two-button start screen, in-box eye toggle, centred fixed-size boxes, adaptive logo/padlock)
 
 ## Next steps
-1. Complete the remaining Linux manual verification above, including legacy migration and Backup and erase.
+1. Complete the remaining Linux manual verification above, which is now only legacy migration.
 2. (Done) Watch-only wallets and unsigned-transaction export.
 3. Design and build QR-based offline transaction transport and a signer application.
 4. Consider HTS tokens/NFTs and hardware work after the current HBAR flows are fully verified.
