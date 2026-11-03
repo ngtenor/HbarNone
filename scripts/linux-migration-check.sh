@@ -42,7 +42,7 @@ case "${1:-}" in
     sum > "$STATE/legacy.sha"
     echo
     echo "Legacy file saved. Checksum: $(cat "$STATE/legacy.sha")"
-    echo "Next: bash scripts/linux-migration-check.sh new"
+    echo "Next: bash ~/migration-check.sh new"
     ;;
   new)
     [ -f "$STATE/legacy.sha" ] || { echo "Run the 'old' step first."; exit 1; }
