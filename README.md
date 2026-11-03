@@ -29,32 +29,35 @@ Treat development wallet material as compromised.
 - Raw private key import (hex or DER, Ed25519 or ECDSA secp256k1), with the key type detected from a DER key or, for bare hex, from the public keys' Testnet accounts; the wallet tab shows the public key and, for ECDSA, the EVM address
 - Hedera ED25519 key derivation using the standard Hedera SDK derivation path
 - A shared vault master key wrapped by an Argon2id-derived password key
-- AES-256-GCM encryption for wallet metadata and recovery phrases under the master key
+- AES-256-GCM encryption for wallet metadata and wallet secrets under the master key
 - Migration of existing per-wallet encrypted records into the shared-password vault
 - Configurable inactivity auto-lock from 30 seconds to 30 minutes (5-minute default)
-- A browser-style tabbed vault interface with icon buttons at the top right (create/import wallet, settings, lock; a padlock shows when locked), a persistent HOME tab, wallet-specific tabs, and a Settings tab for auto-lock preferences and changing the vault password
+- A browser-style tabbed vault interface with a persistent HOME tab, wallet-specific tabs, and Settings for auto-lock, password changes, safety controls, backup, restore, and backup-and-erase; toolbar actions provide create/import, address book, Help, and lock
 - Encrypted vault backup export and restore (separate Settings panels; restore also available from the first-run screen)
-- Settings "Back up and erase this device": saves and verifies an encrypted backup, then removes the vault so the app returns to its first-run state
-- Testnet panel on each wallet: a wallet is a key that can hold several accounts. HOME lists wallets with a type badge, accounts and Testnet and Mainnet columns (Mainnet is a data-model column only, shown as a dash), and a Total row sums the Testnet balances. The wallet page has the Find accounts, Rename, Reveal and Delete buttons, the account list (names link to the account page), Refresh balances, and a Create account section that makes a new account under the wallet's key, funded by a chosen account from a vault wallet (its key signs and pays). Import finds every account for the key automatically. The account page (click an account) shows its balance and a button row (Send, Refresh balance, Rename account, Move account, Delete account); each of Send, Move and Delete opens its own section, one at a time, and clicking the button again closes it. Below are the 10 most recent transactions from the public Testnet mirror node. Send moves HBAR; Move changes the account to another wallet in the vault (a `CryptoUpdate` signed by both keys, for example if the old key may be exposed; the link moves once Testnet confirms, and both wallets refresh automatically); Delete is a `CryptoDelete` that sends the remaining ℏ to a recipient account (the account's key signs, plus the recipient's key when it is in the vault). Move and delete each show a warning and need an acknowledgement checkbox before signing. Accounts are always shown with their HIP-15 checksum (`0.0.12345-abcde`, network-specific); a recipient typed for a send or a delete must include a correct checksum. Accounts have names (up to 25 characters, `NONAME` when unnamed) shown before the number. An address book (toolbar icon) lists every wallet account plus outside accounts you add by name and checksummed ID; Send chooses from it, and typing another recipient is only possible when Settings allows it (off by default); Delete account works the same way with its own Settings switch (Deleting accounts, off by default). Deleting a wallet needs a confirmation checkbox. Balances are fetched when the vault unlocks and when an account is opened. Multisig accounts are not supported yet and are planned with the QR transport
+- Settings "Back up and erase all data from the app": saves and verifies an encrypted backup, then removes the vault so the app returns to its first-run state
+- **Wallets and accounts:** A wallet is a key that can control multiple Hedera accounts. HOME displays wallets, named accounts, and Testnet balances. Account links use `Name - 0.0.12345-abcde` (`NONAME` for unnamed accounts). Imported mnemonic and private-key wallets discover linked accounts; wallet pages include account creation funded by another vault account. Mainnet is a data-model column only; Mainnet account access is not implemented.
+- **Testnet account management:** Account pages show balances and recent transactions and support HBAR sends, renaming, moving an account to another wallet key (`CryptoUpdate`, signed by both keys), and account deletion (`CryptoDelete` with a recipient). Create, move, and delete actions include review, warnings, and acknowledgments where appropriate. These flows were manually exercised on Testnet; use disposable accounts only.
+- **Address book and safety controls:** The address book lists wallet accounts and named outside accounts. External send and delete recipients are disabled by default and can be enabled in Settings. Deleting a wallet requires explicit confirmation.
+- **Transaction status:** Sends, account creation, moves, and deletes show a progress popup and use the Testnet mirror node to report the result. Balances and recent transactions can be refreshed from the UI.
+- **Help:** The Help tab content is bundled from `desktop-ui/src/help.html` at build time.
 - Send HBAR on Testnet from a linked wallet (Ed25519 or ECDSA): a review screen shows network, sender, recipient, amount and maximum fee before the transfer is signed in the Rust backend and submitted to a Testnet node over gRPC (`hedera-tx` crate, hand-written protobuf messages)
 - A two-button first-run screen (Create vault / Restore backup) and a centred unlock screen
 - Wallet rename, with unique names (up to 40 characters), and blocking of duplicate recovery-phrase imports
-- Wallet deletion and recovery-phrase reveal from the selected wallet's tab
+- Wallet deletion and contextual private-key/recovery-phrase reveal from the selected wallet's tab
 - Wallet-store persistence in the desktop app's operating-system data directory
 - Tauri 2 and React desktop interface for creating, importing, listing, revealing, and deleting wallets
 
 The vault password unlocks all wallets in the vault. The app creates a random
 master key, wraps it with a key derived from the vault password, and uses the
-master key to encrypt vault contents and wallet recovery phrases. Normal
+master key to encrypt vault contents and wallet secrets. Normal
 commands do not return mnemonic or private-key material to the UI; a user must
-explicitly reveal a wallet's phrase while the vault is unlocked. The app locks
+explicitly reveal a wallet's private key or recovery phrase while the vault is unlocked. The app locks
 after the selected inactivity period and when it closes. The auto-lock setting
 is encrypted as part of the vault contents. The app contacts the Hedera Testnet
-mirror node when the vault unlocks (to show balances of linked accounts), when
-you open a wallet, and when you click a button in a wallet's Testnet panel, and
-only to read public account data. Sending HBAR contacts a Testnet node
-directly, and only after you confirm the transfer. Account creation and
-mainnet access are not yet implemented.
+mirror node for public account data when balances or transactions are requested.
+HBAR sends and account create, move, and delete operations submit transactions
+to Testnet only after the user reviews and confirms them. Mainnet access and
+multisig are not implemented.
 
 Existing records encrypted with separate wallet passwords are migrated by
 asking for each wallet's current password once and a new vault password. The
@@ -80,18 +83,18 @@ The list is included under the
 [Creative Commons Attribution 4.0 International License](https://creativecommons.org/licenses/by/4.0/);
 the five-dice codes were removed for use by the generator.
 
-The current interface is a development scaffold and does not yet provide a
-complete recovery workflow. Importing or revealing a phrase exposes it on
-screen and in application memory; malware may capture the phrase, vault
-password, or screen contents. Never share a phrase; only import or reveal
-disposable phrases on a device you trust. A forgotten vault password cannot
-currently be reset. Do not create a wallet containing real funds or rely on
-this app for recovery. Use a long, unique vault password and store it safely.
+Importing or revealing a phrase or private key exposes it on screen and in
+application memory; malware or a compromised operating system may capture
+wallet secrets, the vault password, or screen contents. Never share a secret;
+only import or reveal disposable wallet material on a device you trust. A
+forgotten vault password cannot currently be reset. Do not create a wallet
+containing real funds or rely on this app for recovery. Use a long, unique
+vault password and store it safely.
 
-After revealing the phrase, the interface asks the user to acknowledge that it
-has been written down and stored safely before completing the flow. This is an
-acknowledgment only; the app does not check that the backup is complete or
-correct.
+After revealing a wallet secret, the interface asks the user to acknowledge
+that it has been written down and stored safely before completing the flow.
+This is an acknowledgment only; the app does not check that the backup is
+complete or correct.
 
 ## Development
 
@@ -125,10 +128,10 @@ See [docs/TODO.md](docs/TODO.md) for current status and next steps.
 
 ## Longer-term roadmap
 
-1. Raw private key import (Ed25519 and ECDSA), then Testnet account creation and transfers
-2. HTS tokens, NFTs, and smart-contract interactions
+1. Finish Linux manual verification and remaining legacy-wallet migration checks
+2. Watch-only wallets and unsigned-transaction export
 3. Offline signing and QR-based transaction transport
-4. A dedicated signer application and reproducible hardware reference design
+4. HTS tokens and NFTs, then a dedicated signer application and reproducible hardware reference design
 
 ## Security philosophy
 

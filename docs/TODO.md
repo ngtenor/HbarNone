@@ -26,8 +26,13 @@
 - [x] Tighten the release CSP and move dev-server origins to `devCsp`
 - [x] Restrict Linux app-data permissions (`0700` directory, `0600` vault file)
 - [x] Add vault password change in Settings (re-wraps the master key; wallets are not re-encrypted)
+- [x] Unify account links across HOME, wallet, and account pages as `Name - 0.0.12345-abcde`; keep selected-account emphasis and HOME rollover shading
+- [x] Add contextual wallet-secret reveal labels for private keys and recovery phrases
+- [x] Unify button text/background styling and distinguish risky actions
+- [x] Replace the account-page "Back to wallet" button with a wallet-name link
+- [x] Show funding-account HBAR balances in the Create account dropdown
 
-## Work before Linux testing
+## Security, reliability, and desktop verification
 1. **Security and reliability review**
    - [x] Review vault format/versioning, KDF parameter validation, cryptographic input validation, secret lifetime/zeroization, and error handling; the source review found no substantiated vulnerabilities.
    - [x] Verify app-data directory and wallet-file permissions on Windows: `%APPDATA%\org.hederavault.desktop` and `wallets.json` inherit ACLs granting access only to SYSTEM, comAdministrators and the owning user, so the defaults are restrictive.
@@ -62,43 +67,46 @@
 4. **Automated testing and CI**
 
    - [x] Add Settings "Back up and erase this device": saves an encrypted backup via the file dialog, reads it back to verify, then deletes `wallets.json` and `wallets.json.pre-restore` and returns the app to the create-vault screen. Nothing is erased if the dialog is cancelled, the write or verification fails, the vault is locked, or the vault changed since the export. Requires a confirmation checkbox. Deletion is not a forensic wipe. Unit and Vitest tests added; awaiting manual test.
-   - [x] Add frontend component tests (Vitest and React Testing Library, jsdom) in `desktop-ui/src/App.test.tsx` with a stateful fake `invoke`: 26 tests covering the unlock/lock gates, tab logic and keyboard navigation, auto-lock (fake timers: expiry, activity reset, closing an open phrase), the reveal flow (copy blocking, acknowledgment, clearing on blur/Escape), delete, rename, backup/restore and the password-change form. Run with `npm test` in `desktop-ui`; also run in CI and `scripts/linux-test.sh`.
+   - [x] Add frontend component tests (Vitest and React Testing Library, jsdom) in `desktop-ui/src/App.test.tsx` with a stateful fake `invoke`. The suite covers unlock/lock gates, tab logic and keyboard navigation, auto-lock, reveal, delete, rename, backup/restore, password change, Testnet account flows, and account navigation. The latest run passed all 65 tests.
    - [x] Add a GitHub Actions workflow (`.github/workflows/ci.yml`) running `cargo fmt --check`, `cargo test --workspace`, `cargo check --workspace`, frontend lint, frontend tests and frontend build on both Windows and Ubuntu. Passed on GitHub (Windows and Ubuntu) in the first run on PR #1.
 5. **Linux readiness**
    - [x] Document the Ubuntu packages Tauri 2 needs: they are installed by `scripts/linux-test.sh` (build-essential, libssl-dev, libwebkit2gtk-4.1-dev, libgtk-3-dev, librsvg2-dev, libayatana-appindicator3-dev, libxdo-dev).
-   - [x] Write a Linux test script, `scripts/linux-test.sh`: installs packages, checks toolchains and entropy, runs `cargo fmt`/`test`/`check`, builds and lints the frontend, runs `npm run tauri:build`, and checks app-data permissions with `stat`. It writes a timestamped `linux-test-*.log`. Options: `--skip-apt`, `--skip-bundle`. Untested on Linux; the CI Ubuntu job will exercise the same steps.
-   - [x] Run the script on Ubuntu, launch the built app, and complete the manual checks with disposable wallets. `scripts/linux-test.sh` passed on Ubuntu 26.04.1 (all tests, lint, build and bundle). Backup, restore and permissions were checked manually; one WebKitWebProcess crash was seen once during a restore (graphics stack, not reproduced). Remaining: a quick rename/duplicate/lock pass.
+   - [x] Write and run the Linux test script, `scripts/linux-test.sh`: installs packages, checks toolchains and entropy, runs `cargo fmt`/`test`/`check`, builds and lints the frontend, runs `npm run tauri:build`, and checks app-data permissions with `stat`. It writes a timestamped `linux-test-*.log`. Options: `--skip-apt`, `--skip-bundle`.
+   - [x] Run the script on Ubuntu 26.04.1; `scripts/linux-test.sh` passed (tests, lint, build, and bundle). Backup, restore, and permissions were checked manually; one WebKitWebProcess crash occurred once during restore and was not reproduced.
    - [x] Decide the Linux test environment: Ubuntu 26.04 LTS dual-boot on a 54 GB partition of the Dell (i7-6700T).
 6. **Housekeeping**
    - [x] Open a pull request from `feature/wallet-generation` to `main` (merged as PR #1; first CI run passed on Windows and Ubuntu).
    - [x] Add a `.gitattributes` file to settle the LF/CRLF warnings.
-   - [ ] Add a screenshot or short walkthrough to the README.
 
-Suggested order: run the Linux checks (including the backup dialogs and a
-cross-platform restore), then the remaining recovery items.
+## Remaining manual verification
+- [ ] In Linux, verify legacy-wallet migration with multiple old passwords; confirm a wrong password preserves the original wallets.
+- [ ] In Linux, verify Backup and erase saves a usable backup, erases the vault, and permits restore.
+- [ ] On the current Linux build, verify launch, app-data permissions, rename, duplicate-import rejection, and lock behavior.
+- [x] Manually test the current Testnet account flows on Windows with disposable accounts: create, send HBAR, move, delete, refresh balances/transactions, and review transaction status.
+- [ ] Add a screenshot or short walkthrough to the README.
+- [ ] A GUI-level restart test of the packaged app remains deferred; persistence across sessions is covered by Rust integration tests.
 
-On the weekend Linux machine, run the workspace tests and checks and verify the
-desktop app builds and launches, and verify Linux app-data permissions. Do not
-use real funds or recovery phrases.
+Use disposable wallets and Testnet accounts only. Never test with real funds or recovery phrases.
 
 ## Vault lifecycle and encrypted backups
-Password change and encrypted backup export/restore are now tracked under
-"Wallet recovery and backup" in the pre-Linux work above.
+Password change and encrypted backup export/restore are tracked under
+"Wallet recovery and backup" above.
 
 ## Hedera Testnet integration
 - [x] Account ID checksums (HIP-15, `0.0.12345-abcde`, verified against the published 0.0.123 vectors for Mainnet and Testnet): accounts are displayed with the checksum; send and delete recipients must carry a valid one; linking by ID verifies one if typed.
-- [x] Account names (max 25 characters, shown before the number, unnamed = `NONAME`, "Name this account"/"Rename account" in the account panel) and an address book (toolbar icon left of the plus): every wallet account plus outside accounts added with a name and checksummed ID (verified on Testnet, balance shown). Send picks a recipient from an address-book dropdown; typing a different account needs the "Check to send to a different account" box, which Settings can disable (default: disabled, so sends are limited to the address book). Delete recipients are not limited.
-- [x] Multi-account wallets: each wallet (key) holds a list of `(network, account)` entries, unique per network across wallets, up to 50 per wallet; a legacy single account is migrated to Testnet on unlock. Import finds all accounts for the key (single-key accounts only). Account creation (`CryptoCreate`, same key as the funding wallet) and moving an account to another wallet's key (`CryptoUpdate`, signed by both keys, link moved after the mirror node confirms) and account deletion (`CryptoDelete` with a recipient; warning plus acknowledgement checkbox for move and delete; link removed once the mirror node reports it deleted) are written but not yet verified on Testnet. Mainnet is a data-model column only for now; multisig accounts are deferred to the QR transport work
+- [x] Account names (max 25 characters, shown as `Name - 0.0.12345-abcde`, unnamed = `NONAME`) and an address book: wallet accounts and named outside accounts are listed with checksummed IDs and balances. External send and delete recipients are disabled by default and can be enabled in Settings.
+- [x] Multi-account wallets: each wallet (key) holds a list of `(network, account)` entries, unique per network across wallets, up to 50 per wallet; a legacy single account is migrated to Testnet on unlock. Import finds accounts for the key (single-key accounts only). Account creation (`CryptoCreate`), moving an account to another wallet's key (`CryptoUpdate`, signed by both keys), and account deletion (`CryptoDelete`) were implemented and manually verified on Testnet with disposable accounts. Mainnet is a data-model column only; multisig accounts are deferred to QR transport.
 - [x] `hedera-mirror` crate: read-only client for the public Testnet mirror node (fixed URL, https only, no redirects, 15 s timeout, 512 KB cap); contacts the network only when the user clicks a button
 - [x] Testnet panel on each wallet tab: link an account by ID, find an account by key (Ed25519), refresh balance and recent transactions. Verified manually against the real Testnet (1000 ℏ shown)
-- [x] Settings "Back up and erase this device" (verified manually: save, erase, restore from the create screen)
+- [x] Implement Settings "Back up and erase this device"; manual verification is still pending in the Linux session listed above.
 - [x] First-run, unlock and Settings layout polish (two-button start screen, in-box eye toggle, centred fixed-size boxes, adaptive logo/padlock)
 
-## Roadmap (agreed)
-1. **Raw private key import** (done on `feature/raw-key-import`): import hex and DER private keys, ECDSA (secp256k1) alongside Ed25519, key type and secret kind stored per wallet (older vaults and backups still load), public key and EVM address shown, bare-hex curve detected through the Testnet mirror, duplicates detected by key material, import form cleared on lock. Manually verified with a funded Testnet ECDSA account. New mnemonic wallets stay Ed25519 only; ECDSA mnemonic derivation paths are still unverified. Note: an older app version cannot open a vault containing a raw-key wallet.
-2. **Transaction signing and account creation**: use an imported funded Testnet key to create accounts from app-generated mnemonics. Testnet only, with a confirmation screen. Decision: own small protobuf layer (`prost` + `tonic`), because `hiero-sdk` needs OpenSSL and `hedera-proto` needs `protoc`. In progress on `feature/testnet-transfer`: HBAR transfer between own accounts (signing core, gRPC submit, send form with confirmation) is written and manually verified on Testnet with both Ed25519 and ECDSA keys; account creation (`CryptoCreate`) is next.
-3. **Hardware key**: FIDO2 `hmac-secret` design on an RP2350 board, after the board arrives.
-4. Mainnet only after the above has been reviewed.
+## Next steps
+1. Complete the remaining Linux manual verification above, including legacy migration and Backup and erase.
+2. Implement watch-only wallets and unsigned-transaction export.
+3. Design and build QR-based offline transaction transport and a signer application.
+4. Consider HTS tokens/NFTs and hardware work after the current HBAR flows are fully verified.
+5. Defer Mainnet until the implementation has been reviewed and tested.
 
 ## Cold signer (SeedSigner) design notes
 Goal: a small, fully readable signer. It signs only what it can show in full and rejects everything else. Value is held cold; contracts, token management and experiments are done from small hot wallets.
@@ -155,34 +163,26 @@ Goal: a small, fully readable signer. It signs only what it can show in full and
 
 ## Later roadmap
 - [x] Integrate read-only Hedera Testnet access (balance and transaction history)
-- [ ] Implement transaction creation and signing
-- [ ] Add HTS token, NFT, and smart-contract support
+- [x] Implement and manually verify HBAR transfers and account create/move/delete on Testnet
+- [ ] Add watch-only wallets and unsigned-transaction export
 - [ ] Build QR-based offline transaction transport
 - [ ] Create an offline signer application
+- [ ] Add HTS token, NFT, and smart-contract support
 - [ ] Design a reproducible hardware prototype
 
 ## Validation status
 The source security reviews found no substantiated vulnerabilities. The
-shared-vault architecture, legacy-wallet migration, inactivity auto-lock,
-unlock brute-force delay, vault password change, encrypted backup/restore,
-HOME/wallet/create-import
-tabs, wallet-specific reveal/delete actions, copy-blocked recovery-phrase
-display, and Settings tab are implemented, with a stricter release CSP and
-Linux `0700`/`0600` permission hardening. The latest standalone x64 Windows
-app and NSIS/MSI installers include these changes. `cargo fmt --all -- --check`,
-`cargo test --workspace` (28 wallet-core unit tests, 2 persistence
-integration tests and 6 hedera-mirror tests), 34 frontend component tests, frontend lint/build, and `cargo check --workspace` passed
-locally, and CI passed on Windows and Ubuntu for PR #1. Tests cover encryption,
-legacy migration and failure preservation, locked persistence, auto-lock
-bounds/expiry/activity reset, wallet mutation rollback, unlock delay, and
-password change.
+implemented desktop app includes the encrypted shared vault, wallet recovery
+and backup, safety controls, account management, and Testnet HBAR transaction
+flows. Linux app-data permissions are hardened to `0700`/`0600`.
 
-Manually verified on Windows: vault creation/unlock/lock, auto-lock, tabs,
-Settings, wallet deletion and persistence, standalone launch, clearing on
-minimise, copy blocking, CSP rendering, unlock delay, app-data permissions,
-vault password change, encrypted backup/restore, wallet rename, and duplicate-phrase blocking (release builds also no
-longer open a console window). Still outstanding: Linux
-permission checks and app testing, and a GUI-level restart test of the packaged app.
+The latest Windows release build produced both NSIS and MSI installers.
+Frontend lint and production build passed, and all 65 frontend tests passed.
+Workspace Rust tests, formatting, and checks passed previously; see CI for the
+Windows and Ubuntu jobs. The latest Testnet account flows were manually
+verified on Windows with disposable accounts. Remaining manual checks are
+listed above; do not use real funds or recovery phrases.
+
 Build note: this ARM64 Windows machine needs the x64 Rust toolchain
 (`RUSTUP_TOOLCHAIN=stable-x86_64-pc-windows-msvc`) and the x64 Visual Studio
 environment to build the x64 app.

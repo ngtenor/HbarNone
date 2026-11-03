@@ -3,7 +3,7 @@ export function AccountLabel({ name, displayId }: { name?: string; displayId: st
   return (
     <>
       {name && <span className="account-name">{name}</span>}
-      {name && ' '}
+      {name && ' - '}
       <span className="account-number">{displayId}</span>
     </>
   )

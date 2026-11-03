@@ -9,6 +9,8 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use wallet_core::account_checksum::with_checksum;
+use wallet_core::vault_container::Network;
 use wallet_core::wallet_service::validate_account_id;
 
 pub const TESTNET_BASE_URL: &str = "https://testnet.mirrornode.hedera.com";
@@ -26,6 +28,8 @@ pub struct TransactionSummary {
     pub consensus_time: String,
     /// Net change of this account's balance in tinybars (negative when it paid).
     pub net_tinybars: i64,
+    /// The other account in the transfer, with checksum; empty when there is none.
+    pub counterparty: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -157,8 +161,64 @@ pub fn parse_transactions(
                 .fold(0i64, |total, transfer| {
                     total.saturating_add(transfer.amount)
                 }),
+            counterparty: counterparty(&entry.transfers, account_id),
         })
         .collect())
+}
+
+/// The other account that received the most (or, for an incoming payment, sent the most),
+/// shown with its checksum. Fee and node accounts are small, so the largest mover wins.
+fn counterparty(transfers: &[TransferEntry], account_id: &str) -> String {
+    let net: i64 = transfers
+        .iter()
+        .filter(|transfer| transfer.account == account_id)
+        .fold(0i64, |total, transfer| {
+            total.saturating_add(transfer.amount)
+        });
+    let others = transfers
+        .iter()
+        .filter(|transfer| transfer.account != account_id);
+    let best = if net > 0 {
+        others
+            .filter(|transfer| transfer.amount < 0)
+            .min_by_key(|transfer| transfer.amount)
+    } else {
+        others
+            .filter(|transfer| transfer.amount > 0)
+            .max_by_key(|transfer| transfer.amount)
+    };
+    best.and_then(|transfer| validate_account_id(&transfer.account).ok())
+        .and_then(|id| with_checksum(Network::Testnet, &id).ok())
+        .unwrap_or_default()
+}
+
+/// Accepts only `shard.realm.num-seconds-nanos`, so the value is safe in a URL path.
+pub fn validate_transaction_id(id: &str) -> Result<String, String> {
+    let trimmed = id.trim();
+    let mut dashes = trimmed.split('-');
+    let (Some(account), Some(seconds), Some(nanos), None) =
+        (dashes.next(), dashes.next(), dashes.next(), dashes.next())
+    else {
+        return Err("invalid transaction ID".to_string());
+    };
+    let digits = |text: &str| !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit());
+    if validate_account_id(account).is_err() || !digits(seconds) || !digits(nanos) {
+        return Err("invalid transaction ID".to_string());
+    }
+    Ok(trimmed.to_string())
+}
+
+/// The consensus result (for example `SUCCESS`) of the first record for this
+/// transaction, or `None` if the mirror node has not seen it yet.
+pub fn parse_transaction_result(body: &[u8], expected_id: &str) -> Result<Option<String>, String> {
+    let response: TransactionsResponse = serde_json::from_slice(body)
+        .map_err(|_| "unexpected response from the mirror node".to_string())?;
+    Ok(response
+        .transactions
+        .iter()
+        .find(|entry| entry.transaction_id == expected_id)
+        .and_then(|entry| entry.result.as_deref())
+        .map(clean_text))
 }
 
 pub struct MirrorClient {
@@ -234,6 +294,15 @@ impl MirrorClient {
         }
     }
 
+    /// Consensus result of a submitted transaction; `None` until Testnet has it.
+    pub async fn transaction_result(&self, transaction_id: &str) -> Result<Option<String>, String> {
+        let id = validate_transaction_id(transaction_id)?;
+        match self.get(&format!("/api/v1/transactions/{id}")).await? {
+            Some(body) => parse_transaction_result(&body, &id),
+            None => Ok(None),
+        }
+    }
+
     /// Balance only (one request), or `None` if the account is unknown on Testnet.
     pub async fn account_balance(&self, account_id: &str) -> Result<Option<u64>, String> {
         let account_id = validate_account_id(account_id)?;
@@ -298,6 +367,23 @@ mod tests {
     }
 
     #[test]
+    fn validates_transaction_ids_and_reads_the_result() {
+        assert!(validate_transaction_id("0.0.1001-1700000000-123").is_ok());
+        assert!(validate_transaction_id("0.0.1001-1700000000").is_err());
+        assert!(validate_transaction_id("0.0.1001-17/../x-1").is_err());
+        let body = br#"{"transactions":[{"transaction_id":"0.0.1001-1700000000-123","result":"SUCCESS"}]}"#;
+        assert_eq!(
+            parse_transaction_result(body, "0.0.1001-1700000000-123").unwrap(),
+            Some("SUCCESS".to_string())
+        );
+        assert_eq!(
+            parse_transaction_result(body, "0.0.1001-1700000000-124").unwrap(),
+            None
+        );
+        assert!(parse_transaction_result(b"nope", "0.0.1001-1-1").is_err());
+    }
+
+    #[test]
     fn parses_balance_and_checks_the_account() {
         let body = br#"{"account":"0.0.1001","balance":{"balance":250000000,"tokens":[]}}"#;
         assert_eq!(parse_balance(body, "0.0.1001").unwrap(), 250_000_000);
@@ -332,6 +418,11 @@ mod tests {
         assert_eq!(list.len(), 3);
         assert_eq!(list[0].net_tinybars, -100_100_000);
         assert_eq!(list[0].kind, "CRYPTOTRANSFER");
+        assert_eq!(
+            list[0].counterparty,
+            with_checksum(Network::Testnet, "0.0.2002").unwrap()
+        );
+        assert_eq!(list[1].counterparty, "");
         assert_eq!(list[0].consensus_time, "2023-11-14T22:13:20+00:00");
         assert_eq!(list[1].net_tinybars, 750);
         assert_eq!(list[2].transaction_id, "xy");

@@ -4,6 +4,7 @@ export type WalletAccount = {
   display_id: string
   name: string
   named: boolean
+  signing?: 'single' | 'multisig'
 }
 
 export type AddressBookRow = {
@@ -29,7 +30,6 @@ export type WalletSummary = {
   secret_kind: 'mnemonic' | 'privatekey'
   key_type: 'ed25519' | 'ecdsa'
   custody?: 'hot' | 'cold'
-  signing?: 'single' | 'multisig'
 }
 
 export type WalletKeys = {

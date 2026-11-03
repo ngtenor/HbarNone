@@ -353,6 +353,13 @@ async fn get_account_overview(
 }
 
 #[tauri::command]
+async fn get_transaction_result(transaction_id: String) -> Result<Option<String>, String> {
+    MirrorClient::testnet()?
+        .transaction_result(&transaction_id)
+        .await
+}
+
+#[tauri::command]
 async fn get_account_balance(
     wallet_id: String,
     account_id: String,
@@ -918,6 +925,7 @@ fn main() {
             link_wallet_account,
             find_wallet_accounts,
             get_account_balance,
+            get_transaction_result,
             get_account_overview,
             send_hbar,
             create_account,

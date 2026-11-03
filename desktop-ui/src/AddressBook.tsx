@@ -131,12 +131,13 @@ export function AddressBook({ view, onChange, onRenamed }: Props) {
         </span>
         {row.wallet_id === null ? (
           <button
-            className="secondary-button"
+            className="remove-button"
             type="button"
+            title="Remove from the address book"
             aria-label={`Remove ${row.name} from the address book`}
             onClick={() => void handleRemove(row.id)}
           >
-            Remove
+            ×
           </button>
         ) : (
           <span />
@@ -154,7 +155,9 @@ export function AddressBook({ view, onChange, onRenamed }: Props) {
     }
   }
 
-  const namedRows = view.rows.filter((row) => row.name !== UNNAMED)
+  const byName = (a: AddressBookView['rows'][number], b: AddressBookView['rows'][number]) =>
+    a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
+  const namedRows = view.rows.filter((row) => row.name !== UNNAMED).sort(byName)
   const unnamedRows = view.rows.filter((row) => row.name === UNNAMED)
 
   return (
@@ -165,7 +168,6 @@ export function AddressBook({ view, onChange, onRenamed }: Props) {
       aria-labelledby="tab-addressbook"
     >
       <div className="settings-heading">
-        <p className="eyebrow">RECIPIENTS</p>
         <h1>Address book</h1>
       </div>
 

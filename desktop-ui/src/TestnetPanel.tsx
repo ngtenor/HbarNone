@@ -1,7 +1,25 @@
 import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { invoke } from '@tauri-apps/api/core'
+import type { TxProgress } from './TransactionProgress'
 import type { AddressBookView, WalletSummary } from './types'
+
+const POLL_INTERVAL_MS = 2000
+const POLL_ATTEMPTS = 45
+
+const sleep = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms))
+
+// The mirror node trails consensus by a few seconds, so bookkeeping steps retry.
+async function retry<T>(task: () => Promise<T>, attempts: number): Promise<T> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await task()
+    } catch (failure) {
+      if (attempt >= attempts) throw failure
+      await sleep(3000)
+    }
+  }
+}
 
 type TransactionSummary = {
   transaction_id: string
@@ -9,6 +27,7 @@ type TransactionSummary = {
   result: string
   consensus_time: string
   net_tinybars: number
+  counterparty?: string
 }
 
 type AccountOverview = {
@@ -19,16 +38,16 @@ type AccountOverview = {
 
 const TINYBARS_PER_HBAR = 100_000_000
 
-function formatHbar(tinybars: number) {
+function formatHbar(tinybars: number, maxDecimals = 8) {
   return (tinybars / TINYBARS_PER_HBAR).toLocaleString(undefined, {
     minimumFractionDigits: 2,
-    maximumFractionDigits: 8,
+    maximumFractionDigits: maxDecimals,
   })
 }
 
 function formatNet(tinybars: number) {
   const sign = tinybars > 0 ? '+' : ''
-  return `${sign}${formatHbar(tinybars)} ℏ`
+  return `${sign}${formatHbar(tinybars, 2)} ℏ`
 }
 
 function errorMessage(error: unknown) {
@@ -44,6 +63,7 @@ type Props = {
   onAccountMoved: (target: WalletSummary, sourceWalletId: string, accountId: string) => void
   onAccountDeleted: (updated: WalletSummary, accountId: string) => void
   onBalance?: (walletId: string, accountId: string, tinybars: number) => void
+  onProgress: (progress: TxProgress | null) => void
 }
 
 export function TestnetPanel({
@@ -55,6 +75,7 @@ export function TestnetPanel({
   onAccountMoved,
   onAccountDeleted,
   onBalance,
+  onProgress,
 }: Props) {
   const [overview, setOverview] = useState<AccountOverview | null>(null)
   const [error, setError] = useState('')
@@ -68,6 +89,7 @@ export function TestnetPanel({
   const [confirming, setConfirming] = useState(false)
   const [openingBalance, setOpeningBalance] = useState('')
   const [funder, setFunder] = useState('')
+  const [funderBalances, setFunderBalances] = useState<Record<string, number>>({})
   const [confirmingCreate, setConfirmingCreate] = useState(false)
   const [moveTarget, setMoveTarget] = useState('')
   const [confirmingMove, setConfirmingMove] = useState(false)
@@ -97,10 +119,7 @@ export function TestnetPanel({
     setError('')
     setNotice('')
   }
-  const moveTimer = useRef(0)
-  const deleteTimer = useRef(0)
-  const refreshTimer = useRef(0)
-  const createTimer = useRef(0)
+  const alive = useRef(true)
   async function run(task: () => Promise<void>) {
     if (isBusy) return
     setError('')
@@ -115,7 +134,7 @@ export function TestnetPanel({
     }
   }
 
-  const handleRefresh = () => run(async () => {
+  async function loadOverview() {
     if (!account) return
     const result = await invoke<AccountOverview | null>('get_account_overview', {
       walletId: wallet.id,
@@ -124,7 +143,9 @@ export function TestnetPanel({
     setOverview(result)
     if (result) onBalance?.(wallet.id, account, result.balance_tinybars)
     if (!result) setNotice('This account was not found on Hedera Testnet.')
-  })
+  }
+
+  const handleRefresh = () => run(loadOverview)
 
   // Selecting an account refreshes its balance; the panel remounts per account.
   useEffect(() => {
@@ -132,20 +153,67 @@ export function TestnetPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [wallet.id, account])
 
-  useEffect(() => () => {
-    window.clearTimeout(refreshTimer.current)
-    window.clearTimeout(createTimer.current)
-    window.clearTimeout(moveTimer.current)
-    window.clearTimeout(deleteTimer.current)
+  useEffect(() => {
+    alive.current = true
+    return () => {
+      alive.current = false
+    }
   }, [])
+
+  // Shows the progress popup until Testnet reports a consensus result, then
+  // runs `onConfirmed` (which may return a detail line for the popup).
+  async function watchTransaction(
+    transactionId: string,
+    title: string,
+    onConfirmed: () => Promise<string | void>,
+  ) {
+    onProgress({ phase: 'waiting', title })
+    for (let attempt = 0; attempt < POLL_ATTEMPTS && alive.current; attempt += 1) {
+      if (attempt > 0) await sleep(POLL_INTERVAL_MS)
+      if (!alive.current) return
+      let result: string | null = null
+      try {
+        result = await invoke<string | null>('get_transaction_result', { transactionId })
+      } catch {
+        result = null
+      }
+      if (!result) continue
+      if (result !== 'SUCCESS') {
+        onProgress({ phase: 'failed', title, detail: `Testnet result: ${result}` })
+        return
+      }
+      const detail = await onConfirmed().catch(() => undefined)
+      onProgress({ phase: 'success', title, detail: detail || undefined })
+      return
+    }
+    if (alive.current) onProgress({ phase: 'timeout', title, detail: transactionId })
+  }
 
   const targetName = otherWallets.find((item) => item.id === moveTarget)?.name ?? ''
   const accountSummary = wallet.accounts.find((item) => item.id === account)
   const accountLabel = accountSummary
-    ? `${accountSummary.name} ${accountSummary.display_id}`
+    ? `${accountSummary.name} - ${accountSummary.display_id}`
     : account
   const sameAccount = (typed: string) => typed.trim().split('-')[0] === account
   const funderRows = addressBook.rows.filter((row) => row.network === 'testnet' && row.wallet_id)
+  const funderKey = funderRows.map((row) => row.display_id).join(',')
+
+  useEffect(() => {
+    if (account || !funderKey) return
+    let cancelled = false
+    for (const displayId of funderKey.split(',')) {
+      invoke<number | null>('get_address_balance', { accountId: displayId.split('-')[0] })
+        .then((tinybars) => {
+          if (!cancelled && tinybars !== null) {
+            setFunderBalances((existing) => ({ ...existing, [displayId]: tinybars }))
+          }
+        })
+        .catch(() => undefined)
+    }
+    return () => {
+      cancelled = true
+    }
+  }, [account, funderKey])
   const funderRow = funderRows.find((row) => row.display_id === funder)
   const funderLabel = funderRow ? `${funderRow.name} ${funderRow.display_id}` : funder
 
@@ -163,55 +231,47 @@ export function TestnetPanel({
     })
   }
 
-  // Testnet needs a few seconds to reach consensus on the key change.
-  async function finishMove(target: string, attemptsLeft: number) {
+  // The mirror node trails consensus, so the wallet bookkeeping retries a few times.
+  async function completeMove(target: string) {
     if (!account) return
     try {
-      const updated = await invoke<WalletSummary>('finish_account_move', {
+      const updated = await retry(() => invoke<WalletSummary>('finish_account_move', {
         walletId: wallet.id,
         accountId: account,
         targetWalletId: target,
-      })
+      }), 4)
       onAccountMoved(updated, wallet.id, account)
     } catch (failure) {
-      if (attemptsLeft > 0) {
-        moveTimer.current = window.setTimeout(() => void finishMove(target, attemptsLeft - 1), 6000)
-      } else {
-        setError(`${errorMessage(failure)} Use “Check again” in a moment.`)
-        setPendingMove(target)
-      }
+      setError(`${errorMessage(failure)} Use “Check again” in a moment.`)
+      setPendingMove(target)
+      return 'Confirmed on Testnet, but the wallet could not be updated yet. Use “Check again”.'
     }
   }
 
-  async function finishDelete(attemptsLeft: number) {
+  async function completeDelete() {
     if (!account) return
     try {
-      const updated = await invoke<WalletSummary>('finish_account_delete', {
+      const updated = await retry(() => invoke<WalletSummary>('finish_account_delete', {
         walletId: wallet.id,
         accountId: account,
-      })
+      }), 4)
       onAccountDeleted(updated, account)
     } catch (failure) {
-      if (attemptsLeft > 0) {
-        deleteTimer.current = window.setTimeout(() => void finishDelete(attemptsLeft - 1), 6000)
-      } else {
-        setError(`${errorMessage(failure)} Use “Check again” in a moment.`)
-        setPendingDelete(true)
-      }
+      setError(`${errorMessage(failure)} Use “Check again” in a moment.`)
+      setPendingDelete(true)
+      return 'Confirmed on Testnet, but the wallet could not be updated yet. Use “Check again”.'
     }
   }
 
   const handleDelete = () => run(async () => {
-    await invoke<{ transactionId: string }>('delete_account', {
+    const result = await invoke<{ transactionId: string }>('delete_account', {
       walletId: wallet.id,
       accountId: account,
       recipient: deleteRecipient.trim(),
     })
     setConfirmingDelete(false)
     setDeleteAcknowledged(false)
-    setNotice('Deletion submitted. Waiting for Testnet to confirm it...')
-    window.clearTimeout(deleteTimer.current)
-    deleteTimer.current = window.setTimeout(() => void finishDelete(3), 8000)
+    void watchTransaction(result.transactionId, 'Deleting account', completeDelete)
   })
 
   const handleCheckDelete = () => run(async () => {
@@ -224,16 +284,15 @@ export function TestnetPanel({
   })
 
   const handleMove = () => run(async () => {
-    await invoke<{ transactionId: string }>('move_account', {
+    const result = await invoke<{ transactionId: string }>('move_account', {
       walletId: wallet.id,
       accountId: account,
       targetWalletId: moveTarget,
     })
+    const target = moveTarget
     setConfirmingMove(false)
     setMoveAcknowledged(false)
-    setNotice('Key change submitted. Waiting for Testnet to confirm it...')
-    window.clearTimeout(moveTimer.current)
-    moveTimer.current = window.setTimeout(() => void finishMove(moveTarget, 3), 8000)
+    void watchTransaction(result.transactionId, 'Moving account', () => completeMove(target))
   })
 
   const handleCheckMove = () => run(async () => {
@@ -281,13 +340,42 @@ export function TestnetPanel({
       memo,
     })
     resetSend()
-    setNotice(
-      `Submitted ${result.transactionId}. Testnet usually confirms within a few seconds; ` +
-        'the balance refreshes automatically.',
-    )
-    window.clearTimeout(refreshTimer.current)
-    refreshTimer.current = window.setTimeout(() => void handleRefresh(), 8000)
+    void watchTransaction(result.transactionId, 'Sending HBAR', async () => {
+      await retry(loadOverview, 2)
+    })
   })
+
+  const parseHbarToTinybars = (text: string) => {
+    const match = /^(\d*)(?:\.(\d{0,8}))?$/.exec(text.trim())
+    if (!match || (!match[1] && !match[2])) return null
+    const whole = Number(match[1] || '0')
+    const tinybars = whole * TINYBARS_PER_HBAR + Number((match[2] ?? '').padEnd(8, '0'))
+    return Number.isSafeInteger(tinybars) && tinybars > 0 ? tinybars : null
+  }
+
+  const handleReviewCreate = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    setError('')
+    setNotice('')
+    const tinybars = parseHbarToTinybars(openingBalance)
+    if (tinybars === null) {
+      setError('Enter a valid opening balance greater than zero, like 1.5 (at most 8 decimal places).')
+      return
+    }
+    return run(async () => {
+      const balance = await invoke<number | null>('get_address_balance', {
+        accountId: funder.split('-')[0],
+      })
+      if (balance === null || balance < tinybars) {
+        throw new Error(
+          balance === null
+            ? 'The funding account was not found on Testnet.'
+            : `The funding account has only ${formatHbar(balance)} ℏ, which is less than the opening balance.`,
+        )
+      }
+      setConfirmingCreate(true)
+    })
+  }
 
   const handleCreate = () => run(async () => {
     const result = await invoke<{ transactionId: string }>('create_account', {
@@ -295,18 +383,18 @@ export function TestnetPanel({
       fromAccount: funder,
       initialHbar: openingBalance.trim(),
     })
+    const accountsBefore = wallet.accounts.length
     setOpeningBalance('')
     setConfirmingCreate(false)
-    setNotice(
-      `Submitted ${result.transactionId}. The new account appears here in a few seconds ` +
-        'once Testnet confirms it.',
-    )
-    window.clearTimeout(createTimer.current)
-    createTimer.current = window.setTimeout(() => {
-      void invoke<WalletSummary>('find_wallet_accounts', { walletId: wallet.id })
-        .then(onWalletUpdated)
-        .catch(() => undefined)
-    }, 8000)
+    void watchTransaction(result.transactionId, 'Creating account', async () => {
+      const updated = await retry(async () => {
+        const found = await invoke<WalletSummary>('find_wallet_accounts', { walletId: wallet.id })
+        if (found.accounts.length <= accountsBefore) throw new Error('not listed yet')
+        return found
+      }, 4).catch(() => null)
+      if (!updated) return 'The new account is not listed yet. Use Find accounts in a moment.'
+      onWalletUpdated(updated)
+    })
   })
 
   return (
@@ -314,9 +402,9 @@ export function TestnetPanel({
       {account ? (
         <>
           <div className="account-heading">
-            <h2 className="section-title">Account: {accountLabel}</h2>
+            <h2 className="section-title">{accountLabel}</h2>
             <strong className="account-heading-balance">
-              {overview ? `${formatHbar(overview.balance_tinybars)} ℏ` : ''}
+              {overview ? `${formatHbar(overview.balance_tinybars, 2)} ℏ` : ''}
             </strong>
           </div>
           <div className="wallet-tab-actions account-actions">
@@ -329,7 +417,7 @@ export function TestnetPanel({
               Send
             </button>
             <button className="secondary-button" type="button" disabled={isBusy} onClick={handleRefresh}>
-              {isBusy ? 'Contacting Testnet...' : 'Refresh balance'}
+              {isBusy ? 'Contacting Testnet...' : 'Refresh balance & tx.'}
             </button>
             <button
               className="secondary-button"
@@ -343,7 +431,7 @@ export function TestnetPanel({
             </button>
             {otherWallets.length > 0 && (
               <button
-                className="secondary-button"
+                className="secondary-button risky-button"
                 type="button"
                 aria-expanded={section === 'move'}
                 onClick={() => toggleSection('move')}
@@ -352,7 +440,7 @@ export function TestnetPanel({
               </button>
             )}
             <button
-              className="secondary-button"
+              className="secondary-button risky-button"
               type="button"
               aria-expanded={section === 'delete'}
               onClick={() => toggleSection('delete')}
@@ -424,15 +512,16 @@ export function TestnetPanel({
               </div>
             </div>
           ) : (
-            <form className="testnet-send-form" onSubmit={handleReview}>
-              <label htmlFor={`send-book-${wallet.id}`}>Recipient from the address book</label>
+            <form className="testnet-send-form send-form" onSubmit={handleReview}>
               <select
                 id={`send-book-${wallet.id}`}
+                aria-label="Recipient from the address book"
+                className={(useOtherRecipient ? '' : recipient) ? '' : 'placeholder-shown'}
                 disabled={useOtherRecipient}
                 value={useOtherRecipient ? '' : recipient}
                 onChange={(event) => setRecipient(event.target.value)}
               >
-                <option value="">Select an account</option>
+                <option value="">Select recipient from the address book</option>
                 {addressBook.rows
                   .filter((row) => row.id !== account)
                   .map((row) => (
@@ -441,27 +530,29 @@ export function TestnetPanel({
                     </option>
                   ))}
               </select>
-              <label
-                className={`testnet-acknowledge${addressBook.allowExternalSends ? '' : ' disabled-text'}`}
-                htmlFor={`send-other-${wallet.id}`}
-              >
-                <input
-                  id={`send-other-${wallet.id}`}
-                  type="checkbox"
-                  disabled={!addressBook.allowExternalSends}
-                  checked={useOtherRecipient}
-                  onChange={(event) => {
-                    setUseOtherRecipient(event.target.checked)
-                    setRecipient('')
-                  }}
-                />
-                <span>Check to send to a different account</span>
-              </label>
-              {!addressBook.allowExternalSends && (
-                <p className="field-hint disabled-text">
-                  Send limited to accounts in the address book. Remove this limit in the Settings menu.
-                </p>
-              )}
+              <div className="send-side">
+                <label
+                  className={`testnet-acknowledge${addressBook.allowExternalSends ? '' : ' disabled-text'}`}
+                  htmlFor={`send-other-${wallet.id}`}
+                >
+                  <input
+                    id={`send-other-${wallet.id}`}
+                    type="checkbox"
+                    disabled={!addressBook.allowExternalSends}
+                    checked={useOtherRecipient}
+                    onChange={(event) => {
+                      setUseOtherRecipient(event.target.checked)
+                      setRecipient('')
+                    }}
+                  />
+                  <span>Check to send to a different account</span>
+                </label>
+                {!addressBook.allowExternalSends && (
+                  <p className="field-hint disabled-text">
+                    Send limited to accounts in the address book. Remove this limit in the Settings menu.
+                  </p>
+                )}
+              </div>
               {useOtherRecipient && (
                 <>
                   <label htmlFor={`send-to-${wallet.id}`}>Recipient account ID</label>
@@ -475,22 +566,23 @@ export function TestnetPanel({
                   />
                 </>
               )}
-              <label htmlFor={`send-amount-${wallet.id}`}>Amount (ℏ)</label>
               <input
                 id={`send-amount-${wallet.id}`}
+                aria-label="Amount (ℏ)"
                 autoComplete="off"
                 inputMode="decimal"
-                placeholder="1.2345"
+                placeholder="Enter send amount here (ℏ)"
                 maxLength={20}
                 required
                 value={amount}
                 onChange={(event) => setAmount(event.target.value)}
               />
-              <label htmlFor={`send-memo-${wallet.id}`}>Memo (optional)</label>
               <input
                 id={`send-memo-${wallet.id}`}
+                aria-label="Memo (optional)"
                 autoComplete="off"
                 maxLength={100}
+                placeholder="Memo (optional)"
                 value={memo}
                 onChange={(event) => setMemo(event.target.value)}
               />
@@ -536,12 +628,7 @@ export function TestnetPanel({
           ) : (
             <form
               className="testnet-send-form"
-              onSubmit={(event) => {
-                event.preventDefault()
-                setError('')
-                setNotice('')
-                setConfirmingCreate(true)
-              }}
+              onSubmit={handleReviewCreate}
             >
               <label htmlFor={`create-funder-${wallet.id}`}>Fund from</label>
               <select
@@ -553,7 +640,10 @@ export function TestnetPanel({
                 <option value="">Select an account</option>
                 {funderRows.map((row) => (
                   <option key={`${row.network}/${row.id}`} value={row.display_id}>
-                    {row.name} {row.display_id}
+                    {row.name} - {row.display_id}
+                    {funderBalances[row.display_id] !== undefined
+                      ? ` (${formatHbar(funderBalances[row.display_id], 2)} ℏ)`
+                      : ''}
                   </option>
                 ))}
               </select>
@@ -615,7 +705,7 @@ export function TestnetPanel({
                 it is backed up and secured.
               </label>
               <div className="button-pair">
-                <button className="primary-button" type="button" disabled={isBusy || !moveAcknowledged} onClick={handleMove}>
+                <button className="primary-button risky-button" type="button" disabled={isBusy || !moveAcknowledged} onClick={handleMove}>
                   {isBusy ? 'Moving...' : 'Sign and move'}
                 </button>
                 <button
@@ -700,7 +790,7 @@ export function TestnetPanel({
                 balance will be sent to the recipient.
               </label>
               <div className="button-pair">
-                <button className="primary-button" type="button" disabled={isBusy || !deleteAcknowledged} onClick={handleDelete}>
+                <button className="primary-button risky-button" type="button" disabled={isBusy || !deleteAcknowledged} onClick={handleDelete}>
                   {isBusy ? 'Deleting...' : 'Sign and delete'}
                 </button>
                 <button
@@ -809,6 +899,7 @@ export function TestnetPanel({
               {overview.transactions.map((transaction) => (
                 <li key={transaction.transaction_id}>
                   <span className="testnet-kind">{transaction.kind}</span>
+                  <span className="testnet-counterparty">{transaction.counterparty ?? ''}</span>
                   <span className="testnet-result">{transaction.result}</span>
                   <span className="testnet-time">
                     {transaction.consensus_time

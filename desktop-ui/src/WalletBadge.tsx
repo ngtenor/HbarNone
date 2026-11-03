@@ -1,20 +1,60 @@
-import type { WalletSummary } from './types'
+import type { WalletAccount, WalletSummary } from './types'
 
-// Top-left half: hot (red H) or cold (blue C). Bottom-right half: single sig
-// (gray S) or multisig (green M). Wallets without a recorded type are hot, single sig.
+const glyph = {
+  viewBox: '0 0 24 24',
+  fill: 'none',
+  stroke: 'currentColor',
+  strokeWidth: 2,
+  strokeLinecap: 'round',
+  strokeLinejoin: 'round',
+} as const
+
+// The wallet symbol: red when the key is hot, blue when it is cold.
+// Wallets without a recorded type are hot.
 export function WalletBadge({ wallet, large = false }: { wallet: WalletSummary; large?: boolean }) {
   const cold = wallet.custody === 'cold'
-  const multi = wallet.signing === 'multisig'
-  const label = `${cold ? 'Cold' : 'Hot'} ${multi ? 'multisig' : 'single-signature'} wallet`
+  const size = large ? ' wallet-badge-large' : ''
   return (
-    <span className={large ? 'wallet-badge wallet-badge-large' : 'wallet-badge'} role="img" aria-label={label}>
-      <svg viewBox="0 0 34 34" width="100%" height="100%" aria-hidden="true">
-        <polygon points="0,0 34,0 0,34" fill={cold ? '#2b6cb0' : '#c0392b'} />
-        <polygon points="34,0 34,34 0,34" fill={multi ? '#2f9e6b' : '#7a7f87'} />
-        <g fill="#fff" fontSize="11" fontWeight="700" fontFamily="inherit" textAnchor="middle">
-          <text x="9" y="13">{cold ? 'C' : 'H'}</text>
-          <text x="25" y="27">{multi ? 'M' : 'S'}</text>
-        </g>
+    <span
+      className={`wallet-badge ${cold ? 'wallet-cold' : 'wallet-hot'}${size}`}
+      role="img"
+      aria-label={cold ? 'Cold wallet' : 'Hot wallet'}
+      title={cold ? 'Cold wallet' : 'Hot wallet'}
+    >
+      <svg {...glyph} width="100%" height="100%">
+        <path d="M4 7a2 2 0 0 1 2-2h11v3" />
+        <rect x="4" y="7" width="16" height="13" rx="2" />
+        <path d="M16 13.5h4v3h-4a1.5 1.5 0 0 1 0-3z" />
+      </svg>
+    </span>
+  )
+}
+
+// The Planck-constant symbol (a bold italic Times h with a bar through the upper
+// stem, as used for Hbar): grey for a single-signature account, green for multisig.
+export function AccountBadge({ account }: { account: WalletAccount }) {
+  const multi = account.signing === 'multisig'
+  return (
+    <span
+      className={`account-badge ${multi ? 'account-multisig' : 'account-single'}`}
+      role="img"
+      aria-label={multi ? 'Multisig account' : 'Single-signature account'}
+      title={multi ? 'Multi sig.' : 'Single sig.'}
+    >
+      <svg viewBox="0 0 24 24" width="100%" height="100%" aria-hidden="true">
+        <text
+          x="12"
+          y="20"
+          textAnchor="middle"
+          fontFamily="'Times New Roman', Times, serif"
+          fontSize="26"
+          fontWeight="700"
+          fontStyle="italic"
+          fill="currentColor"
+        >
+          h
+        </text>
+        <path d="M6.8 8.4 14.6 6.2" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
       </svg>
     </span>
   )
