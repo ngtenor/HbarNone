@@ -5,7 +5,8 @@
 #   bash scripts/linux-migration-check.sh restore  # put your own vault back and clean up
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="${HV_REPO:-$HOME/HederaVault}"
+[ -d "$REPO_ROOT/.git" ] || { echo "Repo not found at $REPO_ROOT. Run: HV_REPO=/path/to/HederaVault bash $0 ${1:-old}"; exit 1; }
 OLD_DIR="$HOME/hv-old"
 OLD_COMMIT=18aed68
 STATE="$HOME/hv-migration-test"
