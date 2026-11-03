@@ -46,7 +46,7 @@
    - Keep the development-only warning until the review and platform checks are complete.
 2. **Desktop verification**
    - [x] Manually verify vault creation with a generated six-word passphrase, masked-by-default entry, unlock, wrong-password rejection, and manual lock.
-   - [ ] Manually verify migration of existing wallets with multiple old passwords; confirm a wrong password leaves the original wallets intact.
+   - [x] Manually verify migration of existing wallets with multiple old passwords; confirm a wrong password leaves the original wallets intact. Verified on Ubuntu with three legacy wallets using different passwords: a wrong password was refused and `wallets.json` was byte-identical afterwards; with the right passwords all three wallets migrated. Helper: `scripts/linux-migration-check.sh`.
    - [x] Manually verify auto-lock slider bounds/default, timer reset after activity, lock after inactivity, and locked state after closing and reopening the app.
    - [x] Manually verify wallet deletion confirmation and persistence after an app restart.
    - [x] Manually verify HOME remains first, create/import opens in a closeable tab, wallets open in distinct switchable tabs, and closing or deleting a wallet tab returns to HOME as expected.
@@ -81,7 +81,7 @@
    - [x] Add a `.gitattributes` file to settle the LF/CRLF warnings.
 
 ## Remaining manual verification
-- [ ] In Linux, verify legacy-wallet migration with multiple old passwords; confirm a wrong password preserves the original wallets.
+- [x] In Linux, verify legacy-wallet migration with multiple old passwords; confirm a wrong password preserves the original wallets. Verified on Ubuntu (see above).
 - [x] In Linux, verify Backup and erase saves a usable backup, erases the vault, and permits restore. Verified on Ubuntu: the backup was `-rw-------`, the app returned to the create-vault screen, and restoring the backup brought back all wallets and accounts.
 - [x] On the current Linux build, verify launch, app-data permissions, rename, duplicate-import rejection, and lock behavior. Verified on Ubuntu.
 - [x] Manually test the current Testnet account flows on Windows with disposable accounts: create, send HBAR, move, delete, refresh balances/transactions, and review transaction status.
@@ -104,7 +104,7 @@ Password change and encrypted backup export/restore are tracked under
 - [x] First-run, unlock and Settings layout polish (two-button start screen, in-box eye toggle, centred fixed-size boxes, adaptive logo/padlock)
 
 ## Next steps
-1. Complete the remaining Linux manual verification above, which is now only legacy migration.
+1. All Linux manual verification is complete.
 2. (Done) Watch-only wallets and unsigned-transaction export.
 3. Design and build QR-based offline transaction transport and a signer application.
 4. Consider HTS tokens/NFTs and hardware work after the current HBAR flows are fully verified.
