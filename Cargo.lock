@@ -2661,6 +2661,7 @@ dependencies = [
 name = "offline-signer"
 version = "0.1.0"
 dependencies = [
+ "qrcode",
  "rpassword",
  "signer-core",
  "wallet-core",

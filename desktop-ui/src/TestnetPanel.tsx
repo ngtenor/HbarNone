@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { invoke } from '@tauri-apps/api/core'
+import { QrScanner } from './QrScanner'
 import type { TxProgress } from './TransactionProgress'
 import type { AddressBookView, WalletSummary } from './types'
 
@@ -145,7 +146,15 @@ export function TestnetPanel({
   const isWatchOnly = wallet.secret_kind === 'watchonly'
   const [signing, setSigning] = useState<SigningRequest | null>(null)
   const [signatureText, setSignatureText] = useState('')
+  const [scanning, setScanning] = useState(false)
+  const handleScanned = (text: string) => {
+    setSignatureText(text)
+    setScanning(false)
+  }
   const [secondsLeft, setSecondsLeft] = useState(0)
+  useEffect(() => {
+    if (!signing) setScanning(false)
+  }, [signing])
   useEffect(() => {
     if (!signing) return
     const tick = () =>
@@ -611,6 +620,18 @@ export function TestnetPanel({
                 <textarea readOnly rows={4} aria-label="Signing request text" value={signing.payload} />
               </details>
               <label htmlFor={`signature-${wallet.id}`}>Signature from the signer</label>
+              {scanning ? (
+                <QrScanner prefix="HVTX1-SIG:" onScan={handleScanned} onClose={() => setScanning(false)} />
+              ) : (
+                <button
+                  className="secondary-button"
+                  type="button"
+                  disabled={isBusy || secondsLeft === 0}
+                  onClick={() => setScanning(true)}
+                >
+                  Scan reply with camera
+                </button>
+              )}
               <textarea
                 id={`signature-${wallet.id}`}
                 rows={3}

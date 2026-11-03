@@ -117,8 +117,27 @@ fn run() -> Result<(), String> {
         return Err("Cancelled. Nothing was signed.".to_string());
     }
     let reply = sign(&request, &key, now_seconds())?;
-    println!("\nPaste this reply into the app:\n\n{reply}\n");
+    println!("\nPaste this reply into the app, or scan the QR code below:\n\n{reply}\n");
+    print_qr(&reply);
     Ok(())
+}
+
+/// Draws the reply as a QR code with half-block characters, light on dark so it scans in a dark terminal.
+fn print_qr(text: &str) {
+    use qrcode::render::unicode::Dense1x2;
+    use qrcode::{EcLevel, QrCode};
+    match QrCode::with_error_correction_level(text.as_bytes(), EcLevel::L) {
+        Ok(code) => {
+            let image = code
+                .render::<Dense1x2>()
+                .dark_color(Dense1x2::Light)
+                .light_color(Dense1x2::Dark)
+                .quiet_zone(true)
+                .build();
+            println!("{image}\n");
+        }
+        Err(_) => println!("(The reply is too long to show as a QR code. Use the text above.)\n"),
+    }
 }
 
 fn main() -> ExitCode {

@@ -1303,6 +1303,31 @@ describe('watch-only wallet', () => {
       response: 'HVTX1-SIG:AB',
     })
   })
+
+  it('offers camera scanning of the reply and falls back to pasting when no camera exists', async () => {
+    const user = userEvent.setup()
+    installBackend({
+      status: 'unlocked',
+      wallets: [{
+        ...wallet('w-watch', 'Monitor', ['0.0.1001']),
+        secret_kind: 'watchonly',
+        key_type: 'ed25519',
+      }],
+    })
+    render(<App />)
+    await openAccount(user, 'Monitor')
+    await user.click(screen.getByRole('button', { name: 'Send' }))
+    await typeRecipient(user, '0.0.2002-abcde')
+    await user.type(screen.getByLabelText('Amount (ℏ)'), '1')
+    await user.click(screen.getByRole('button', { name: 'Review transfer' }))
+    await user.click(await screen.findByRole('button', { name: 'Create signing request' }))
+    await user.click(await screen.findByRole('button', { name: 'Scan reply with camera' }))
+
+    expect(await screen.findByText(/does not allow camera access/)).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Stop scanning' }))
+    expect(screen.getByRole('button', { name: 'Scan reply with camera' })).toBeInTheDocument()
+    expect(screen.getByLabelText('Signature from the signer')).toBeInTheDocument()
+  })
 })
 
 describe('rename flow', () => {

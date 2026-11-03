@@ -13,4 +13,5 @@ signer-core = { path = "../signer-core" }
 # Only to turn a recovery phrase or key text into key bytes, the same way the app does.
 wallet-core = { path = "../wallet-core" }
 rpassword = "7"
+qrcode = { version = "0.14", default-features = false }
 zeroize = "1.9"
