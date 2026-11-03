@@ -10,7 +10,14 @@ type Account = {
   name: string
   named: boolean
 }
-type Wallet = { id: string; name: string; created_at: string; accounts: Account[] }
+type Wallet = {
+  id: string
+  name: string
+  created_at: string
+  accounts: Account[]
+  secret_kind?: string
+  key_type?: string
+}
 
 type Backend = {
   status: 'uninitialized' | 'locked' | 'unlocked'
@@ -305,7 +312,7 @@ async function openAccount(
 ) {
   await openWalletTab(user, name)
   await user.click(await screen.findByRole('button', { name: new RegExp(accountId) }))
-  await screen.findByRole('button', { name: 'Back to wallet' })
+  await screen.findByRole('button', { name })
   if (section) await user.click(screen.getByRole('button', { name: section }))
 }
 
@@ -316,8 +323,12 @@ describe('home account links', () => {
     render(<App />)
     await unlock(user)
     await user.click(await screen.findByRole('button', { name: /0\.0\.1002/ }))
-    expect(await screen.findByRole('button', { name: 'Back to wallet' })).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: 'Savings' })).toBeInTheDocument()
     expect(screen.getByRole('tab', { name: 'Savings' })).toHaveAttribute('aria-selected', 'true')
+    await user.click(screen.getByRole('tab', { name: 'HOME' }))
+    await user.click(screen.getByRole('button', { name: /Savings\s*Added/ }))
+    expect(await screen.findByRole('heading', { name: 'Savings' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Savings' })).not.toBeInTheDocument()
   })
 })
 
@@ -347,13 +358,24 @@ describe('vault gates', () => {
 
     await unlock(user)
     expect(screen.queryByRole('img', { name: 'Vault locked' })).not.toBeInTheDocument()
-    const actions = ['Address book', 'Create / import wallet', 'Settings', 'Lock vault']
+    const actions = ['Address book', 'Create / import wallet', 'Settings', 'Help', 'Lock vault']
     const buttons = actions.map((name) => screen.getByRole('button', { name }))
     const header = buttons[0].parentElement!
     expect(Array.from(header.children)).toEqual(buttons)
     expect(screen.queryByText('Welcome home')).not.toBeInTheDocument()
     expect(screen.queryByText('IN THIS VAULT')).not.toBeInTheDocument()
     expect(screen.queryByText('Vault unlocked')).not.toBeInTheDocument()
+  })
+
+  it('opens the Help tab from the toolbar and shows the compiled help text', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+    await unlock(user)
+    await user.click(screen.getByRole('button', { name: 'Help' }))
+    expect(await screen.findByRole('tab', { name: 'Help' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('heading', { name: 'Example title' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Close help tab' }))
+    expect(screen.queryByRole('tab', { name: 'Help' })).not.toBeInTheDocument()
   })
 
   it('lists wallets after unlocking and locks again from the header', async () => {
@@ -466,6 +488,24 @@ describe('hedera testnet panel', () => {
       fromAccount: '0.0.1001-abcde',
       initialHbar: '2',
     })
+  })
+
+  it('rejects an invalid or unaffordable opening balance', async () => {
+    const user = userEvent.setup()
+    installBackend({ wallets: [wallet('w1', 'Savings', '0.0.1001')] })
+    render(<App />)
+    await unlock(user)
+    await openWalletTab(user, 'Savings')
+    await user.selectOptions(await screen.findByLabelText('Fund from'), '0.0.1001-abcde')
+    const field = screen.getByLabelText('Opening balance (ℏ)')
+    await user.type(field, '1.2.3')
+    await user.click(screen.getByRole('button', { name: 'Review new account' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('valid opening balance')
+    await user.clear(field)
+    await user.type(field, '500')
+    await user.click(screen.getByRole('button', { name: 'Review new account' }))
+    expect(await screen.findByText(/less than the opening balance/)).toBeInTheDocument()
+    expect(screen.queryByRole('group', { name: 'Confirm new account' })).not.toBeInTheDocument()
   })
 
   it('moves an account to another wallet after confirmation and Testnet’s confirmation', async () => {
@@ -595,6 +635,7 @@ describe('hedera testnet panel', () => {
             result: 'SUCCESS',
             consensus_time: '2026-01-01T00:00:00+00:00',
             net_tinybars: -100_100_000,
+            counterparty: '0.0.2002-abcde',
           },
         ],
       },
@@ -602,11 +643,12 @@ describe('hedera testnet panel', () => {
     render(<App />)
     await unlock(user)
     await openAccount(user, 'Savings')
-    await user.click(screen.getByRole('button', { name: 'Refresh balance' }))
+    await user.click(screen.getByRole('button', { name: 'Refresh balance & tx.' }))
     expect((await screen.findAllByText(/2\.50 ℏ/)).length).toBeGreaterThan(0)
     const list = screen.getByRole('list', { name: 'Recent transactions' })
     expect(within(list).getByText('CRYPTOTRANSFER')).toBeInTheDocument()
-    expect(within(list).getByText(/-1\.001 ℏ/)).toBeInTheDocument()
+    expect(within(list).getByText(/-1\.00 ℏ/)).toBeInTheDocument()
+    expect(within(list).getByText('0.0.2002-abcde')).toBeInTheDocument()
   })
 
   it('says so when the account is not found on Testnet', async () => {
@@ -615,7 +657,7 @@ describe('hedera testnet panel', () => {
     render(<App />)
     await unlock(user)
     await openAccount(user, 'Savings')
-    await user.click(screen.getByRole('button', { name: 'Refresh balance' }))
+    await user.click(screen.getByRole('button', { name: 'Refresh balance & tx.' }))
     expect(await screen.findByRole('status')).toHaveTextContent('not found on Hedera Testnet')
   })
 
@@ -647,7 +689,7 @@ describe('hedera testnet panel', () => {
       await openSend(user)
       await user.click(screen.getByRole('button', { name: 'Review transfer' }))
       const confirm = await screen.findByRole('group', { name: 'Confirm transfer' })
-      expect(within(confirm).getByText('NONAME 0.0.1001-abcde')).toBeInTheDocument()
+      expect(within(confirm).getByText('NONAME - 0.0.1001-abcde')).toBeInTheDocument()
       expect(within(confirm).getByText('0.0.2002-abcde')).toBeInTheDocument()
       expect(within(confirm).getByText('1.5 ℏ')).toBeInTheDocument()
       expect(commandsCalled('send_hbar')).toHaveLength(0)
@@ -792,7 +834,7 @@ describe('hedera testnet panel', () => {
       render(<App />)
       await unlock(user)
       const rows = await screen.findByRole('list', { name: 'Savings accounts' })
-      expect(rows).toHaveTextContent('NONAME 0.0.1001-abcde')
+      expect(rows).toHaveTextContent('NONAME - 0.0.1001-abcde')
 
       await openAccount(user, 'Savings')
       await user.click(await screen.findByRole('button', { name: 'Name this account' }))
@@ -928,11 +970,28 @@ describe('tabs', () => {
 describe('reveal flow', () => {
   beforeEach(() => installBackend({ status: 'unlocked' }))
 
+  it('labels private-key reveal actions and dialog correctly', async () => {
+    const user = userEvent.setup()
+    installBackend({
+      status: 'unlocked',
+      wallets: [{
+        ...wallet('w1', 'Savings'),
+        secret_kind: 'privatekey' as const,
+        key_type: 'ed25519' as const,
+      }],
+    })
+    render(<App />)
+    await openWalletTab(user, 'Savings')
+    await user.click(screen.getByRole('button', { name: 'Reveal private key' }))
+    expect(screen.getByRole('heading', { name: 'Private key' })).toBeInTheDocument()
+  })
+
   async function openReveal(user: ReturnType<typeof userEvent.setup>) {
     render(<App />)
     await openWalletTab(user, 'Savings')
     await user.click(screen.getByRole('button', { name: 'Reveal recovery phrase' }))
-    await user.click(await screen.findByRole('button', { name: 'Reveal phrase' }))
+    const dialog = screen.getByRole('dialog')
+    await user.click(within(dialog).getByRole('button', { name: 'Reveal recovery phrase' }))
     await screen.findByText('alpha')
   }
 
@@ -977,7 +1036,8 @@ describe('reveal flow', () => {
     await openWalletTab(user, 'Savings')
     invokeMock.mockRejectedValueOnce(new Error('vault is locked'))
     await user.click(screen.getByRole('button', { name: 'Reveal recovery phrase' }))
-    await user.click(await screen.findByRole('button', { name: 'Reveal phrase' }))
+    const dialog = await screen.findByRole('dialog')
+    await user.click(within(dialog).getByRole('button', { name: 'Reveal recovery phrase' }))
     expect(await screen.findByText('vault is locked')).toBeInTheDocument()
     expect(screen.queryByText('alpha')).not.toBeInTheDocument()
   })
@@ -1364,8 +1424,9 @@ describe('auto-lock', () => {
     await renderUnlocked()
     fireEvent.click(screen.getByRole('button', { name: /Savings/ }))
     fireEvent.click(screen.getByRole('button', { name: 'Reveal recovery phrase' }))
+    const dialog = screen.getByRole('dialog')
     await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'Reveal phrase' }))
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Reveal recovery phrase' }))
       await vi.advanceTimersByTimeAsync(0)
     })
     expect(screen.getByText('alpha')).toBeInTheDocument()

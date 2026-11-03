@@ -195,10 +195,6 @@
   min-height: 340px;
 }
 
-.home-panel {
-  padding: 26px 0 0;
-}
-
 .wallet-tab-heading {
   display: flex;
   align-items: center;
@@ -303,6 +299,8 @@
   background: var(--wash);
 }
 
+.account-row-button[aria-pressed='true'],
+.account-row-button[aria-pressed='true'] .account-name,
 .account-row-button[aria-pressed='true'] .account-id {
   font-weight: 700;
 }
@@ -371,12 +369,6 @@ h2.section-title,
   font-size: 26px;
 }
 
-.wallet-tab-heading .wallet-badge-large {
-  width: 44px;
-  height: 44px;
-  border-radius: 12px;
-}
-
 .wallet-tab-heading {
   padding-bottom: 16px;
 }
@@ -417,11 +409,6 @@ h2.section-title,
   width: 100%;
 }
 
-.wallet-accounts.account-links .account-id {
-  color: var(--purple);
-  text-decoration: underline;
-}
-
 .wallet-hint {
   margin: 12px 0 0;
   padding-left: 12px;
@@ -456,17 +443,6 @@ h2.section-title,
   justify-content: center;
 }
 
-.create-tab-panel {
-  padding-top: 8px;
-}
-
-.create-tab-panel .create-panel {
-  box-sizing: border-box;
-  width: min(100%, 620px);
-  min-height: auto;
-  margin: 0 auto;
-}
-
 .settings-tab-panel {
   box-sizing: border-box;
   width: min(100%, 760px);
@@ -485,8 +461,9 @@ h2.section-title,
 
 .settings-heading h1 {
   margin: 0;
-  font-size: clamp(36px, 5vw, 52px);
-  letter-spacing: -2.7px;
+  color: #5f5f6b;
+  font-size: clamp(26px, 3.4vw, 34px);
+  letter-spacing: -1.4px;
 }
 
 .settings-tab-panel > .panel + .panel {
@@ -510,6 +487,16 @@ h2.section-title,
 .settings-panel .auto-lock-setting {
   max-width: 480px;
   margin: 18px 0 0;
+}
+
+.settings-tab-panel > .panel > :last-child,
+.settings-tab-panel > .panel > form > :last-child,
+.settings-tab-panel > .panel > .auto-lock-setting > :last-child {
+  margin-bottom: 0;
+}
+
+.settings-tab-panel > .panel > .auto-lock-setting {
+  margin-bottom: 0;
 }
 
 .wallet-tab-panel {
@@ -541,16 +528,79 @@ h2.section-title,
 .wallet-badge {
   display: block;
   flex: 0 0 auto;
-  width: 34px;
-  height: 34px;
-  border-radius: 9px;
-  overflow: hidden;
+  width: 30px;
+  height: 30px;
 }
 
-.wallet-badge-large {
-  width: 56px;
-  height: 56px;
-  border-radius: 15px;
+.help-content {
+  line-height: 1.55;
+}
+
+.help-content h2 {
+  margin: 24px 0 4px;
+  font-size: 22px;
+}
+
+.help-content h2:first-child {
+  margin-top: 0;
+}
+
+.help-content h3 {
+  margin: 16px 0 4px;
+  color: var(--muted);
+  font-size: 15px;
+}
+
+.help-content p,
+.help-content li {
+  font-size: 14px;
+}
+
+.help-content code {
+  font-size: 13px;
+}
+
+.wallet-hot {
+  color: #c0392b;
+}
+
+.wallet-cold {
+  color: #2b6cb0;
+}
+
+.title-wallet {
+  display: inline-flex;
+}
+
+.wallet-name-link {
+  padding: 0;
+  border: 0;
+  color: inherit;
+  background: none;
+  cursor: pointer;
+  font: inherit;
+  letter-spacing: inherit;
+}
+
+.wallet-name-link:hover,
+.wallet-name-link:focus-visible {
+  color: #000;
+}
+
+.account-badge {
+  display: inline-block;
+  width: 18px;
+  height: 18px;
+  margin-right: 6px;
+  vertical-align: -4px;
+}
+
+.account-single {
+  color: #7a7f87;
+}
+
+.account-multisig {
+  color: #2f9e6b;
 }
 
 /* HOME layout: 30% wallet, 50% account, 15% Testnet, 15% Mainnet. */
@@ -628,7 +678,11 @@ h2.section-title,
 }
 
 .account-name {
-  margin-right: 6px;
+  margin-right: 0;
+}
+
+.account-row .account-name {
+  font-weight: 400;
 }
 
 .wallet-tab-actions {
@@ -706,6 +760,11 @@ h2.section-title,
   gap: 8px;
 }
 
+.settings-panel .testnet-send-form label,
+.testnet-link-form label {
+  font-size: 13px;
+}
+
 .testnet-send-form .secondary-button,
 .testnet-send-form .primary-button {
   width: auto;
@@ -780,6 +839,55 @@ h2.section-title,
   min-height: 36px;
 }
 
+.testnet-send-form.send-form {
+  max-width: none;
+  grid-template-columns: minmax(0, 48%) minmax(0, 1fr);
+  column-gap: 24px;
+  row-gap: 12px;
+  align-items: start;
+}
+
+.send-form > * {
+  grid-column: 1;
+}
+
+.send-form > .send-side {
+  grid-column: 2;
+  grid-row: 1 / span 3;
+}
+
+.send-form input:not([type='checkbox']),
+.send-form select {
+  box-sizing: border-box;
+  width: 100%;
+  height: 40px;
+  min-height: 40px;
+  margin: 0;
+}
+
+.send-form .send-side .testnet-acknowledge {
+  margin: 0;
+}
+
+.send-form > label {
+  margin-bottom: -6px;
+}
+
+.send-form input,
+.send-form select {
+  font: inherit;
+}
+
+.send-form select.placeholder-shown,
+.send-form input::placeholder {
+  color: #8a8a96;
+  opacity: 1;
+}
+
+.send-form option {
+  color: var(--ink);
+}
+
 .account-name {
   font-weight: 600;
 }
@@ -787,7 +895,7 @@ h2.section-title,
 .address-columns,
 .address-row {
   display: grid;
-  grid-template-columns: 0.9fr 1.5fr 1.4fr 0.75fr auto;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.5fr) minmax(0, 1.4fr) minmax(0, 0.75fr) 28px;
   gap: 12px;
   align-items: center;
   padding: 8px 0;
@@ -798,6 +906,28 @@ h2.section-title,
 .address-row .secondary-button,
 .address-row input {
   font-size: 13px;
+}
+
+.address-row .remove-button {
+  display: inline-flex;
+  width: 22px;
+  min-width: 0;
+  height: 22px;
+  align-items: center;
+  justify-content: center;
+  justify-self: center;
+  padding: 0;
+  border: 1.5px solid #c62828;
+  border-radius: 50%;
+  background: var(--surface);
+  color: #c62828;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.address-row .remove-button:hover {
+  background: #fdeaea;
 }
 
 .settings-tab-panel .panel {
@@ -847,6 +977,8 @@ h2.section-title,
   grid-template-columns: auto 1fr;
   gap: 6px 14px;
   margin: 10px 0;
+  font-size: 13px;
+  line-height: 1.6;
 }
 
 .testnet-confirm dt {
@@ -868,7 +1000,7 @@ h2.section-title,
 
 .testnet-transactions li {
   display: grid;
-  grid-template-columns: 1.4fr 1fr 1.6fr auto;
+  grid-template-columns: minmax(0, 1.3fr) minmax(0, 1.5fr) minmax(0, 0.8fr) minmax(0, 1.4fr) 90px;
   align-items: center;
   gap: 10px;
   padding: 8px 10px;
@@ -881,9 +1013,15 @@ h2.section-title,
   font-weight: 600;
 }
 
+.testnet-counterparty {
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+
 .testnet-result,
 .testnet-time {
   color: var(--muted);
+  text-align: left;
 }
 
 .testnet-net {
@@ -943,7 +1081,12 @@ button.topbar-icon:hover {
 }
 
 .unlock-gate .error-message {
+  margin: 16px 0 0;
   text-align: center;
+}
+
+.unlock-gate .error-message + .unlock-button {
+  margin-top: 16px;
 }
 
 .primary-button.unlock-button {
@@ -1327,7 +1470,12 @@ h2 {
   transition: background 120ms ease;
 }
 
+.create-panel .button-pair button {
+  margin-top: 0;
+}
+
 .create-panel .primary-button {
+  margin-top: 22px;
   justify-content: center;
 }
 
@@ -1909,10 +2057,6 @@ h2 {
     margin-right: -18px;
   }
 
-  .home-panel {
-    padding-top: 20px;
-  }
-
   .wallet-tab-panel {
     padding: 30px 0;
   }
@@ -1957,4 +2101,60 @@ h2 {
   .wallet-tab-actions .delete-wallet-button {
     width: 100%;
   }
+}
+
+/* Unified buttons: Rename wallet text style, white on the app background,
+   app background inside white boxes, and one red style for risky actions. */
+button.primary-button,
+button.secondary-button,
+button.reveal-button,
+button.danger-button,
+button.delete-wallet-button {
+  border: 1px solid var(--line);
+  color: var(--ink);
+  background: #fff;
+  font-size: 10px !important;
+  font-weight: 600 !important;
+}
+
+.panel button.primary-button,
+.panel button.secondary-button,
+.panel button.reveal-button,
+.recovery-dialog button.primary-button,
+.recovery-dialog button.secondary-button,
+.vault-gate button.primary-button,
+.vault-gate button.secondary-button {
+  border: 1px solid var(--line);
+  background: #fbfafc;
+}
+
+button.primary-button:hover:not(:disabled),
+button.secondary-button:hover:not(:disabled),
+button.reveal-button:hover:not(:disabled) {
+  border-color: var(--purple);
+  background: var(--purple-soft);
+}
+
+button.risky-button,
+button.danger-button,
+button.delete-wallet-button,
+.panel button.risky-button,
+.recovery-dialog button.risky-button {
+  border: 1px solid #f1c7c7;
+  color: #a82d2d;
+  background: #fff4f4;
+}
+
+button.risky-button:hover:not(:disabled),
+button.danger-button:hover:not(:disabled),
+button.delete-wallet-button:hover:not(:disabled) {
+  border-color: #d97171;
+  background: #ffebeb;
+}
+
+button.primary-button:disabled,
+button.secondary-button:disabled,
+button.danger-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
 }

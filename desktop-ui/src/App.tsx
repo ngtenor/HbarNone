@@ -7,7 +7,8 @@ import { AddressBook } from './AddressBook'
 import { AccountLabel } from './AccountLabel'
 import { TransactionProgress } from './TransactionProgress'
 import type { TxProgress } from './TransactionProgress'
-import { WalletBadge } from './WalletBadge'
+import { HelpPanel } from './HelpPanel'
+import { AccountBadge, WalletBadge } from './WalletBadge'
 import type { AddressBookView, KeyDetection, WalletKeys, WalletSummary } from './types'
 import './App.css'
 
@@ -125,6 +126,15 @@ function WalletsIcon() {
   )
 }
 
+function HelpIcon() {
+  return (
+    <svg {...iconProps}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M9.4 9.3a2.7 2.7 0 0 1 5.2.9c0 1.8-2.6 2.2-2.6 3.8M12 17.2v.1" />
+    </svg>
+  )
+}
+
 function PadlockIcon({ locked }: { locked: boolean }) {
   return (
     <svg {...iconProps}>
@@ -139,6 +149,7 @@ function App() {
   const [activeTab, setActiveTab] = useState('home')
   const [isCreateTabOpen, setIsCreateTabOpen] = useState(false)
   const [isSettingsTabOpen, setIsSettingsTabOpen] = useState(false)
+  const [isHelpTabOpen, setIsHelpTabOpen] = useState(false)
   const [isAddressBookTabOpen, setIsAddressBookTabOpen] = useState(false)
   const [addressBook, setAddressBook] = useState<AddressBookView>({ rows: [], allowExternalSends: false, allowExternalDeletes: false })
   const [openWalletTabs, setOpenWalletTabs] = useState<string[]>([])
@@ -301,6 +312,7 @@ function App() {
     setActiveTab('home')
     setIsCreateTabOpen(false)
     setIsSettingsTabOpen(false)
+    setIsHelpTabOpen(false)
     setIsAddressBookTabOpen(false)
     setAddressBook({ rows: [], allowExternalSends: false, allowExternalDeletes: false })
     setOpenWalletTabs([])
@@ -315,6 +327,17 @@ function App() {
       lockRequestActive.current = false
     }
   }, [clearPasswordChange, closeDelete, closeReveal, vaultView])
+
+  useEffect(() => {
+    if (!renamingWalletId || isRenaming) return
+    const closeOnOutsideClick = (event: MouseEvent) => {
+      if (event.target instanceof Element && event.target.closest('.rename-form')) return
+      setRenamingWalletId(null)
+      setRenameError('')
+    }
+    document.addEventListener('mousedown', closeOnOutsideClick)
+    return () => document.removeEventListener('mousedown', closeOnOutsideClick)
+  }, [renamingWalletId, isRenaming])
 
   useEffect(() => {
     if (!findNotice) return
@@ -782,6 +805,7 @@ function App() {
       setActiveTab('home')
       setIsCreateTabOpen(false)
       setIsSettingsTabOpen(false)
+      setIsHelpTabOpen(false)
       setIsAddressBookTabOpen(false)
       setAddressBook({ rows: [], allowExternalSends: false, allowExternalDeletes: false })
       setOpenWalletTabs([])
@@ -959,6 +983,17 @@ function App() {
     setIsCreateTabOpen(true)
     setActiveTab('create')
     setError('')
+  }
+
+  function openHelpTab() {
+    setIsHelpTabOpen(true)
+    setActiveTab('help')
+    setError('')
+  }
+
+  function closeHelpTab() {
+    setIsHelpTabOpen(false)
+    if (activeTab === 'help') setActiveTab('home')
   }
 
   function openSettingsTab() {
@@ -1141,6 +1176,15 @@ function App() {
                 onClick={openSettingsTab}
               >
                 <CogIcon />
+              </button>
+              <button
+                className="topbar-icon"
+                type="button"
+                aria-label="Help"
+                title="Help"
+                onClick={openHelpTab}
+              >
+                <HelpIcon />
               </button>
               <button
                 className="topbar-icon"
@@ -1386,6 +1430,31 @@ function App() {
                 </button>
               </div>
             )}
+            {isHelpTabOpen && (
+              <div className={`vault-tab-wrap${activeTab === 'help' ? ' active' : ''}`} role="presentation">
+                <button
+                  className="vault-tab"
+                  id="tab-help"
+                  type="button"
+                  role="tab"
+                  aria-selected={activeTab === 'help'}
+                  aria-controls={activeTab === 'help' ? 'panel-help' : undefined}
+                  tabIndex={activeTab === 'help' ? 0 : -1}
+                  onKeyDown={handleTabKeyDown}
+                  onClick={() => setActiveTab('help')}
+                >
+                  Help
+                </button>
+                <button
+                  className="vault-tab-close"
+                  type="button"
+                  aria-label="Close help tab"
+                  onClick={closeHelpTab}
+                >
+                  ×
+                </button>
+              </div>
+            )}
             {isAddressBookTabOpen && (
               <div className={`vault-tab-wrap${activeTab === 'addressbook' ? ' active' : ''}`} role="presentation">
                 <button
@@ -1474,19 +1543,16 @@ function App() {
 
           {activeTab === 'home' && (
             <section
-              className="vault-tab-panel home-panel"
+              className="vault-tab-panel settings-tab-panel"
               id="panel-home"
               role="tabpanel"
               aria-labelledby="tab-home"
             >
+              <div className="settings-heading">
+                <h1 id="home-wallets-heading">Wallets</h1>
+              </div>
               {error && <p className="error-message" role="alert">{error}</p>}
               <section className="home-wallets" aria-labelledby="home-wallets-heading">
-                <div className="panel-heading">
-                  <div>
-                    <h2 id="home-wallets-heading" className="section-title"><WalletsIcon />Wallets</h2>
-                  </div>
-                  <span className="wallet-count">{wallets.length}</span>
-                </div>
                 {wallets.length > 0 && (
                   <>
                     <div className="home-columns" aria-hidden="true">
@@ -1501,7 +1567,14 @@ function App() {
                           <button
                             className="wallet-open-button"
                             type="button"
-                            onClick={() => openWalletTab(wallet.id)}
+                            onClick={() => {
+                              setSelectedAccounts((existing) => {
+                                const next = { ...existing }
+                                delete next[wallet.id]
+                                return next
+                              })
+                              openWalletTab(wallet.id)
+                            }}
                           >
                             <WalletBadge wallet={wallet} />
                             <span className="wallet-details">
@@ -1522,6 +1595,7 @@ function App() {
                                     }}
                                   >
                                     <span className="account-id">
+                                      <AccountBadge account={account} />
                                       <AccountLabel name={account.name} displayId={account.display_id} />
                                     </span>
                                     <span className="account-balance">
@@ -1566,6 +1640,8 @@ function App() {
             />
           )}
 
+          {activeTab === 'help' && isHelpTabOpen && <HelpPanel />}
+
           {activeTab === 'settings' && isSettingsTabOpen && (
             <section
               className="vault-tab-panel settings-tab-panel"
@@ -1574,7 +1650,6 @@ function App() {
               aria-labelledby="tab-settings"
             >
               <div className="settings-heading">
-                <p className="eyebrow">VAULT PREFERENCES</p>
                 <h1>Settings</h1>
               </div>
               <section className="panel settings-panel" aria-labelledby="auto-lock-heading">
@@ -1697,7 +1772,7 @@ function App() {
                   {passwordChangeSuccess && (
                     <p className="field-hint" role="status">Vault password changed.</p>
                   )}
-                  <button className="primary-button" type="submit" disabled={isChangingPassword}>
+                  <button className="primary-button risky-button" type="submit" disabled={isChangingPassword}>
                     {isChangingPassword ? 'Changing password...' : 'Change password'}
                   </button>
                 </form>
@@ -1748,7 +1823,7 @@ function App() {
                 <div className="panel-heading">
                   <div>
                     <p className="eyebrow">ERASE</p>
-                    <h2 id="erase-heading">Back up and erase this device</h2>
+                    <h2 id="erase-heading">Back up and erase all data from the app</h2>
                   </div>
                 </div>
                 <p className="dialog-copy">
@@ -1790,20 +1865,15 @@ function App() {
 
           {activeTab === 'create' && isCreateTabOpen && (
             <section
-              className="vault-tab-panel create-tab-panel"
+              className="vault-tab-panel settings-tab-panel"
               id="panel-create"
               role="tabpanel"
               aria-labelledby="tab-create"
             >
-              <form className="panel create-panel" onSubmit={handleSaveWallet}>
-                <div className="panel-heading">
-                  <div>
-                    <p className="eyebrow">{walletMode === 'create' ? 'NEW WALLET' : 'EXISTING WALLET'}</p>
-                    <h2>{walletMode === 'create' ? 'Create a wallet' : 'Import a wallet'}</h2>
-                  </div>
-                  <span className="step-number" aria-hidden="true">01</span>
-                </div>
-
+              <div className="settings-heading">
+                <h1>{walletMode === 'create' ? 'Create a wallet' : 'Import a wallet'}</h1>
+              </div>
+              <form className="panel settings-panel create-panel" onSubmit={handleSaveWallet}>
                 <div className="mode-switch" role="group" aria-label="Wallet operation">
                   <button
                     className={walletMode === 'create' ? 'mode-button active' : 'mode-button'}
@@ -1949,28 +2019,33 @@ function App() {
               >
                 <div className={`wallet-tab-heading${openAccount ? ' compact' : ''}`}>
                   <div>
-                    <h1 className="section-title"><WalletsIcon />{wallet.name}</h1>
+                    <h1 className="section-title">
+                      <span
+                        className={`title-wallet ${wallet.custody === 'cold' ? 'wallet-cold' : 'wallet-hot'}`}
+                        title={wallet.custody === 'cold' ? 'Cold wallet' : 'Hot wallet'}
+                      >
+                        <WalletsIcon />
+                      </span>
+                      {openAccount ? (
+                        <button
+                          className="wallet-name-link"
+                          type="button"
+                          title="Back to wallet"
+                          onClick={() => setSelectedAccounts((existing) => {
+                            const next = { ...existing }
+                            delete next[wallet.id]
+                            return next
+                          })}
+                        >
+                          {wallet.name}
+                        </button>
+                      ) : wallet.name}
+                    </h1>
                     {!openAccount && (
                       <p className="wallet-date">Added {new Date(wallet.created_at).toLocaleDateString()}</p>
                     )}
                   </div>
-                  <WalletBadge wallet={wallet} large />
                 </div>
-                {openAccount && (
-                  <div className="wallet-tab-actions">
-                    <button
-                      className="secondary-button"
-                      type="button"
-                      onClick={() => setSelectedAccounts((existing) => {
-                        const next = { ...existing }
-                        delete next[wallet.id]
-                        return next
-                      })}
-                    >
-                      Back to wallet
-                    </button>
-                  </div>
-                )}
                 {error && <p className="error-message" role="alert">{error}</p>}
                 {!openAccount && (
                 <dl className="wallet-key-details">
@@ -2023,7 +2098,7 @@ function App() {
                       Rename wallet
                     </button>
                     <button
-                      className="reveal-button"
+                      className="reveal-button risky-button"
                       type="button"
                       onClick={() => {
                         closeReveal()
@@ -2105,6 +2180,7 @@ function App() {
                               }))}
                             >
                               <span className="account-id">
+                                <AccountBadge account={account} />
                                 <AccountLabel name={account.name} displayId={account.display_id} />
                               </span>
                               <span className="account-balance">
@@ -2174,12 +2250,14 @@ function App() {
             <div className="panel-heading">
               <div>
                 <p className="eyebrow">SENSITIVE WALLET DATA</p>
-                <h2 id="recovery-title">Recovery phrase</h2>
+                <h2 id="recovery-title">
+                  {walletToReveal.secret_kind === 'privatekey' ? 'Private key' : 'Recovery phrase'}
+                </h2>
               </div>
               <button
                 className="close-button"
                 type="button"
-                aria-label="Close and hide recovery phrase"
+                aria-label={`Close and hide ${walletToReveal.secret_kind === 'privatekey' ? 'private key' : 'recovery phrase'}`}
                 onClick={closeReveal}
               >
                 ×
@@ -2189,7 +2267,7 @@ function App() {
             {mnemonic ? (
               <>
                 <p className="recovery-warning" role="alert">
-                  Anyone who sees this phrase can take this wallet. Write it
+                  Anyone who sees this {walletToReveal.secret_kind === 'privatekey' ? 'private key' : 'phrase'} can take this wallet. Write it
                   down privately and store it securely. Never share it or enter
                   it on a device you do not trust.
                 </p>
@@ -2219,7 +2297,9 @@ function App() {
                     checked={hasConfirmedWriteDown}
                     onChange={(event) => setHasConfirmedWriteDown(event.target.checked)}
                   />
-                  <span>I have written down this recovery phrase and stored it safely.</span>
+                  <span>
+                    I have written down this {walletToReveal.secret_kind === 'privatekey' ? 'private key' : 'recovery phrase'} and stored it safely.
+                  </span>
                 </label>
                 <p className="confirmation-hint">
                   This confirms your acknowledgment only; the app does not verify your backup.
@@ -2234,14 +2314,14 @@ function App() {
                     disabled={!hasConfirmedWriteDown}
                     onClick={closeReveal}
                   >
-                    Confirm and hide phrase
+                    Confirm and hide {walletToReveal.secret_kind === 'privatekey' ? 'private key' : 'phrase'}
                   </button>
                 </div>
               </>
             ) : (
               <div>
                 <p className="dialog-copy">
-                  The vault is unlocked. Reveal this wallet’s recovery phrase
+                  The vault is unlocked. Reveal this wallet’s {walletToReveal.secret_kind === 'privatekey' ? 'private key' : 'recovery phrase'}
                   only if you can keep it private from people and software
                   viewing this device.
                 </p>
@@ -2253,12 +2333,14 @@ function App() {
                     Cancel
                   </button>
                   <button
-                    className="primary-button"
+                    className="primary-button risky-button"
                     type="button"
                     disabled={isRevealing}
                     onClick={() => void handleReveal()}
                   >
-                    {isRevealing ? 'Revealing...' : 'Reveal phrase'}
+                    {isRevealing
+                      ? 'Revealing...'
+                      : `Reveal ${walletToReveal.secret_kind === 'privatekey' ? 'private key' : 'recovery phrase'}`}
                   </button>
                 </div>
               </div>

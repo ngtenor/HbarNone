@@ -9,6 +9,8 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use wallet_core::account_checksum::with_checksum;
+use wallet_core::vault_container::Network;
 use wallet_core::wallet_service::validate_account_id;
 
 pub const TESTNET_BASE_URL: &str = "https://testnet.mirrornode.hedera.com";
@@ -26,6 +28,8 @@ pub struct TransactionSummary {
     pub consensus_time: String,
     /// Net change of this account's balance in tinybars (negative when it paid).
     pub net_tinybars: i64,
+    /// The other account in the transfer, with checksum; empty when there is none.
+    pub counterparty: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -157,8 +161,35 @@ pub fn parse_transactions(
                 .fold(0i64, |total, transfer| {
                     total.saturating_add(transfer.amount)
                 }),
+            counterparty: counterparty(&entry.transfers, account_id),
         })
         .collect())
+}
+
+/// The other account that received the most (or, for an incoming payment, sent the most),
+/// shown with its checksum. Fee and node accounts are small, so the largest mover wins.
+fn counterparty(transfers: &[TransferEntry], account_id: &str) -> String {
+    let net: i64 = transfers
+        .iter()
+        .filter(|transfer| transfer.account == account_id)
+        .fold(0i64, |total, transfer| {
+            total.saturating_add(transfer.amount)
+        });
+    let others = transfers
+        .iter()
+        .filter(|transfer| transfer.account != account_id);
+    let best = if net > 0 {
+        others
+            .filter(|transfer| transfer.amount < 0)
+            .min_by_key(|transfer| transfer.amount)
+    } else {
+        others
+            .filter(|transfer| transfer.amount > 0)
+            .max_by_key(|transfer| transfer.amount)
+    };
+    best.and_then(|transfer| validate_account_id(&transfer.account).ok())
+        .and_then(|id| with_checksum(Network::Testnet, &id).ok())
+        .unwrap_or_default()
 }
 
 /// Accepts only `shard.realm.num-seconds-nanos`, so the value is safe in a URL path.
@@ -387,6 +418,11 @@ mod tests {
         assert_eq!(list.len(), 3);
         assert_eq!(list[0].net_tinybars, -100_100_000);
         assert_eq!(list[0].kind, "CRYPTOTRANSFER");
+        assert_eq!(
+            list[0].counterparty,
+            with_checksum(Network::Testnet, "0.0.2002").unwrap()
+        );
+        assert_eq!(list[1].counterparty, "");
         assert_eq!(list[0].consensus_time, "2023-11-14T22:13:20+00:00");
         assert_eq!(list[1].net_tinybars, 750);
         assert_eq!(list[2].transaction_id, "xy");
