@@ -187,7 +187,7 @@ function App() {
   const [isRenaming, setIsRenaming] = useState(false)
   const [name, setName] = useState('')
   const [importMnemonic, setImportMnemonic] = useState('')
-  const [importKind, setImportKind] = useState<'phrase' | 'key'>('phrase')
+  const [importKind, setImportKind] = useState<'phrase' | 'key' | 'watchonly'>('phrase')
   const [importKeyType, setImportKeyType] = useState<'auto' | 'ed25519' | 'ecdsa'>('auto')
   const [walletKeys, setWalletKeys] = useState<{ id: string, keys: WalletKeys } | null>(null)
   const [balances, setBalances] = useState<Record<string, number>>({})
@@ -669,7 +669,7 @@ function App() {
           name,
           mnemonic: importMnemonic,
         })
-      } else {
+      } else if (importKind === 'key') {
         let keyType: 'ed25519' | 'ecdsa' | null = importKeyType === 'auto' ? null : importKeyType
         if (keyType === null) {
           let detection: KeyDetection
@@ -693,6 +693,12 @@ function App() {
           name,
           privateKey: importMnemonic,
           keyType,
+        })
+      } else {
+        wallet = await invoke<WalletSummary>('import_watch_only_wallet', {
+          name,
+          publicKey: importMnemonic,
+          keyType: importKeyType === 'ecdsa' ? 'ecdsa' : 'ed25519',
         })
       }
       if (walletMode === 'import') {
@@ -1082,6 +1088,7 @@ function App() {
     if (activeTab === 'create') setActiveTab('home')
     setName('')
     setImportMnemonic('')
+    setImportKeyType('auto')
     setError('')
   }
 
@@ -1930,6 +1937,20 @@ function App() {
                     >
                       Private key
                     </button>
+                    <button
+                      className={importKind === 'watchonly' ? 'mode-button active' : 'mode-button'}
+                      type="button"
+                      aria-pressed={importKind === 'watchonly'}
+                      disabled={isSavingWallet}
+                      onClick={() => {
+                        setImportKind('watchonly')
+                        setImportMnemonic('')
+                        setImportKeyType('ed25519')
+                        setError('')
+                      }}
+                    >
+                      Watch-only public key
+                    </button>
                   </div>
                 )}
 
@@ -1986,6 +2007,34 @@ function App() {
                   </>
                 )}
 
+                {walletMode === 'import' && importKind === 'watchonly' && (
+                  <>
+                    <label htmlFor="import-watch-public-key">Public key (hex)</label>
+                    <input
+                      id="import-watch-public-key"
+                      autoComplete="off"
+                      autoCapitalize="none"
+                      maxLength={130}
+                      spellCheck={false}
+                      required
+                      value={importMnemonic}
+                      onChange={(event) => setImportMnemonic(event.target.value)}
+                    />
+                    <label htmlFor="import-watch-key-type">Key type</label>
+                    <select
+                      id="import-watch-key-type"
+                      value={importKeyType === 'auto' ? 'ed25519' : importKeyType}
+                      onChange={(event) => setImportKeyType(event.target.value as 'ed25519' | 'ecdsa')}
+                    >
+                      <option value="ed25519">Ed25519</option>
+                      <option value="ecdsa">ECDSA (secp256k1)</option>
+                    </select>
+                    <p className="field-hint">
+                      Stores only this public key. It can monitor matching Testnet accounts but cannot sign or spend.
+                    </p>
+                  </>
+                )}
+
                 <label htmlFor="wallet-name">Wallet name</label>
                 <input
                   id="wallet-name"
@@ -1997,11 +2046,23 @@ function App() {
                   onChange={(event) => setName(event.target.value)}
                 />
                 {error && <p className="error-message" role="alert">{error}</p>}
-                <button className="primary-button" type="submit" disabled={isSavingWallet}>
-                  {isSavingWallet
-                    ? 'Saving securely...'
-                    : walletMode === 'create' ? 'Create encrypted wallet' : 'Import encrypted wallet'}
-                </button>
+                <div className="button-pair">
+                  <button className="primary-button" type="submit" disabled={isSavingWallet}>
+                    {isSavingWallet
+                      ? 'Saving securely...'
+                      : walletMode === 'create'
+                        ? 'Create encrypted wallet'
+                        : importKind === 'watchonly' ? 'Add watch-only wallet' : 'Import encrypted wallet'}
+                  </button>
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    disabled={isSavingWallet}
+                    onClick={closeCreateTab}
+                  >
+                    Cancel
+                  </button>
+                </div>
               </form>
             </section>
           )}
@@ -2021,8 +2082,12 @@ function App() {
                   <div>
                     <h1 className="section-title">
                       <span
-                        className={`title-wallet ${wallet.custody === 'cold' ? 'wallet-cold' : 'wallet-hot'}`}
-                        title={wallet.custody === 'cold' ? 'Cold wallet' : 'Hot wallet'}
+                        className={`title-wallet ${wallet.secret_kind === 'watchonly'
+                          ? 'wallet-watch-only'
+                          : wallet.custody === 'cold' ? 'wallet-cold' : 'wallet-hot'}`}
+                        title={wallet.secret_kind === 'watchonly'
+                          ? 'Watch-only wallet'
+                          : wallet.custody === 'cold' ? 'Cold wallet' : 'Hot wallet'}
                       >
                         <WalletsIcon />
                       </span>
@@ -2052,7 +2117,9 @@ function App() {
                   <dt>Key type</dt>
                   <dd>
                     {wallet.key_type === 'ecdsa' ? 'ECDSA (secp256k1)' : 'Ed25519'}
-                    {wallet.secret_kind === 'privatekey' ? ', imported private key' : ', recovery phrase'}
+                    {wallet.secret_kind === 'watchonly'
+                      ? ', watch-only public key'
+                      : wallet.secret_kind === 'privatekey' ? ', imported private key' : ', recovery phrase'}
                   </dd>
                   {walletKeys?.id === wallet.id && (
                     <>
@@ -2076,7 +2143,9 @@ function App() {
                       disabled={isRefreshingAll}
                       onClick={() => void handleFindAccounts(wallet)}
                     >
-                      Find accounts from this wallet’s key
+                      {wallet.secret_kind === 'watchonly'
+                        ? 'Find accounts for public key'
+                        : 'Find accounts from this wallet’s key'}
                     </button>
                     <button
                       className="secondary-button refresh-all-button"
@@ -2097,7 +2166,7 @@ function App() {
                     >
                       Rename wallet
                     </button>
-                    <button
+                    {wallet.secret_kind !== 'watchonly' && <button
                       className="reveal-button risky-button"
                       type="button"
                       onClick={() => {
@@ -2107,7 +2176,7 @@ function App() {
                       }}
                     >
                       Reveal {wallet.secret_kind === 'privatekey' ? 'private key' : 'recovery phrase'}
-                    </button>
+                    </button>}
                     <button
                       className="reveal-button delete-wallet-button"
                       type="button"

@@ -22,6 +22,8 @@ pub enum SecretKind {
     Mnemonic,
     #[serde(rename = "privatekey")]
     PrivateKey,
+    #[serde(rename = "watchonly")]
+    WatchOnly,
 }
 
 /// DER prefixes (PKCS#8) of the 32-byte private keys that Hedera tools export.
@@ -105,6 +107,33 @@ pub fn public_key_hex(key_type: KeyType, secret: &[u8; 32]) -> Result<String, St
     public_key_bytes(key_type, secret).map(hex::encode)
 }
 
+pub fn normalize_public_key(input: &str, key_type: KeyType) -> Result<String, String> {
+    let cleaned: String = input.split_whitespace().collect();
+    let hex_text = cleaned
+        .strip_prefix("0x")
+        .or_else(|| cleaned.strip_prefix("0X"))
+        .unwrap_or(&cleaned);
+    if hex_text.is_empty() || hex_text.len() > 130 {
+        return Err("enter a valid hexadecimal public key".to_string());
+    }
+    let bytes = hex::decode(hex_text).map_err(|_| "public key must be hexadecimal".to_string())?;
+    match key_type {
+        KeyType::Ed25519 => {
+            let bytes: [u8; 32] = bytes
+                .try_into()
+                .map_err(|_| "an Ed25519 public key must be 32 bytes".to_string())?;
+            ed25519_dalek::VerifyingKey::from_bytes(&bytes)
+                .map_err(|_| "the Ed25519 public key is invalid".to_string())?;
+            Ok(hex::encode(bytes))
+        }
+        KeyType::Ecdsa => {
+            let key = k256::PublicKey::from_sec1_bytes(&bytes)
+                .map_err(|_| "the ECDSA public key is invalid".to_string())?;
+            Ok(hex::encode(key.to_encoded_point(true).as_bytes()))
+        }
+    }
+}
+
 /// The Ethereum-style address of an ECDSA key: the last 20 bytes of the
 /// Keccak-256 hash of the uncompressed public key (without its 0x04 prefix).
 pub fn evm_address(secret: &[u8; 32]) -> Result<String, String> {
@@ -148,6 +177,28 @@ mod tests {
         assert_eq!(
             public_key_hex(KeyType::Ed25519, &parsed.secret).unwrap(),
             "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
+        );
+    }
+
+    #[test]
+    fn normalizes_and_validates_watch_only_public_keys() {
+        let ed25519 = "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a";
+        assert_eq!(
+            normalize_public_key(ed25519, KeyType::Ed25519).unwrap(),
+            ed25519
+        );
+        assert!(normalize_public_key("00", KeyType::Ed25519).is_err());
+        assert_eq!(
+            normalize_public_key("04".to_string().as_str(), KeyType::Ecdsa).is_err(),
+            true
+        );
+        assert_eq!(
+            normalize_public_key(
+                "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+                KeyType::Ecdsa
+            )
+            .unwrap(),
+            "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
         );
     }
 

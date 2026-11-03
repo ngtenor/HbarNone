@@ -60,7 +60,12 @@ let backend: Backend
 function vaultState() {
   return {
     status: backend.status,
-    wallets: backend.status === 'unlocked' ? backend.wallets : [],
+    wallets: backend.status === 'unlocked'
+      ? backend.wallets.map((item) => ({
+        ...item,
+        accounts: item.accounts.map((account) => ({ ...account })),
+      }))
+      : [],
     legacyWallets: [],
     autoLockSeconds: backend.autoLockSeconds,
   }
@@ -263,6 +268,18 @@ function installBackend(overrides: Partial<Backend> = {}) {
         const created = {
           ...wallet(`k${backend.wallets.length + 1}`, String(args?.name)),
           secret_kind: 'privatekey',
+          key_type: String(args?.keyType),
+        }
+        backend.wallets.push(created)
+        return { ...created }
+      }
+      case 'import_watch_only_wallet': {
+        if (backend.wallets.some((item) => item.name === args?.name)) {
+          throw new Error('name taken')
+        }
+        const created = {
+          ...wallet(`w${backend.wallets.length + 1}`, String(args?.name)),
+          secret_kind: 'watchonly',
           key_type: String(args?.keyType),
         }
         backend.wallets.push(created)
@@ -1127,6 +1144,7 @@ describe('private key import', () => {
       privateKey: '11'.repeat(32),
       keyType: 'ecdsa',
     })
+
     expect(commandsCalled('find_wallet_accounts')[0].args).toEqual({ walletId: 'k3' })
     expect((await screen.findAllByText('0.0.556-abcde')).length).toBeGreaterThan(0)
   })
@@ -1162,6 +1180,64 @@ describe('private key import', () => {
     await user.click(screen.getByRole('button', { name: 'Import' }))
     await user.click(screen.getByRole('button', { name: 'Private key' }))
     expect(screen.getByLabelText('Private key (hex or DER)')).toHaveValue('')
+  })
+})
+
+describe('watch-only wallet', () => {
+  it('imports a public key and prevents signing actions in the UI', async () => {
+    const user = userEvent.setup()
+    installBackend()
+    render(<App />)
+    await unlock(user)
+    await user.click(screen.getByRole('button', { name: /Create \/ import wallet/ }))
+    await user.click(await screen.findByRole('button', { name: 'Import' }))
+    await user.click(screen.getByRole('button', { name: 'Watch-only public key' }))
+    const publicKey = 'd75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a'
+    await user.type(screen.getByLabelText('Public key (hex)'), publicKey)
+    await user.type(screen.getByLabelText('Wallet name'), 'Monitor')
+    await user.click(screen.getByRole('button', { name: 'Add watch-only wallet' }))
+
+    expect(commandsCalled('import_watch_only_wallet')[0].args).toEqual({
+      name: 'Monitor',
+      publicKey,
+      keyType: 'ed25519',
+    })
+    await openWalletTab(user, 'Monitor')
+    expect(screen.getByTitle('Watch-only wallet')).toHaveClass('wallet-watch-only')
+    expect(screen.queryByRole('button', { name: 'Reveal recovery phrase' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Create account' })).not.toBeInTheDocument()
+  })
+
+  it('clears the form and closes the tab when Cancel is clicked', async () => {
+    const user = userEvent.setup()
+    installBackend()
+    render(<App />)
+    await unlock(user)
+    await user.click(screen.getByRole('button', { name: /Create \/ import wallet/ }))
+    await user.type(screen.getByLabelText('Wallet name'), 'Draft')
+    await user.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(screen.queryByLabelText('Wallet name')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /Create \/ import wallet/ }))
+    expect(screen.getByLabelText('Wallet name')).toHaveValue('')
+  })
+
+  it('shows balances but omits transaction controls for a linked account', async () => {
+    const user = userEvent.setup()
+    installBackend({
+      status: 'unlocked',
+      wallets: [{
+        ...wallet('w-watch', 'Monitor', ['0.0.1001']),
+        secret_kind: 'watchonly',
+        key_type: 'ed25519',
+      }],
+    })
+    render(<App />)
+    await openAccount(user, 'Monitor')
+    expect(screen.getByRole('button', { name: 'Refresh balance & tx.' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Name this account' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Send' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Move account' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Delete account' })).not.toBeInTheDocument()
   })
 })
 

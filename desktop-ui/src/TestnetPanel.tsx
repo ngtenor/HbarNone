@@ -88,6 +88,7 @@ export function TestnetPanel({
   const [memo, setMemo] = useState('')
   const [confirming, setConfirming] = useState(false)
   const [openingBalance, setOpeningBalance] = useState('')
+  const [newAccountName, setNewAccountName] = useState('')
   const [funder, setFunder] = useState('')
   const [funderBalances, setFunderBalances] = useState<Record<string, number>>({})
   const [confirmingCreate, setConfirmingCreate] = useState(false)
@@ -101,6 +102,7 @@ export function TestnetPanel({
   const [deleteAcknowledged, setDeleteAcknowledged] = useState(false)
   const [pendingDelete, setPendingDelete] = useState(false)
   const [section, setSection] = useState<'send' | 'rename' | 'move' | 'delete' | null>(null)
+  const isWatchOnly = wallet.secret_kind === 'watchonly'
   const toggleSection = (next: 'send' | 'rename' | 'move' | 'delete') => {
     setSection((current) => (current === next ? null : next))
     // Leaving a section discards anything typed into it and any pending review.
@@ -384,15 +386,31 @@ export function TestnetPanel({
       initialHbar: openingBalance.trim(),
     })
     const accountsBefore = wallet.accounts.length
+    const idsBefore = new Set(wallet.accounts.map((item) => item.id))
+    const chosenName = newAccountName.trim()
     setOpeningBalance('')
+    setNewAccountName('')
     setConfirmingCreate(false)
     void watchTransaction(result.transactionId, 'Creating account', async () => {
-      const updated = await retry(async () => {
+      let updated = await retry(async () => {
         const found = await invoke<WalletSummary>('find_wallet_accounts', { walletId: wallet.id })
         if (found.accounts.length <= accountsBefore) throw new Error('not listed yet')
         return found
       }, 4).catch(() => null)
       if (!updated) return 'The new account is not listed yet. Use Find accounts in a moment.'
+      const created = updated.accounts.find((item) => !idsBefore.has(item.id))
+      if (chosenName && created) {
+        try {
+          updated = await invoke<WalletSummary>('rename_account', {
+            walletId: wallet.id,
+            accountId: created.id,
+            name: chosenName,
+          })
+        } catch (renameError) {
+          onWalletUpdated(updated)
+          return `The account was created but could not be named: ${errorMessage(renameError)}`
+        }
+      }
       onWalletUpdated(updated)
     })
   })
@@ -408,14 +426,16 @@ export function TestnetPanel({
             </strong>
           </div>
           <div className="wallet-tab-actions account-actions">
-            <button
-              className="secondary-button"
-              type="button"
-              aria-expanded={section === 'send'}
-              onClick={() => toggleSection('send')}
-            >
-              Send
-            </button>
+            {!isWatchOnly && (
+              <button
+                className="secondary-button"
+                type="button"
+                aria-expanded={section === 'send'}
+                onClick={() => toggleSection('send')}
+              >
+                Send
+              </button>
+            )}
             <button className="secondary-button" type="button" disabled={isBusy} onClick={handleRefresh}>
               {isBusy ? 'Contacting Testnet...' : 'Refresh balance & tx.'}
             </button>
@@ -429,7 +449,7 @@ export function TestnetPanel({
             >
               {accountSummary?.named ? 'Rename account' : 'Name this account'}
             </button>
-            {otherWallets.length > 0 && (
+            {!isWatchOnly && otherWallets.length > 0 && (
               <button
                 className="secondary-button risky-button"
                 type="button"
@@ -439,14 +459,16 @@ export function TestnetPanel({
                 Move account
               </button>
             )}
-            <button
-              className="secondary-button risky-button"
-              type="button"
-              aria-expanded={section === 'delete'}
-              onClick={() => toggleSection('delete')}
-            >
-              Delete account
-            </button>
+            {!isWatchOnly && (
+              <button
+                className="secondary-button risky-button"
+                type="button"
+                aria-expanded={section === 'delete'}
+                onClick={() => toggleSection('delete')}
+              >
+                Delete account
+              </button>
+            )}
           </div>
         </>
       ) : null}
@@ -478,7 +500,7 @@ export function TestnetPanel({
         </div>
       )}
 
-      {account && section === 'send' && (
+      {account && !isWatchOnly && section === 'send' && (
         <div className="testnet-send">
           <h3 className="section-title">Send HBAR</h3>
           {confirming ? (
@@ -594,7 +616,14 @@ export function TestnetPanel({
         </div>
       )}
 
-      {!account && (
+      {!account && isWatchOnly && (
+        <p className="field-hint">
+          Watch-only wallet: linked Testnet accounts and balances can be viewed, but this wallet
+          cannot sign or submit transactions.
+        </p>
+      )}
+
+      {!account && !isWatchOnly && (
         <div className="testnet-send create-account">
           <h3 className="section-title">Create account</h3>
           <p className="field-hint">
@@ -609,6 +638,12 @@ export function TestnetPanel({
                 <dd>Hedera Testnet (no real value)</dd>
                 <dt>Funded from</dt>
                 <dd>{funderLabel}</dd>
+                {newAccountName.trim() && (
+                  <>
+                    <dt>Account name</dt>
+                    <dd>{newAccountName.trim()}</dd>
+                  </>
+                )}
                 <dt>Opening balance</dt>
                 <dd>{openingBalance.trim()} ℏ</dd>
                 <dt>Key</dt>
@@ -630,6 +665,15 @@ export function TestnetPanel({
               className="testnet-send-form"
               onSubmit={handleReviewCreate}
             >
+              <label htmlFor={`create-name-${wallet.id}`}>Account name</label>
+              <input
+                id={`create-name-${wallet.id}`}
+                autoComplete="off"
+                maxLength={25}
+                placeholder="Optional, up to 25 characters"
+                value={newAccountName}
+                onChange={(event) => setNewAccountName(event.target.value)}
+              />
               <label htmlFor={`create-funder-${wallet.id}`}>Fund from</label>
               <select
                 id={`create-funder-${wallet.id}`}
@@ -666,7 +710,7 @@ export function TestnetPanel({
         </div>
       )}
 
-      {account && section === 'move' && otherWallets.length > 0 && (
+      {account && !isWatchOnly && section === 'move' && otherWallets.length > 0 && (
         <div className="testnet-send">
           <h3 className="section-title">Move account to another wallet</h3>
           <p className="field-hint">
@@ -751,7 +795,7 @@ export function TestnetPanel({
         </div>
       )}
 
-      {account && section === 'delete' && (
+      {account && !isWatchOnly && section === 'delete' && (
         <div className="testnet-send">
           <h3 className="section-title">Delete account</h3>
           <p className="field-hint">

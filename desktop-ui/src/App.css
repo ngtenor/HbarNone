@@ -568,6 +568,10 @@ h2.section-title,
   color: #2b6cb0;
 }
 
+.wallet-watch-only {
+  color: #b8860b;
+}
+
 .title-wallet {
   display: inline-flex;
 }
@@ -1422,6 +1426,10 @@ h2 {
   padding: 4px;
   border-radius: 8px;
   background: var(--wash);
+}
+
+.mode-switch[aria-label='What to import'] {
+  grid-template-columns: repeat(3, 1fr);
 }
 
 .mode-button {

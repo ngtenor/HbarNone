@@ -1,6 +1,7 @@
 use crate::{
     key_import::{
-        KeyType, SecretKind, evm_address, is_valid_ecdsa_secret, parse_private_key, public_key_hex,
+        KeyType, SecretKind, evm_address, is_valid_ecdsa_secret, normalize_public_key,
+        parse_private_key, public_key_hex,
     },
     vault_container::{
         AddressBookEntry, DEFAULT_AUTO_LOCK_SECONDS, Network, VaultContainer, VaultPayload,
@@ -137,7 +138,20 @@ fn wallet_identity(
             }
             Ok((key_type, parsed.secret))
         }
+        SecretKind::WatchOnly => Err("watch-only wallet has no private key".to_string()),
     }
+}
+
+fn wallet_public_key_from_secret(
+    secret_kind: SecretKind,
+    key_type: KeyType,
+    secret: &str,
+) -> Result<String, String> {
+    if secret_kind == SecretKind::WatchOnly {
+        return normalize_public_key(secret, key_type);
+    }
+    let (key_type, secret) = wallet_identity(secret_kind, key_type, secret)?;
+    public_key_hex(key_type, &secret)
 }
 
 const MAX_ACCOUNT_NUM_DIGITS: usize = 19;
@@ -480,14 +494,14 @@ impl WalletService {
             }
             let secret = decrypt_wallet_secret(&master_key, &wallet.nonce, &wallet.ciphertext)
                 .map_err(|_| "backup contains a damaged wallet".to_string())?;
-            wallet_identity(wallet.secret_kind, wallet.key_type, secret.as_str()).map_err(
-                |_| match wallet.secret_kind {
+            wallet_public_key_from_secret(wallet.secret_kind, wallet.key_type, secret.as_str())
+                .map_err(|_| match wallet.secret_kind {
                     SecretKind::Mnemonic => {
                         "backup contains an invalid recovery phrase".to_string()
                     }
                     SecretKind::PrivateKey => "backup contains an invalid private key".to_string(),
-                },
-            )?;
+                    SecretKind::WatchOnly => "backup contains an invalid public key".to_string(),
+                })?;
         }
 
         let previous = std::path::PathBuf::from(format!("{path}.pre-restore"));
@@ -631,6 +645,67 @@ impl WalletService {
         )
     }
 
+    pub fn import_watch_only_and_save(
+        &mut self,
+        name: &str,
+        public_key: &str,
+        key_type: KeyType,
+        path: &str,
+    ) -> Result<WalletSummary, String> {
+        self.ensure_unlocked()?;
+        let name = validate_wallet_name(name)?;
+        let public_key = normalize_public_key(public_key, key_type)?;
+        let master_key = self.master_key.as_ref().expect("checked unlocked");
+        let current_payload = self.payload.as_ref().expect("checked unlocked");
+        ensure_name_available(current_payload, &name, None)?;
+
+        for existing in &current_payload.wallets {
+            let secret = decrypt_wallet_secret(master_key, &existing.nonce, &existing.ciphertext)?;
+            if existing.key_type == key_type
+                && wallet_public_key_from_secret(
+                    existing.secret_kind,
+                    existing.key_type,
+                    secret.as_str(),
+                )? == public_key
+            {
+                return Err(format!(
+                    "this public key is already in the vault as '{}'",
+                    existing.name
+                ));
+            }
+        }
+
+        let mut next_payload = current_payload.clone();
+        let id = loop {
+            let candidate = format!("wallet-{}", hex::encode(random::<[u8; 16]>()));
+            if !next_payload
+                .wallets
+                .iter()
+                .any(|wallet| wallet.id == candidate)
+            {
+                break candidate;
+            }
+        };
+        let now = chrono::Utc::now().to_rfc3339();
+        let (nonce, ciphertext) = encrypt_wallet_secret(master_key, &public_key)?;
+        let wallet = VaultWallet {
+            id,
+            name,
+            created_at: now.clone(),
+            updated_at: now,
+            accounts: Vec::new(),
+            account_id: None,
+            secret_kind: SecretKind::WatchOnly,
+            key_type,
+            nonce,
+            ciphertext,
+        };
+        let summary = WalletSummary::from_wallet(&wallet);
+        next_payload.wallets.push(wallet);
+        self.persist_payload(next_payload, path)?;
+        Ok(summary)
+    }
+
     fn store_wallet(
         &mut self,
         name: &str,
@@ -645,15 +720,16 @@ impl WalletService {
         let current_payload = self.payload.as_ref().expect("checked unlocked");
         ensure_name_available(current_payload, &name, None)?;
         let (new_type, new_secret) = wallet_identity(secret_kind, key_type, secret)?;
+        let new_public_key = public_key_hex(new_type, &new_secret)?;
         for existing in &current_payload.wallets {
             let existing_secret =
                 decrypt_wallet_secret(master_key, &existing.nonce, &existing.ciphertext)?;
-            let (existing_type, existing_key) = wallet_identity(
+            let existing_public_key = wallet_public_key_from_secret(
                 existing.secret_kind,
                 existing.key_type,
                 existing_secret.as_str(),
             )?;
-            if existing_type == new_type && *existing_key == *new_secret {
+            if existing.key_type == new_type && existing_public_key == new_public_key {
                 return Err(format!(
                     "this key is already in the vault as '{}'",
                     existing.name
@@ -1059,12 +1135,36 @@ impl WalletService {
     /// compressed). It is not secret, but deriving it needs the stored secret,
     /// so the vault must be unlocked.
     pub fn wallet_public_key(&mut self, wallet_id: &str) -> Result<String, String> {
-        let (key_type, secret) = self.wallet_key_material(wallet_id)?;
-        public_key_hex(key_type, &secret)
+        self.ensure_unlocked()?;
+        let master_key = self.master_key.as_ref().expect("checked unlocked");
+        let wallet = self
+            .payload
+            .as_ref()
+            .expect("checked unlocked")
+            .wallets
+            .iter()
+            .find(|wallet| wallet.id == wallet_id)
+            .ok_or_else(|| format!("wallet not found: {wallet_id}"))?;
+        let secret = decrypt_wallet_secret(master_key, &wallet.nonce, &wallet.ciphertext)?;
+        wallet_public_key_from_secret(wallet.secret_kind, wallet.key_type, secret.as_str())
     }
 
     /// The wallet's EVM address, for ECDSA wallets only.
     pub fn wallet_evm_address(&mut self, wallet_id: &str) -> Result<Option<String>, String> {
+        self.ensure_unlocked()?;
+        if self
+            .payload
+            .as_ref()
+            .expect("checked unlocked")
+            .wallets
+            .iter()
+            .find(|wallet| wallet.id == wallet_id)
+            .ok_or_else(|| format!("wallet not found: {wallet_id}"))?
+            .secret_kind
+            == SecretKind::WatchOnly
+        {
+            return Ok(None);
+        }
         let (key_type, secret) = self.wallet_key_material(wallet_id)?;
         match key_type {
             KeyType::Ecdsa => evm_address(&secret).map(Some),
@@ -1097,6 +1197,9 @@ impl WalletService {
             .iter()
             .find(|wallet| wallet.id == wallet_id)
             .ok_or_else(|| format!("wallet not found: {wallet_id}"))?;
+        if wallet.secret_kind == SecretKind::WatchOnly {
+            return Err("watch-only wallets cannot sign transactions".to_string());
+        }
         let secret = decrypt_wallet_secret(master_key, &wallet.nonce, &wallet.ciphertext)?;
         wallet_identity(wallet.secret_kind, wallet.key_type, secret.as_str())
     }
@@ -1123,6 +1226,11 @@ impl WalletService {
             .iter()
             .find(|wallet| wallet.id == wallet_id)
             .ok_or_else(|| format!("wallet not found: {wallet_id}"))?;
+        if wallet.secret_kind == SecretKind::WatchOnly {
+            return Err(
+                "watch-only wallets do not contain a private key or recovery phrase".to_string(),
+            );
+        }
         decrypt_wallet_secret(
             self.master_key.as_ref().expect("checked unlocked"),
             &wallet.nonce,
@@ -1746,6 +1854,45 @@ mod tests {
         assert!(service.wallet_public_key("missing").is_err());
         service.lock();
         assert!(service.wallet_public_key(&wallet.id).is_err());
+    }
+
+    #[test]
+    fn watch_only_wallet_keeps_a_public_key_but_cannot_sign_or_reveal() {
+        let (_directory, path) = temp_path();
+        let path = path.to_str().unwrap();
+        let phrase = "inmate flip alley wear offer often piece magnet surge toddler submit right radio absent pear floor belt raven price stove replace reduce plate home";
+        let public_key = Wallet::from_mnemonic(phrase).unwrap().public_key;
+        let mut service = WalletService::new();
+        service.create_vault("vault password", path).unwrap();
+        let wallet = service
+            .import_watch_only_and_save("Cold monitor", &public_key, KeyType::Ed25519, path)
+            .unwrap();
+
+        assert_eq!(wallet.secret_kind, SecretKind::WatchOnly);
+        assert_eq!(service.wallet_public_key(&wallet.id).unwrap(), public_key);
+        assert!(service.with_wallet_key(&wallet.id, |_, _| Ok(())).is_err());
+        assert!(service.reveal_mnemonic(&wallet.id).is_err());
+        assert!(
+            service
+                .import_watch_only_and_save(
+                    "Duplicate monitor",
+                    &public_key,
+                    KeyType::Ed25519,
+                    path
+                )
+                .unwrap_err()
+                .contains("already in the vault")
+        );
+
+        let backup = service.export_backup().unwrap();
+        let (_restore_directory, restore_path) = temp_path();
+        let mut restored = WalletService::new();
+        let wallets = restored
+            .restore_backup(&backup, "vault password", restore_path.to_str().unwrap())
+            .unwrap();
+        assert_eq!(wallets[0].secret_kind, SecretKind::WatchOnly);
+        assert_eq!(restored.wallet_public_key(&wallet.id).unwrap(), public_key);
+        assert!(restored.with_wallet_key(&wallet.id, |_, _| Ok(())).is_err());
     }
 
     #[test]
