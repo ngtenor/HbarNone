@@ -198,6 +198,8 @@ function App() {
   const [error, setError] = useState('')
   const [isSavingWallet, setIsSavingWallet] = useState(false)
   const [walletToReveal, setWalletToReveal] = useState<WalletSummary | null>(null)
+  const [revealKey, setRevealKey] = useState(false)
+  const showsKey = walletToReveal?.secret_kind === 'privatekey' || revealKey
   const [walletToDelete, setWalletToDelete] = useState<WalletSummary | null>(null)
   const [isDeletingWallet, setIsDeletingWallet] = useState(false)
   const [deleteError, setDeleteError] = useState('')
@@ -261,6 +263,7 @@ function App() {
   const closeReveal = useCallback(() => {
     revealRequestId.current += 1
     setWalletToReveal(null)
+    setRevealKey(false)
     setMnemonic('')
     setRevealError('')
     setIsRevealing(false)
@@ -925,7 +928,7 @@ function App() {
     setIsRevealing(true)
     const requestId = ++revealRequestId.current
     try {
-      const recoveredMnemonic = await invoke<string>('reveal_wallet_mnemonic', {
+      const recoveredMnemonic = await invoke<string>(revealKey ? 'reveal_wallet_private_key' : 'reveal_wallet_mnemonic', {
         walletId: walletToReveal.id,
       })
       if (requestId === revealRequestId.current) {
@@ -2104,7 +2107,20 @@ function App() {
                         >
                           {wallet.name}
                         </button>
-                      ) : wallet.name}
+                      ) : (
+                        <button
+                          className="wallet-name-link"
+                          type="button"
+                          title="Click to rename this wallet"
+                          onClick={() => {
+                            setRenameValue(wallet.name)
+                            setRenameError('')
+                            setRenamingWalletId(wallet.id)
+                          }}
+                        >
+                          {wallet.name}
+                        </button>
+                      )}
                     </h1>
                     {!openAccount && (
                       <p className="wallet-date">Added {new Date(wallet.created_at).toLocaleDateString()}</p>
@@ -2155,17 +2171,6 @@ function App() {
                     >
                       {isRefreshingAll ? 'Contacting Testnet...' : 'Refresh balances'}
                     </button>
-                    <button
-                      className="reveal-button"
-                      type="button"
-                      onClick={() => {
-                        setRenameValue(wallet.name)
-                        setRenameError('')
-                        setRenamingWalletId(wallet.id)
-                      }}
-                    >
-                      Rename wallet
-                    </button>
                     {wallet.secret_kind !== 'watchonly' && <button
                       className="reveal-button risky-button"
                       type="button"
@@ -2176,6 +2181,18 @@ function App() {
                       }}
                     >
                       Reveal {wallet.secret_kind === 'privatekey' ? 'private key' : 'recovery phrase'}
+                    </button>}
+                    {wallet.secret_kind === 'mnemonic' && <button
+                      className="reveal-button risky-button"
+                      type="button"
+                      onClick={() => {
+                        closeReveal()
+                        setWalletToDelete(null)
+                        setRevealKey(true)
+                        setWalletToReveal(wallet)
+                      }}
+                    >
+                      Reveal private key
                     </button>}
                     <button
                       className="reveal-button delete-wallet-button"
@@ -2320,13 +2337,13 @@ function App() {
               <div>
                 <p className="eyebrow">SENSITIVE WALLET DATA</p>
                 <h2 id="recovery-title">
-                  {walletToReveal.secret_kind === 'privatekey' ? 'Private key' : 'Recovery phrase'}
+                  {showsKey ? 'Private key' : 'Recovery phrase'}
                 </h2>
               </div>
               <button
                 className="close-button"
                 type="button"
-                aria-label={`Close and hide ${walletToReveal.secret_kind === 'privatekey' ? 'private key' : 'recovery phrase'}`}
+                aria-label={`Close and hide ${showsKey ? 'private key' : 'recovery phrase'}`}
                 onClick={closeReveal}
               >
                 ×
@@ -2336,18 +2353,15 @@ function App() {
             {mnemonic ? (
               <>
                 <p className="recovery-warning" role="alert">
-                  Anyone who sees this {walletToReveal.secret_kind === 'privatekey' ? 'private key' : 'phrase'} can take this wallet. Write it
+                  Anyone who sees this {showsKey ? 'private key' : 'phrase'} can take this wallet. Write it
                   down privately and store it securely. Never share it or enter
                   it on a device you do not trust.
                 </p>
                 <ol
-                  className="mnemonic-grid"
-                  onCopy={(event) => event.preventDefault()}
-                  onCut={(event) => event.preventDefault()}
-                  onContextMenu={(event) => event.preventDefault()}
+                  className="mnemonic-grid selectable-secret"
                   onDragStart={(event) => event.preventDefault()}
                 >
-                  {walletToReveal.secret_kind === 'privatekey' ? (
+                  {showsKey ? (
                     <li className="private-key-value"><strong>{mnemonic}</strong></li>
                   ) : mnemonic.split(' ').map((word, index) => (
                     <li key={`${index}-${word}`}>
@@ -2357,8 +2371,9 @@ function App() {
                   ))}
                 </ol>
                 <p className="recovery-warning secondary-warning">
-                  Malware may capture passwords or screen contents. This reveal
-                  does not make a compromised computer safe.
+                  {revealKey
+                    ? 'You can copy this key to test with. A recovery phrase wallet is only as safe as this key, so use it for Testnet only, and clear your clipboard afterwards.'
+                    : 'Copying is currently enabled for testing. Clear your clipboard afterwards. Malware may capture passwords or screen contents, and this reveal does not make a compromised computer safe.'}
                 </p>
                 <label className="write-down-confirmation">
                   <input
@@ -2367,7 +2382,7 @@ function App() {
                     onChange={(event) => setHasConfirmedWriteDown(event.target.checked)}
                   />
                   <span>
-                    I have written down this {walletToReveal.secret_kind === 'privatekey' ? 'private key' : 'recovery phrase'} and stored it safely.
+                    I have written down this {showsKey ? 'private key' : 'recovery phrase'} and stored it safely.
                   </span>
                 </label>
                 <p className="confirmation-hint">
@@ -2383,14 +2398,14 @@ function App() {
                     disabled={!hasConfirmedWriteDown}
                     onClick={closeReveal}
                   >
-                    Confirm and hide {walletToReveal.secret_kind === 'privatekey' ? 'private key' : 'phrase'}
+                    Confirm and hide {showsKey ? 'private key' : 'phrase'}
                   </button>
                 </div>
               </>
             ) : (
               <div>
                 <p className="dialog-copy">
-                  The vault is unlocked. Reveal this wallet’s {walletToReveal.secret_kind === 'privatekey' ? 'private key' : 'recovery phrase'}
+                  The vault is unlocked. Reveal this wallet’s {showsKey ? 'private key' : 'recovery phrase'}
                   only if you can keep it private from people and software
                   viewing this device.
                 </p>
@@ -2409,7 +2424,7 @@ function App() {
                   >
                     {isRevealing
                       ? 'Revealing...'
-                      : `Reveal ${walletToReveal.secret_kind === 'privatekey' ? 'private key' : 'recovery phrase'}`}
+                      : `Reveal ${showsKey ? 'private key' : 'recovery phrase'}`}
                   </button>
                 </div>
               </div>

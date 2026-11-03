@@ -2166,3 +2166,24 @@ button.danger-button:disabled {
   cursor: not-allowed;
   opacity: 0.65;
 }
+
+.qr-code {
+  width: 260px;
+  height: 260px;
+  max-width: 100%;
+  background: #fff;
+  border-radius: 6px;
+}
+
+.testnet-confirm textarea {
+  width: 100%;
+  font-family: monospace;
+  font-size: 0.8rem;
+}
+
+.mnemonic-grid.selectable-secret,
+.mnemonic-grid.selectable-secret li,
+.mnemonic-grid.selectable-secret li strong {
+  user-select: text;
+  -webkit-user-select: text;
+}

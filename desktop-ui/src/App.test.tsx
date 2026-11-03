@@ -52,6 +52,7 @@ function wallet(id: string, name: string, accounts: string | string[] = []): Wal
     name,
     created_at: '2026-01-01T00:00:00Z',
     accounts: [accounts].flat().map(testnetAccount),
+    secret_kind: 'mnemonic',
   }
 }
 
@@ -137,6 +138,8 @@ function installBackend(overrides: Partial<Backend> = {}) {
         return args?.seconds ?? undefined
       case 'reveal_wallet_mnemonic':
         return PHRASE
+      case 'reveal_wallet_private_key':
+        return 'ab'.repeat(32)
       case 'delete_wallet':
         backend.wallets = backend.wallets.filter((item) => item.id !== args?.walletId)
         return undefined
@@ -184,6 +187,19 @@ function installBackend(overrides: Partial<Backend> = {}) {
       case 'send_hbar':
         if (backend.sendError) throw new Error(backend.sendError)
         return { transactionId: '0.0.1001-1700000000-000000005' }
+      case 'prepare_unsigned_transfer':
+        return {
+          payload: 'HVTX1-REQ:00',
+          qrSize: 2,
+          qrModules: [true, false, false, true],
+          sender: '0.0.1001',
+          receiver: '0.0.2002',
+          tinybars: 100_000_000,
+          memo: '',
+          expiresAtSeconds: Math.floor(Date.now() / 1000) + 170,
+        }
+      case 'submit_signed_transfer':
+        return { transactionId: '0.0.1001-1700000000-000000008' }
       case 'create_account':
         if (backend.sendError) throw new Error(backend.sendError)
         return { transactionId: '0.0.1001-1700000000-000000006' }
@@ -345,7 +361,8 @@ describe('home account links', () => {
     await user.click(screen.getByRole('tab', { name: 'HOME' }))
     await user.click(screen.getByRole('button', { name: /Savings\s*Added/ }))
     expect(await screen.findByRole('heading', { name: 'Savings' })).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Savings' })).not.toBeInTheDocument()
+    expect(screen.queryByTitle('Back to wallet')).not.toBeInTheDocument()
+    expect(screen.getByTitle('Click to rename this wallet')).toBeInTheDocument()
   })
 })
 
@@ -1012,7 +1029,7 @@ describe('reveal flow', () => {
     await screen.findByText('alpha')
   }
 
-  it('shows the phrase, blocks copying, and requires acknowledgment to confirm', async () => {
+  it('shows the phrase, allows copying, and requires acknowledgment to confirm', async () => {
     const user = userEvent.setup()
     await openReveal(user)
     expect(commandsCalled('reveal_wallet_mnemonic')[0].args).toEqual({ walletId: 'w1' })
@@ -1020,7 +1037,8 @@ describe('reveal flow', () => {
 
     const grid = document.querySelector('.mnemonic-grid')!
     const copy = new Event('copy', { bubbles: true, cancelable: true })
-    expect(grid.dispatchEvent(copy)).toBe(false)
+    expect(grid.dispatchEvent(copy)).toBe(true)
+    expect(grid).toHaveClass('selectable-secret')
 
     const confirm = screen.getByRole('button', { name: 'Confirm and hide phrase' })
     expect(confirm).toBeDisabled()
@@ -1028,6 +1046,21 @@ describe('reveal flow', () => {
     expect(confirm).toBeEnabled()
     await user.click(confirm)
     expect(screen.queryByText('alpha')).not.toBeInTheDocument()
+  })
+
+  it('reveals a copyable private key for a recovery-phrase wallet', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+    await openWalletTab(user, 'Savings')
+    await user.click(screen.getByRole('button', { name: 'Reveal private key' }))
+    const dialog = screen.getByRole('dialog')
+    expect(within(dialog).getByRole('heading', { name: 'Private key' })).toBeInTheDocument()
+    await user.click(within(dialog).getByRole('button', { name: 'Reveal private key' }))
+    await screen.findByText('ab'.repeat(32), { selector: 'strong' })
+    expect(commandsCalled('reveal_wallet_private_key')[0].args).toEqual({ walletId: 'w1' })
+    expect(commandsCalled('reveal_wallet_mnemonic')).toHaveLength(0)
+    const grid = document.querySelector('.mnemonic-grid')!
+    expect(grid.dispatchEvent(new Event('copy', { bubbles: true, cancelable: true }))).toBe(true)
   })
 
   it('clears the phrase when the window loses focus', async () => {
@@ -1235,9 +1268,40 @@ describe('watch-only wallet', () => {
     await openAccount(user, 'Monitor')
     expect(screen.getByRole('button', { name: 'Refresh balance & tx.' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Name this account' })).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Send' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Send' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Move account' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Delete account' })).not.toBeInTheDocument()
+  })
+
+  it('exports a signing request, then submits the pasted signature', async () => {
+    const user = userEvent.setup()
+    installBackend({
+      status: 'unlocked',
+      wallets: [{
+        ...wallet('w-watch', 'Monitor', ['0.0.1001']),
+        secret_kind: 'watchonly',
+        key_type: 'ed25519',
+      }],
+    })
+    render(<App />)
+    await openAccount(user, 'Monitor')
+    await user.click(screen.getByRole('button', { name: 'Send' }))
+    await typeRecipient(user, '0.0.2002-abcde')
+    await user.type(screen.getByLabelText('Amount (ℏ)'), '1')
+    await user.click(screen.getByRole('button', { name: 'Review transfer' }))
+    await user.click(await screen.findByRole('button', { name: 'Create signing request' }))
+
+    expect(await screen.findByRole('img', { name: 'Signing request QR code' })).toBeInTheDocument()
+    expect(commandsCalled('send_hbar')).toHaveLength(0)
+    const submit = screen.getByRole('button', { name: 'Submit signed transfer' })
+    expect(submit).toBeDisabled()
+    await user.type(screen.getByLabelText('Signature from the signer'), 'HVTX1-SIG:AB')
+    await user.click(submit)
+    await screen.findByText('SUCCESS!')
+    expect(commandsCalled('submit_signed_transfer')[0].args).toEqual({
+      request: 'HVTX1-REQ:00',
+      response: 'HVTX1-SIG:AB',
+    })
   })
 })
 
@@ -1248,7 +1312,7 @@ describe('rename flow', () => {
     const user = userEvent.setup()
     render(<App />)
     await openWalletTab(user, 'Savings')
-    await user.click(screen.getByRole('button', { name: 'Rename wallet' }))
+    await user.click(screen.getByTitle('Click to rename this wallet'))
     const input = screen.getByLabelText('New wallet name')
     expect(input).toHaveValue('Savings')
     await user.clear(input)
@@ -1265,7 +1329,7 @@ describe('rename flow', () => {
     const user = userEvent.setup()
     render(<App />)
     await openWalletTab(user, 'Savings')
-    await user.click(screen.getByRole('button', { name: 'Rename wallet' }))
+    await user.click(screen.getByTitle('Click to rename this wallet'))
     const input = screen.getByLabelText('New wallet name')
     await user.clear(input)
     await user.type(input, 'trading')
@@ -1279,7 +1343,7 @@ describe('rename flow', () => {
     const user = userEvent.setup()
     render(<App />)
     await openWalletTab(user, 'Savings')
-    await user.click(screen.getByRole('button', { name: 'Rename wallet' }))
+    await user.click(screen.getByTitle('Click to rename this wallet'))
     expect(screen.getByLabelText('New wallet name')).toHaveAttribute('maxlength', '40')
     await user.click(screen.getByRole('button', { name: 'Cancel' }))
     expect(screen.queryByLabelText('New wallet name')).not.toBeInTheDocument()

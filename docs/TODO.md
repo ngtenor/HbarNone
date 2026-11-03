@@ -105,7 +105,7 @@ Password change and encrypted backup export/restore are tracked under
 
 ## Next steps
 1. Complete the remaining Linux manual verification above, including legacy migration and Backup and erase.
-2. Implement watch-only wallets and unsigned-transaction export.
+2. (Done) Watch-only wallets and unsigned-transaction export.
 3. Design and build QR-based offline transaction transport and a signer application.
 4. Consider HTS tokens/NFTs and hardware work after the current HBAR flows are fully verified.
 5. Defer Mainnet until the implementation has been reviewed and tested.
@@ -167,7 +167,7 @@ Goal: a small, fully readable signer. It signs only what it can show in full and
 - [x] Integrate read-only Hedera Testnet access (balance and transaction history)
 - [x] Implement and manually verify HBAR transfers and account create/move/delete on Testnet
 - [x] Add watch-only wallets
-- [ ] Add unsigned-transaction export
+- [x] Add unsigned-transaction export (HBAR sends, QR request, pasted signature, 180 s window). Manually verified end to end on Testnet with the example signer; camera scanning not included
 - [ ] Build QR-based offline transaction transport
 - [ ] Create an offline signer application
 - [ ] Add HTS token, NFT, and smart-contract support

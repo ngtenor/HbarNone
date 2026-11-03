@@ -36,7 +36,7 @@ Treat development wallet material as compromised.
 - Encrypted vault backup export and restore (separate Settings panels; restore also available from the first-run screen)
 - Settings "Back up and erase all data from the app": saves and verifies an encrypted backup, then removes the vault so the app returns to its first-run state
 - **Wallets and accounts:** A wallet is a key that can control multiple Hedera accounts. HOME displays wallets, named accounts, and Testnet balances. Account links use `Name - 0.0.12345-abcde` (`NONAME` for unnamed accounts). Imported mnemonic and private-key wallets discover linked accounts; wallet pages include account creation funded by another vault account. Mainnet is a data-model column only; Mainnet account access is not implemented.
-- **Watch-only wallets:** Import an Ed25519 or ECDSA secp256k1 public key to discover and monitor matching Testnet accounts. These wallets are marked with a gold icon, allow balance and transaction viewing, and cannot reveal secrets or sign transactions. Unsigned-transaction export is not implemented.
+- **Watch-only wallets:** Import an Ed25519 or ECDSA secp256k1 public key to discover and monitor matching Testnet accounts. These wallets are marked with a gold icon, allow balance and transaction viewing, and cannot reveal secrets or sign transactions themselves. To send HBAR from one, the app creates an unsigned transfer as a QR code (also available as text, valid for 180 seconds), you sign it on a separate offline signer, and you paste the signature back for the app to verify and submit. HBAR transfers only; there is no camera scanning yet. For testing, `cargo run -p hedera-tx --example sign_request -- <request> <ed25519|ecdsa> <private-key-hex>` stands in for the signer (use a disposable Testnet key).
 - **Testnet account management:** Account pages show balances and recent transactions and support HBAR sends, renaming, moving an account to another wallet key (`CryptoUpdate`, signed by both keys), and account deletion (`CryptoDelete` with a recipient). Create, move, and delete actions include review, warnings, and acknowledgments where appropriate. These flows were manually exercised on Testnet; use disposable accounts only.
 - **Address book and safety controls:** The address book lists wallet accounts and named outside accounts. External send and delete recipients are disabled by default and can be enabled in Settings. Deleting a wallet requires explicit confirmation.
 - **Transaction status:** Sends, account creation, moves, and deletes show a progress popup and use the Testnet mirror node to report the result. Balances and recent transactions can be refreshed from the UI.
@@ -130,7 +130,7 @@ See [docs/TODO.md](docs/TODO.md) for current status and next steps.
 ## Longer-term roadmap
 
 1. Finish Linux manual verification and remaining legacy-wallet migration checks
-2. Add unsigned-transaction export for watch-only wallets
+2. Add camera scanning of signer replies and support for more offline transaction types
 3. Offline signing and QR-based transaction transport
 4. HTS tokens and NFTs, then a dedicated signer application and reproducible hardware reference design
 

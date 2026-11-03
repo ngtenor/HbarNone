@@ -1238,6 +1238,31 @@ impl WalletService {
         )
     }
 
+    /// The wallet's private key as hex, for recovery-phrase wallets (imported
+    /// private-key wallets already reveal it through `reveal_mnemonic`).
+    pub fn reveal_derived_private_key(
+        &mut self,
+        wallet_id: &str,
+    ) -> Result<Zeroizing<String>, String> {
+        self.ensure_unlocked()?;
+        let kind = self
+            .payload
+            .as_ref()
+            .expect("checked unlocked")
+            .wallets
+            .iter()
+            .find(|wallet| wallet.id == wallet_id)
+            .ok_or_else(|| format!("wallet not found: {wallet_id}"))?
+            .secret_kind;
+        if kind != SecretKind::Mnemonic {
+            return Err("only recovery-phrase wallets derive a private key".to_string());
+        }
+        let (_, secret) = self.wallet_key_material(wallet_id)?;
+        Ok(Zeroizing::new(
+            secret.iter().map(|b| format!("{b:02x}")).collect(),
+        ))
+    }
+
     fn persist_payload(&mut self, payload: VaultPayload, path: &str) -> Result<(), String> {
         let mut container = self
             .container
@@ -1837,6 +1862,27 @@ mod tests {
         let mut again = WalletService::load_store(path).unwrap();
         let wallets = again.unlock_vault("vault password").unwrap();
         assert_eq!(wallets[0].accounts.len(), 1);
+    }
+
+    #[test]
+    fn derived_private_key_matches_the_public_key_and_is_phrase_wallets_only() {
+        let (_directory, path) = temp_path();
+        let path = path.to_str().unwrap();
+        let phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        let mut service = WalletService::new();
+        service.create_vault("vault password", path).unwrap();
+        let wallet = service
+            .import_and_save_wallet("Imported", phrase, path)
+            .unwrap();
+        let hex = service.reveal_derived_private_key(&wallet.id).unwrap();
+        assert_eq!(hex.len(), 64);
+        let parsed = crate::key_import::parse_private_key(hex.as_str()).unwrap();
+        assert_eq!(
+            crate::key_import::public_key_hex(KeyType::Ed25519, &parsed.secret).unwrap(),
+            service.wallet_public_key(&wallet.id).unwrap()
+        );
+        service.lock();
+        assert!(service.reveal_derived_private_key(&wallet.id).is_err());
     }
 
     #[test]
