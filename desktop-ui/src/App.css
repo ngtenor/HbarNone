@@ -421,6 +421,128 @@ h2.section-title,
   gap: 16px;
 }
 
+.testnet-assets li {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.account-heading-balance-group,
+.testnet-overview-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.testnet-overview-heading {
+  justify-content: flex-start;
+}
+
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  color: var(--ink);
+  background: var(--surface);
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.icon-button:disabled {
+  cursor: progress;
+  opacity: 0.7;
+}
+
+.icon-button.refreshing span {
+  display: inline-block;
+  animation: icon-spin 1s linear infinite;
+}
+
+@keyframes icon-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.dropdown {
+  position: relative;
+  display: inline-block;
+}
+
+.dropdown-trigger {
+  width: auto;
+  min-width: 120px;
+  height: 42px;
+  padding: 0 14px;
+  font-size: 12px;
+}
+
+.dropdown-list {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 100%;
+  width: max-content;
+  max-width: 320px;
+  padding: 4px;
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface);
+  box-shadow: 0 6px 18px rgb(0 0 0 / 18%);
+  list-style: none;
+}
+
+.dropdown-heading {
+  padding: 8px 10px 4px;
+  color: var(--muted, #6b6b6b);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.dropdown-item {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 5px;
+  color: var(--ink);
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+}
+
+.dropdown-item:hover:not(:disabled),
+.dropdown-item:focus-visible {
+  background: rgb(127 127 127 / 18%);
+}
+
+.dropdown-item:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.dropdown-danger {
+  color: #a82d2d;
+}
+
+.dropdown-detail {
+  color: var(--muted, #6b6b6b);
+  font-variant-numeric: tabular-nums;
+}
+
 .account-heading-balance {
   color: var(--ink);
   font-size: 18px;
@@ -1020,6 +1142,15 @@ h2.section-title,
 
 .testnet-kind {
   font-weight: 600;
+}
+
+.testnet-token-name {
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.token-details {
+  margin-top: 12px;
 }
 
 .testnet-counterparty {

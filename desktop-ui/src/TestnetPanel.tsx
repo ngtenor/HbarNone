@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { invoke } from '@tauri-apps/api/core'
+import { DropdownMenu } from './DropdownMenu'
 import { QrScanner } from './QrScanner'
 import type { TxProgress } from './TransactionProgress'
 import type { AddressBookView, WalletSummary } from './types'
@@ -31,10 +32,32 @@ type TransactionSummary = {
   counterparty?: string
 }
 
+type AccountToken = {
+  token_id: string
+  symbol: string
+  name: string
+  balance: string
+  decimals: number
+}
+
+type TokenInfo = {
+  token_id: string
+  name: string
+  symbol: string
+  decimals: number
+  token_type: string
+  total_supply: string
+  treasury: string
+  deleted: boolean
+  has_admin_key: boolean
+  memo: string
+}
+
 type AccountOverview = {
   account_id: string
   balance_tinybars: number
   transactions: TransactionSummary[]
+  tokens?: AccountToken[]
 }
 
 const TINYBARS_PER_HBAR = 100_000_000
@@ -44,6 +67,25 @@ function formatHbar(tinybars: number, maxDecimals = 8) {
     minimumFractionDigits: 2,
     maximumFractionDigits: maxDecimals,
   })
+}
+
+// Token amounts are integers in the smallest unit; BigInt keeps large supplies exact.
+function formatTokenAmount(units: string, decimals: number) {
+  let value: bigint
+  try {
+    value = BigInt(units)
+  } catch {
+    return units
+  }
+  const scale = 10n ** BigInt(decimals)
+  const whole = (value / scale).toLocaleString()
+  if (decimals === 0) return whole
+  const point = (1.1).toLocaleString().charAt(1)
+  return `${whole}${point}${(value % scale).toString().padStart(decimals, '0')}`
+}
+
+function tokenLabel(token: AccountToken) {
+  return token.symbol || token.token_id
 }
 
 function formatNet(tinybars: number) {
@@ -145,7 +187,12 @@ export function TestnetPanel({
   const [confirmingDelete, setConfirmingDelete] = useState(false)
   const [deleteAcknowledged, setDeleteAcknowledged] = useState(false)
   const [pendingDelete, setPendingDelete] = useState(false)
-  const [section, setSection] = useState<'send' | 'rename' | 'move' | 'delete' | null>(null)
+  const [showAssets, setShowAssets] = useState(false)
+  const [section, setSection] = useState<
+    'send' | 'rename' | 'move' | 'delete' | 'token-info' | null
+  >(null)
+  const [tokenQuery, setTokenQuery] = useState('')
+  const [tokenDetails, setTokenDetails] = useState<TokenInfo | null>(null)
   const isWatchOnly = wallet.secret_kind === 'watchonly'
   const [signing, setSigning] = useState<SigningRequest | null>(null)
   const [signatureText, setSignatureText] = useState('')
@@ -166,7 +213,7 @@ export function TestnetPanel({
     const timer = window.setInterval(tick, 1000)
     return () => window.clearInterval(timer)
   }, [signing])
-  const toggleSection = (next: 'send' | 'rename' | 'move' | 'delete') => {
+  const toggleSection = (next: 'send' | 'rename' | 'move' | 'delete' | 'token-info') => {
     setSection((current) => (current === next ? null : next))
     // Leaving a section discards anything typed into it and any pending review.
     setRecipient('')
@@ -183,8 +230,22 @@ export function TestnetPanel({
     setUseOtherDeleteRecipient(false)
     setConfirmingDelete(false)
     setDeleteAcknowledged(false)
+    setTokenQuery('')
+    setTokenDetails(null)
     setError('')
     setNotice('')
+  }
+  const sendableTokens = [...(overview?.tokens ?? [])].sort((a, b) =>
+    tokenLabel(a).localeCompare(tokenLabel(b)),
+  )
+  const handleLookupToken = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    setTokenDetails(null)
+    void run(async () => {
+      const found = await invoke<TokenInfo | null>('get_token_info', { tokenId: tokenQuery.trim() })
+      if (!found) throw new Error('Testnet does not know this token.')
+      setTokenDetails(found)
+    })
   }
   const alive = useRef(true)
   async function run(task: () => Promise<void>) {
@@ -212,7 +273,21 @@ export function TestnetPanel({
     if (!result) setNotice('This account was not found on Hedera Testnet.')
   }
 
+  // Every refresh control reloads everything shown for the account.
   const handleRefresh = () => run(loadOverview)
+
+  const refreshButton = (label: string) => (
+    <button
+      className={`icon-button${isBusy ? ' refreshing' : ''}`}
+      type="button"
+      aria-label={label}
+      title={isBusy ? 'Contacting Testnet...' : label}
+      disabled={isBusy}
+      onClick={handleRefresh}
+    >
+      <span aria-hidden="true">↻</span>
+    </button>
+  )
 
   // Selecting an account refreshes its balance; the panel remounts per account.
   useEffect(() => {
@@ -647,50 +722,64 @@ export function TestnetPanel({
         <>
           <div className="account-heading">
             <h2 className="section-title">{accountLabel}</h2>
-            <strong className="account-heading-balance">
-              {overview ? `${formatHbar(overview.balance_tinybars, 2)} ℏ` : ''}
-            </strong>
+            <div className="account-heading-balance-group">
+              {refreshButton('Refresh balance')}
+              <strong className="account-heading-balance">
+                {overview ? `${formatHbar(overview.balance_tinybars, 2)} ℏ` : ''}
+              </strong>
+            </div>
           </div>
           <div className="wallet-tab-actions account-actions">
-            <button
-              className="secondary-button"
-              type="button"
-              aria-expanded={section === 'send'}
-              onClick={() => toggleSection('send')}
-            >
-              Send
-            </button>
-            <button className="secondary-button" type="button" disabled={isBusy} onClick={handleRefresh}>
-              {isBusy ? 'Contacting Testnet...' : 'Refresh balance & tx.'}
-            </button>
-            <button
-              className="secondary-button"
-              type="button"
-              onClick={() => {
-                setNameInput(accountSummary?.named ? accountSummary.name : '')
-                toggleSection('rename')
+            <DropdownMenu
+              label="Send"
+              primary
+              entries={[
+                { id: 'hbar', label: 'HBAR' },
+                ...sendableTokens.map((token) => ({
+                  id: `token:${token.token_id}`,
+                  label: tokenLabel(token),
+                  detail: formatTokenAmount(token.balance, token.decimals),
+                  disabled: token.balance === '0',
+                })),
+              ]}
+              onSelect={(id) => {
+                if (id === 'hbar') {
+                  toggleSection('send')
+                } else {
+                  setSection(null)
+                  setNotice('Sending tokens is not available yet.')
+                }
               }}
-            >
-              {accountSummary?.named ? 'Rename account' : 'Name this account'}
-            </button>
-            {!isWatchOnly && otherWallets.length > 0 && (
-              <button
-                className="secondary-button risky-button"
-                type="button"
-                aria-expanded={section === 'move'}
-                onClick={() => toggleSection('move')}
-              >
-                Move account
-              </button>
-            )}
+            />
             <button
-              className="secondary-button risky-button"
+              className="secondary-button"
               type="button"
-              aria-expanded={section === 'delete'}
-              onClick={() => toggleSection('delete')}
+              onClick={() => setShowAssets((current) => !current)}
             >
-              Delete account
+              {showAssets ? 'Recent transactions' : 'Account assets'}
             </button>
+            <DropdownMenu
+              label="Token management"
+              entries={[
+                { kind: 'heading', label: 'Holding' },
+                { id: 'token-info', label: 'Token info' },
+              ]}
+              onSelect={() => toggleSection('token-info')}
+            />
+            <DropdownMenu
+              label="Account management"
+              entries={[
+                { id: 'rename', label: accountSummary?.named ? 'Rename account' : 'Name this account' },
+                ...(!isWatchOnly && otherWallets.length > 0
+                  ? [{ id: 'move', label: 'Move account' }]
+                  : []),
+                { id: 'delete', label: 'Delete account', danger: true },
+              ]}
+              onSelect={(id) => {
+                if (id === 'rename') setNameInput(accountSummary?.named ? accountSummary.name : '')
+                toggleSection(id as 'rename' | 'move' | 'delete')
+              }}
+            />
           </div>
         </>
       ) : null}
@@ -719,6 +808,63 @@ export function TestnetPanel({
               </button>
             </div>
           </form>
+        </div>
+      )}
+
+      {account && section === 'token-info' && (
+        <div className="testnet-send">
+          <h3 className="section-title">Token info</h3>
+          <form className="testnet-link-form" onSubmit={handleLookupToken} noValidate>
+            <label htmlFor={`token-id-${wallet.id}`}>Token ID</label>
+            <input
+              id={`token-id-${wallet.id}`}
+              autoComplete="off"
+              placeholder="0.0.12345"
+              maxLength={32}
+              value={tokenQuery}
+              onChange={(event) => setTokenQuery(event.target.value)}
+            />
+            <div className="button-pair">
+              <button className="secondary-button" type="submit" disabled={isBusy}>
+                Look up token
+              </button>
+              <button className="secondary-button" type="button" onClick={() => setSection(null)}>
+                Cancel
+              </button>
+            </div>
+          </form>
+          {tokenDetails && (
+            <dl className="testnet-confirm token-details" aria-label="Token details">
+              <dt>Name</dt>
+              <dd>{tokenDetails.name || '(none)'}</dd>
+              <dt>Symbol</dt>
+              <dd>{tokenDetails.symbol || '(none)'}</dd>
+              <dt>Token ID</dt>
+              <dd>{tokenDetails.token_id}</dd>
+              <dt>Type</dt>
+              <dd>{tokenDetails.token_type}</dd>
+              <dt>Decimals</dt>
+              <dd>{tokenDetails.decimals}</dd>
+              <dt>Total supply</dt>
+              <dd>{formatTokenAmount(tokenDetails.total_supply, tokenDetails.decimals)}</dd>
+              <dt>Treasury</dt>
+              <dd>{tokenDetails.treasury}</dd>
+              <dt>Admin key</dt>
+              <dd>{tokenDetails.has_admin_key ? 'Yes (the token can be changed or deleted)' : 'None (fixed)'}</dd>
+              {tokenDetails.deleted && (
+                <>
+                  <dt>Status</dt>
+                  <dd>Deleted</dd>
+                </>
+              )}
+              {tokenDetails.memo && (
+                <>
+                  <dt>Memo</dt>
+                  <dd>{tokenDetails.memo}</dd>
+                </>
+              )}
+            </dl>
+          )}
         </div>
       )}
 
@@ -837,9 +983,14 @@ export function TestnetPanel({
                 value={memo}
                 onChange={(event) => setMemo(event.target.value)}
               />
-              <button className="secondary-button" type="submit" disabled={isBusy}>
-                Review transfer
-              </button>
+              <div className="button-pair">
+                <button className="secondary-button" type="submit" disabled={isBusy}>
+                  Review transfer
+                </button>
+                <button className="secondary-button" type="button" disabled={isBusy} onClick={() => toggleSection('send')}>
+                  Cancel
+                </button>
+              </div>
             </form>
           )}
         </div>
@@ -1028,9 +1179,14 @@ export function TestnetPanel({
                   <option key={item.id} value={item.id}>{item.name}</option>
                 ))}
               </select>
-              <button className="secondary-button" type="submit" disabled={isBusy}>
-                Review move
-              </button>
+              <div className="button-pair">
+                <button className="secondary-button" type="submit" disabled={isBusy}>
+                  Review move
+                </button>
+                <button className="secondary-button" type="button" disabled={isBusy} onClick={() => toggleSection('move')}>
+                  Cancel
+                </button>
+              </div>
             </form>
           )}
         </div>
@@ -1184,9 +1340,14 @@ export function TestnetPanel({
                   />
                 </>
               )}
-              <button className="secondary-button" type="submit" disabled={isBusy}>
-                Review deletion
-              </button>
+              <div className="button-pair">
+                <button className="secondary-button" type="submit" disabled={isBusy}>
+                  Review deletion
+                </button>
+                <button className="secondary-button" type="button" disabled={isBusy} onClick={() => toggleSection('delete')}>
+                  Cancel
+                </button>
+              </div>
             </form>
           )}
         </div>
@@ -1194,8 +1355,29 @@ export function TestnetPanel({
 
       {overview && (
         <div className="testnet-overview">
-          <h3>Recent transactions</h3>
-          {overview.transactions.length === 0 ? (
+          <div className="testnet-overview-heading">
+            {refreshButton('Refresh transactions')}
+            <h3>{showAssets ? 'Account assets' : 'Recent transactions'}</h3>
+          </div>
+          {showAssets ? (
+            <ul className="testnet-transactions testnet-assets" aria-label="Account assets">
+              <li>
+                <span className="testnet-kind">HBAR</span>
+                <span className="testnet-net">{formatHbar(overview.balance_tinybars)} ℏ</span>
+              </li>
+              {sendableTokens.map((token) => (
+                <li key={token.token_id}>
+                  <span className="testnet-kind">
+                    {tokenLabel(token)}
+                    {token.name && token.symbol ? (
+                      <span className="testnet-token-name"> {token.name}</span>
+                    ) : null}
+                  </span>
+                  <span className="testnet-net">{formatTokenAmount(token.balance, token.decimals)}</span>
+                </li>
+              ))}
+            </ul>
+          ) : overview.transactions.length === 0 ? (
             <p className="field-hint">No transactions yet.</p>
           ) : (
             <ul className="testnet-transactions" aria-label="Recent transactions">

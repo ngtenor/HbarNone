@@ -19,6 +19,8 @@ const MAX_RESPONSE_BYTES: usize = 512 * 1024;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_TEXT_CHARS: usize = 64;
 const MAX_ACCOUNT_MATCHES: usize = 25;
+const MAX_TOKENS: usize = 50;
+const MAX_DECIMALS: u32 = 18;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TransactionSummary {
@@ -33,10 +35,80 @@ pub struct TransactionSummary {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AccountToken {
+    pub token_id: String,
+    pub symbol: String,
+    pub name: String,
+    /// Smallest units, as text because a balance can exceed what JavaScript holds exactly.
+    pub balance: String,
+    pub decimals: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TokenInfo {
+    pub token_id: String,
+    pub name: String,
+    pub symbol: String,
+    pub decimals: u32,
+    pub token_type: String,
+    pub total_supply: String,
+    pub treasury: String,
+    pub deleted: bool,
+    pub has_admin_key: bool,
+    pub memo: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AccountOverview {
     pub account_id: String,
     pub balance_tinybars: u64,
     pub transactions: Vec<TransactionSummary>,
+    pub tokens: Vec<AccountToken>,
+}
+
+/// The mirror node sends some integers as JSON numbers and some as strings.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum NumberOrText {
+    Number(u64),
+    Text(String),
+    Other(serde::de::IgnoredAny),
+}
+
+impl NumberOrText {
+    fn text(&self) -> String {
+        match self {
+            Self::Number(number) => number.to_string(),
+            Self::Text(text) => text.clone(),
+            Self::Other(_) => String::new(),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct TokenRelationshipsResponse {
+    tokens: Vec<TokenRelationship>,
+}
+
+#[derive(Deserialize)]
+struct TokenRelationship {
+    token_id: String,
+    balance: NumberOrText,
+}
+
+#[derive(Deserialize)]
+struct TokenInfoEntry {
+    token_id: String,
+    name: Option<String>,
+    symbol: Option<String>,
+    decimals: Option<NumberOrText>,
+    #[serde(rename = "type")]
+    token_type: Option<String>,
+    total_supply: Option<NumberOrText>,
+    treasury_account_id: Option<String>,
+    deleted: Option<bool>,
+    admin_key: Option<serde_json::Value>,
+    memo: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -135,6 +207,57 @@ pub fn parse_balance(body: &[u8], expected_account: &str) -> Result<u64, String>
         return Err("the mirror node returned a different account".to_string());
     }
     Ok(response.balance.map(|entry| entry.balance).unwrap_or(0))
+}
+
+/// Token IDs and balances held by the account, in smallest units. Malformed
+/// entries are dropped, so a hostile response cannot inject text.
+pub fn parse_token_relationships(body: &[u8]) -> Result<Vec<(String, String)>, String> {
+    let response: TokenRelationshipsResponse = serde_json::from_slice(body)
+        .map_err(|_| "unexpected response from the mirror node".to_string())?;
+    Ok(response
+        .tokens
+        .iter()
+        .take(MAX_TOKENS)
+        .filter_map(|entry| {
+            let balance = entry.balance.text();
+            let valid = !balance.is_empty() && balance.bytes().all(|b| b.is_ascii_digit());
+            let id = validate_account_id(&entry.token_id).ok()?;
+            valid.then_some((id, balance))
+        })
+        .collect())
+}
+
+pub fn parse_token_info(body: &[u8], expected_token: &str) -> Result<TokenInfo, String> {
+    let entry: TokenInfoEntry = serde_json::from_slice(body)
+        .map_err(|_| "unexpected response from the mirror node".to_string())?;
+    if validate_account_id(&entry.token_id)? != expected_token {
+        return Err("the mirror node returned a different token".to_string());
+    }
+    let digits = |value: Option<&NumberOrText>| {
+        value
+            .map(NumberOrText::text)
+            .filter(|text| !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit()))
+            .unwrap_or_else(|| "0".to_string())
+    };
+    Ok(TokenInfo {
+        token_id: expected_token.to_string(),
+        name: clean_text(entry.name.as_deref().unwrap_or_default()),
+        symbol: clean_text(entry.symbol.as_deref().unwrap_or_default()),
+        decimals: digits(entry.decimals.as_ref())
+            .parse::<u32>()
+            .unwrap_or(0)
+            .min(MAX_DECIMALS),
+        token_type: clean_text(entry.token_type.as_deref().unwrap_or("UNKNOWN")),
+        total_supply: digits(entry.total_supply.as_ref()),
+        treasury: entry
+            .treasury_account_id
+            .as_deref()
+            .and_then(|id| validate_account_id(id).ok())
+            .unwrap_or_default(),
+        deleted: entry.deleted == Some(true),
+        has_admin_key: entry.admin_key.as_ref().is_some_and(|key| !key.is_null()),
+        memo: clean_text(entry.memo.as_deref().unwrap_or_default()),
+    })
 }
 
 pub fn parse_transactions(
@@ -329,17 +452,100 @@ impl MirrorClient {
             Some(body) => parse_transactions(&body, &account_id)?,
             None => Vec::new(),
         };
+        let tokens = self.account_tokens(&account_id).await?;
         Ok(Some(AccountOverview {
             account_id,
             balance_tinybars,
             transactions,
+            tokens,
         }))
+    }
+
+    /// Fungible tokens the account holds, with their details. A token whose
+    /// details cannot be read is still listed, by ID.
+    async fn account_tokens(&self, account_id: &str) -> Result<Vec<AccountToken>, String> {
+        let path = format!("/api/v1/accounts/{account_id}/tokens?limit={MAX_TOKENS}");
+        let held = match self.get(&path).await? {
+            Some(body) => parse_token_relationships(&body)?,
+            None => Vec::new(),
+        };
+        let mut tokens = Vec::new();
+        for (token_id, balance) in held {
+            let info = self.token_info(&token_id).await.ok().flatten();
+            match info {
+                Some(info) if info.token_type == "NON_FUNGIBLE_UNIQUE" || info.deleted => {}
+                Some(info) => tokens.push(AccountToken {
+                    token_id,
+                    symbol: info.symbol,
+                    name: info.name,
+                    balance,
+                    decimals: info.decimals,
+                }),
+                None => tokens.push(AccountToken {
+                    token_id,
+                    symbol: String::new(),
+                    name: String::new(),
+                    balance,
+                    decimals: 0,
+                }),
+            }
+        }
+        Ok(tokens)
+    }
+
+    /// Details of any token, or `None` if Testnet does not know it.
+    pub async fn token_info(&self, token_id: &str) -> Result<Option<TokenInfo>, String> {
+        let token_id = validate_account_id(token_id)
+            .map_err(|_| "token IDs look like 0.0.12345".to_string())?;
+        match self.get(&format!("/api/v1/tokens/{token_id}")).await? {
+            Some(body) => parse_token_info(&body, &token_id).map(Some),
+            None => Ok(None),
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_token_balances_and_drops_malformed_entries() {
+        let body = br#"{"tokens":[
+            {"token_id":"0.0.8","balance":12345},
+            {"token_id":"0.0.9","balance":"99999999999999999999"},
+            {"token_id":"bad","balance":1},
+            {"token_id":"0.0.10","balance":-5}
+        ]}"#;
+        assert_eq!(
+            parse_token_relationships(body).unwrap(),
+            vec![
+                ("0.0.8".to_string(), "12345".to_string()),
+                ("0.0.9".to_string(), "99999999999999999999".to_string())
+            ]
+        );
+        assert!(parse_token_relationships(b"nope").is_err());
+    }
+
+    #[test]
+    fn parses_token_info_with_text_numbers_and_checks_the_token() {
+        let body = br#"{"token_id":"0.0.8","name":"Alpha\u0007","symbol":"ALP","decimals":"2",
+            "type":"FUNGIBLE_COMMON","total_supply":"1000000","treasury_account_id":"0.0.5",
+            "deleted":false,"admin_key":{"_type":"ED25519","key":"ab"},"memo":"hi"}"#;
+        let info = parse_token_info(body, "0.0.8").unwrap();
+        assert_eq!(info.name, "Alpha");
+        assert_eq!(info.decimals, 2);
+        assert_eq!(info.total_supply, "1000000");
+        assert_eq!(info.treasury, "0.0.5");
+        assert!(info.has_admin_key && !info.deleted);
+        assert!(parse_token_info(body, "0.0.9").is_err());
+        let bare = parse_token_info(
+            br#"{"token_id":"0.0.8","admin_key":null,"decimals":99}"#,
+            "0.0.8",
+        )
+        .unwrap();
+        assert!(!bare.has_admin_key);
+        assert_eq!(bare.decimals, 18);
+    }
 
     #[test]
     fn reads_the_deleted_flag_and_checks_the_account() {
