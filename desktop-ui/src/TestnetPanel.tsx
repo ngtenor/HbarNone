@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { invoke } from '@tauri-apps/api/core'
+import { DropdownMenu } from './DropdownMenu'
 import { QrScanner } from './QrScanner'
 import type { TxProgress } from './TransactionProgress'
 import type { AddressBookView, WalletSummary } from './types'
@@ -212,7 +213,21 @@ export function TestnetPanel({
     if (!result) setNotice('This account was not found on Hedera Testnet.')
   }
 
+  // Every refresh control reloads everything shown for the account.
   const handleRefresh = () => run(loadOverview)
+
+  const refreshButton = (label: string) => (
+    <button
+      className={`icon-button${isBusy ? ' refreshing' : ''}`}
+      type="button"
+      aria-label={label}
+      title={isBusy ? 'Contacting Testnet...' : label}
+      disabled={isBusy}
+      onClick={handleRefresh}
+    >
+      <span aria-hidden="true">↻</span>
+    </button>
+  )
 
   // Selecting an account refreshes its balance; the panel remounts per account.
   useEffect(() => {
@@ -647,50 +662,34 @@ export function TestnetPanel({
         <>
           <div className="account-heading">
             <h2 className="section-title">{accountLabel}</h2>
-            <strong className="account-heading-balance">
-              {overview ? `${formatHbar(overview.balance_tinybars, 2)} ℏ` : ''}
-            </strong>
+            <div className="account-heading-balance-group">
+              {refreshButton('Refresh balance')}
+              <strong className="account-heading-balance">
+                {overview ? `${formatHbar(overview.balance_tinybars, 2)} ℏ` : ''}
+              </strong>
+            </div>
           </div>
           <div className="wallet-tab-actions account-actions">
-            <button
-              className="secondary-button"
-              type="button"
-              aria-expanded={section === 'send'}
-              onClick={() => toggleSection('send')}
-            >
-              Send
-            </button>
-            <button className="secondary-button" type="button" disabled={isBusy} onClick={handleRefresh}>
-              {isBusy ? 'Contacting Testnet...' : 'Refresh balance & tx.'}
-            </button>
-            <button
-              className="secondary-button"
-              type="button"
-              onClick={() => {
-                setNameInput(accountSummary?.named ? accountSummary.name : '')
-                toggleSection('rename')
+            <DropdownMenu
+              label="Send"
+              primary
+              entries={[{ id: 'hbar', label: 'HBAR' }]}
+              onSelect={() => toggleSection('send')}
+            />
+            <DropdownMenu
+              label="Account management"
+              entries={[
+                { id: 'rename', label: accountSummary?.named ? 'Rename account' : 'Name this account' },
+                ...(!isWatchOnly && otherWallets.length > 0
+                  ? [{ id: 'move', label: 'Move account' }]
+                  : []),
+                { id: 'delete', label: 'Delete account', danger: true },
+              ]}
+              onSelect={(id) => {
+                if (id === 'rename') setNameInput(accountSummary?.named ? accountSummary.name : '')
+                toggleSection(id as 'rename' | 'move' | 'delete')
               }}
-            >
-              {accountSummary?.named ? 'Rename account' : 'Name this account'}
-            </button>
-            {!isWatchOnly && otherWallets.length > 0 && (
-              <button
-                className="secondary-button risky-button"
-                type="button"
-                aria-expanded={section === 'move'}
-                onClick={() => toggleSection('move')}
-              >
-                Move account
-              </button>
-            )}
-            <button
-              className="secondary-button risky-button"
-              type="button"
-              aria-expanded={section === 'delete'}
-              onClick={() => toggleSection('delete')}
-            >
-              Delete account
-            </button>
+            />
           </div>
         </>
       ) : null}
@@ -1194,7 +1193,10 @@ export function TestnetPanel({
 
       {overview && (
         <div className="testnet-overview">
-          <h3>Recent transactions</h3>
+          <div className="testnet-overview-heading">
+            <h3>Recent transactions</h3>
+            {refreshButton('Refresh transactions')}
+          </div>
           {overview.transactions.length === 0 ? (
             <p className="field-hint">No transactions yet.</p>
           ) : (

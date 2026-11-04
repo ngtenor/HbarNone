@@ -368,6 +368,11 @@ async function openWalletTab(user: ReturnType<typeof userEvent.setup>, name: str
   await screen.findByRole('heading', { level: 1, name })
 }
 
+async function chooseMenu(user: ReturnType<typeof userEvent.setup>, menu: string, item: string) {
+  await user.click(screen.getByRole('button', { name: menu }))
+  await user.click(await screen.findByRole('menuitem', { name: item }))
+}
+
 async function openAccount(
   user: ReturnType<typeof userEvent.setup>,
   name: string,
@@ -377,7 +382,8 @@ async function openAccount(
   await openWalletTab(user, name)
   await user.click(await screen.findByRole('button', { name: new RegExp(accountId) }))
   await screen.findByRole('button', { name })
-  if (section) await user.click(screen.getByRole('button', { name: section }))
+  if (section === 'Send') await chooseMenu(user, 'Send', 'HBAR')
+  else if (section) await chooseMenu(user, 'Account management', section)
 }
 
 describe('home account links', () => {
@@ -515,20 +521,20 @@ describe('hedera testnet panel', () => {
     await unlock(user)
     await openAccount(user, 'Savings')
     expect(screen.queryByRole('heading', { name: 'Send HBAR' })).not.toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: 'Send' }))
-    await user.click(screen.getByRole('button', { name: 'Name this account' }))
+    await chooseMenu(user, 'Send', 'HBAR')
+    await chooseMenu(user, 'Account management', 'Name this account')
     expect(screen.queryByRole('heading', { name: 'Send HBAR' })).not.toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Name this account' })).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: 'Send' }))
+    await chooseMenu(user, 'Send', 'HBAR')
     expect(screen.queryByRole('heading', { name: 'Name this account' })).not.toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Send HBAR' })).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: 'Move account' }))
+    await chooseMenu(user, 'Account management', 'Move account')
     expect(screen.queryByRole('heading', { name: 'Send HBAR' })).not.toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Move account to another wallet' })).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: 'Delete account' }))
+    await chooseMenu(user, 'Account management', 'Delete account')
     expect(screen.queryByRole('heading', { name: 'Move account to another wallet' })).not.toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Delete account' })).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: 'Delete account' }))
+    await chooseMenu(user, 'Account management', 'Delete account')
     expect(screen.queryByRole('heading', { name: 'Delete account' })).not.toBeInTheDocument()
   })
 
@@ -614,7 +620,7 @@ describe('hedera testnet panel', () => {
       await unlock(user)
       await openWalletTab(user, 'Savings')
       await user.click(await screen.findByRole('button', { name: /0\.0\.1001/ }))
-      await user.click(screen.getByRole('button', { name: 'Delete account' }))
+      await chooseMenu(user, 'Account management', 'Delete account')
       await user.selectOptions(
         await screen.findByLabelText('Recipient from the address book'),
         '0.0.1002-abcde',
@@ -654,7 +660,7 @@ describe('hedera testnet panel', () => {
     expect(commandsCalled('get_account_overview')).toHaveLength(0)
     expect(screen.queryByLabelText('Recipient account ID')).not.toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: /0\.0\.1002/ }))
-    await user.click(screen.getByRole('button', { name: 'Send' }))
+    await chooseMenu(user, 'Send', 'HBAR')
     await typeRecipient(user, '0.0.2002-abcde')
     await user.type(screen.getByLabelText('Amount (ℏ)'), '1')
     await user.click(screen.getByRole('button', { name: 'Review transfer' }))
@@ -708,7 +714,7 @@ describe('hedera testnet panel', () => {
     render(<App />)
     await unlock(user)
     await openAccount(user, 'Savings')
-    await user.click(screen.getByRole('button', { name: 'Refresh balance & tx.' }))
+    await user.click(screen.getByRole('button', { name: 'Refresh balance' }))
     expect((await screen.findAllByText(/2\.50 ℏ/)).length).toBeGreaterThan(0)
     const list = screen.getByRole('list', { name: 'Recent transactions' })
     expect(within(list).getByText('CRYPTOTRANSFER')).toBeInTheDocument()
@@ -722,7 +728,7 @@ describe('hedera testnet panel', () => {
     render(<App />)
     await unlock(user)
     await openAccount(user, 'Savings')
-    await user.click(screen.getByRole('button', { name: 'Refresh balance & tx.' }))
+    await user.click(screen.getByRole('button', { name: 'Refresh balance' }))
     expect(await screen.findByRole('status')).toHaveTextContent('not found on Hedera Testnet')
   })
 
@@ -874,8 +880,8 @@ describe('hedera testnet panel', () => {
       await user.type(screen.getByLabelText('Amount (ℏ)'), '1')
       await user.click(screen.getByRole('button', { name: 'Review transfer' }))
       await screen.findByRole('group', { name: 'Confirm transfer' })
-      await user.click(screen.getByRole('button', { name: 'Name this account' }))
-      await user.click(screen.getByRole('button', { name: 'Send' }))
+      await chooseMenu(user, 'Account management', 'Name this account')
+      await chooseMenu(user, 'Send', 'HBAR')
       expect(await screen.findByLabelText('Recipient from the address book')).toHaveValue('')
       expect(screen.getByLabelText('Amount (ℏ)')).toHaveValue('')
     })
@@ -902,12 +908,13 @@ describe('hedera testnet panel', () => {
       expect(rows).toHaveTextContent('NONAME - 0.0.1001-abcde')
 
       await openAccount(user, 'Savings')
-      await user.click(await screen.findByRole('button', { name: 'Name this account' }))
+      await chooseMenu(user, 'Account management', 'Name this account')
       expect(screen.getByRole('heading', { name: 'Name this account' })).toBeInTheDocument()
       expect(screen.getByLabelText(/Account name/)).toHaveAttribute('maxLength', '25')
       await user.type(screen.getByLabelText(/Account name/), 'Rent')
       await user.click(screen.getByRole('button', { name: 'Save name' }))
-      expect(await screen.findByRole('button', { name: 'Rename account' })).toBeInTheDocument()
+      await user.click(screen.getByRole('button', { name: 'Account management' }))
+      expect(await screen.findByRole('menuitem', { name: 'Rename account' })).toBeInTheDocument()
       expect(screen.getAllByText('Rent').length).toBeGreaterThan(0)
       expect(commandsCalled('rename_account')[0].args).toMatchObject({ accountId: '0.0.1001', name: 'Rent' })
     })
@@ -1289,6 +1296,7 @@ describe('watch-only wallet', () => {
     const user = userEvent.setup()
     installBackend({
       status: 'unlocked',
+      overview: { account_id: 'x', balance_tinybars: 100_000_000, transactions: [] },
       wallets: [{
         ...wallet('w-watch', 'Monitor', ['0.0.1001']),
         secret_kind: 'watchonly',
@@ -1297,11 +1305,38 @@ describe('watch-only wallet', () => {
     })
     render(<App />)
     await openAccount(user, 'Monitor')
-    expect(screen.getByRole('button', { name: 'Refresh balance & tx.' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Name this account' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Refresh balance' })).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: 'Refresh transactions' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Send' })).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Move account' })).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Delete account' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Account management' }))
+    expect(screen.getByRole('menuitem', { name: 'Name this account' })).toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: 'Move account' })).not.toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: 'Delete account' })).toBeInTheDocument()
+  })
+
+  it('closes a dropdown menu with Escape and refreshes everything from either refresh icon', async () => {
+    const user = userEvent.setup()
+    installBackend({
+      wallets: [wallet('w1', 'Savings', '0.0.1001')],
+      overview: { account_id: 'x', balance_tinybars: 100_000_000, transactions: [] },
+    })
+    render(<App />)
+    await unlock(user)
+    await openAccount(user, 'Savings')
+    await user.click(screen.getByRole('button', { name: 'Send' }))
+    expect(screen.getByRole('menuitem', { name: 'HBAR' })).toBeInTheDocument()
+    await user.keyboard('{Escape}')
+    expect(screen.queryByRole('menuitem', { name: 'HBAR' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Account management' }))
+    await user.click(screen.getByRole('heading', { name: 'Savings' }))
+    expect(screen.queryByRole('menuitem', { name: 'Delete account' })).not.toBeInTheDocument()
+
+    await screen.findByRole('button', { name: 'Refresh transactions' })
+    const before = commandsCalled('get_account_overview').length
+    await user.click(await screen.findByRole('button', { name: 'Refresh balance' }))
+    await waitFor(() => expect(commandsCalled('get_account_overview')).toHaveLength(before + 1))
+    await user.click(await screen.findByRole('button', { name: 'Refresh transactions' }))
+    await waitFor(() => expect(commandsCalled('get_account_overview')).toHaveLength(before + 2))
   })
 
   it('exports a signing request, then submits the pasted signature', async () => {
@@ -1316,7 +1351,7 @@ describe('watch-only wallet', () => {
     })
     render(<App />)
     await openAccount(user, 'Monitor')
-    await user.click(screen.getByRole('button', { name: 'Send' }))
+    await chooseMenu(user, 'Send', 'HBAR')
     await typeRecipient(user, '0.0.2002-abcde')
     await user.type(screen.getByLabelText('Amount (ℏ)'), '1')
     await user.click(screen.getByRole('button', { name: 'Review transfer' }))
@@ -1350,7 +1385,7 @@ describe('watch-only wallet', () => {
       render(<App />)
       await openWalletTab(user, 'Monitor')
       await user.click(await screen.findByRole('button', { name: /0\.0\.1001/ }))
-      await user.click(screen.getByRole('button', { name: 'Delete account' }))
+      await chooseMenu(user, 'Account management', 'Delete account')
       expect(screen.queryByLabelText('Check to send to a different account')).not.toBeInTheDocument()
       await user.selectOptions(
         await screen.findByLabelText('Recipient (another account of this wallet)'),
@@ -1419,7 +1454,7 @@ describe('watch-only wallet', () => {
     })
     render(<App />)
     await openAccount(user, 'Monitor')
-    await user.click(screen.getByRole('button', { name: 'Send' }))
+    await chooseMenu(user, 'Send', 'HBAR')
     await typeRecipient(user, '0.0.2002-abcde')
     await user.type(screen.getByLabelText('Amount (ℏ)'), '1')
     await user.click(screen.getByRole('button', { name: 'Review transfer' }))
