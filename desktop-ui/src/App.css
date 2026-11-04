@@ -425,12 +425,6 @@ h2.section-title,
   grid-template-columns: minmax(0, 1fr) auto;
 }
 
-.assets-toggle {
-  margin-left: 8px;
-  height: 32px;
-  min-width: 0;
-}
-
 .account-heading-balance-group,
 .testnet-overview-heading {
   display: flex;

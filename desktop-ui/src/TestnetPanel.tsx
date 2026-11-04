@@ -676,13 +676,6 @@ export function TestnetPanel({
               <strong className="account-heading-balance">
                 {overview ? `${formatHbar(overview.balance_tinybars, 2)} ℏ` : ''}
               </strong>
-              <button
-                className="secondary-button assets-toggle"
-                type="button"
-                onClick={() => setShowAssets((current) => !current)}
-              >
-                {showAssets ? 'Recent transactions' : 'Account assets'}
-              </button>
             </div>
           </div>
           <div className="wallet-tab-actions account-actions">
@@ -692,6 +685,13 @@ export function TestnetPanel({
               entries={[{ id: 'hbar', label: 'HBAR' }]}
               onSelect={() => toggleSection('send')}
             />
+            <button
+              className="secondary-button"
+              type="button"
+              onClick={() => setShowAssets((current) => !current)}
+            >
+              {showAssets ? 'Recent transactions' : 'Account assets'}
+            </button>
             <DropdownMenu
               label="Account management"
               entries={[
