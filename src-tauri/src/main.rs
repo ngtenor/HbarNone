@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{Manager, State};
 use tauri_plugin_dialog::DialogExt;
 use wallet_core::{
-    account_checksum::parse_account_input,
+    account_checksum::{parse_account_input, with_checksum},
     key_import::{KeyType, SecretKind, is_valid_ecdsa_secret, parse_private_key, public_key_hex},
     vault_container::Network,
     wallet_service::{
@@ -452,8 +452,8 @@ fn prepare_unsigned_transfer(
             .into_iter()
             .map(|c| c == qrcode::Color::Dark)
             .collect(),
-        sender: d.sender,
-        receiver: d.receiver,
+        sender: with_checksum(Network::Testnet, &d.sender).unwrap_or(d.sender),
+        receiver: with_checksum(Network::Testnet, &d.receiver).unwrap_or(d.receiver),
         tinybars: d.tinybars,
         memo: d.memo,
         expires_at_seconds: d.expires_at_seconds,

@@ -14,3 +14,5 @@ zeroize = "1.9"
 
 [dev-dependencies]
 hedera-tx = { path = "../hedera-tx" }
+# Only to cross-check the checksum against the app's implementation.
+wallet-core = { path = "../wallet-core" }

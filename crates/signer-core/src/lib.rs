@@ -333,12 +333,89 @@ pub fn format_hbar(tinybars: i64) -> String {
     format!("{}.{:08}", tinybars / 100_000_000, tinybars % 100_000_000)
 }
 
+/// The HIP-15 checksum letters for a Testnet account such as `0.0.12345`.
+/// The signer only ever signs for Testnet. Returns `None` for anything that
+/// is not three dot-separated numbers of at most 19 digits in total.
+pub fn testnet_checksum(account: &str) -> Option<String> {
+    const P3: u64 = 26 * 26 * 26;
+    const P5: u64 = P3 * 26 * 26;
+    const M: u64 = 1_000_003;
+    const W: u64 = 31;
+    const TESTNET_LEDGER_ID: u64 = 1;
+
+    let parts: Vec<&str> = account.split('.').collect();
+    let well_formed = parts.len() == 3
+        && parts
+            .iter()
+            .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
+        && account.len() <= 19;
+    if !well_formed {
+        return None;
+    }
+    let digits: Vec<u64> = account
+        .bytes()
+        .map(|b| if b == b'.' { 10 } else { u64::from(b - b'0') })
+        .collect();
+    let (mut sd, mut even, mut odd) = (0u64, 0u64, 0u64);
+    for (index, digit) in digits.iter().enumerate() {
+        sd = (sd * W + digit) % P3;
+        if index % 2 == 0 {
+            even += digit;
+        } else {
+            odd += digit;
+        }
+    }
+    let (even, odd) = (even % 11, odd % 11);
+    let mut sh = 0u64;
+    for byte in [TESTNET_LEDGER_ID, 0, 0, 0, 0, 0, 0] {
+        sh = (W * sh + byte) % P5;
+    }
+    let mut value = ((((digits.len() as u64 % 5) * 11 + even) * 11 + odd) * P3 + sd + sh) * M % P5;
+    let mut letters = [b'a'; 5];
+    for slot in letters.iter_mut().rev() {
+        *slot = b'a' + (value % 26) as u8;
+        value /= 26;
+    }
+    Some(String::from_utf8_lossy(&letters).into_owned())
+}
+
+/// The account with its checksum, `0.0.12345-abcde`, so a mistyped or
+/// swapped digit is easy to spot against the same value shown in the app.
+pub fn with_checksum(account: &str) -> String {
+    match testnet_checksum(account) {
+        Some(letters) => format!("{account}-{letters}"),
+        None => account.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use hedera_tx::offline::{assemble, build_request};
 
     const NOW: i64 = 1_700_000_000;
+
+    #[test]
+    fn checksums_match_hip15_and_the_app() {
+        assert_eq!(testnet_checksum("0.0.123").as_deref(), Some("esxsf"));
+        for id in [
+            "0.0.3",
+            "0.0.1001",
+            "0.0.12345",
+            "0.0.4999999",
+            "0.0.9007199",
+        ] {
+            let app = wallet_core::account_checksum::with_checksum(
+                wallet_core::vault_container::Network::Testnet,
+                id,
+            )
+            .unwrap();
+            assert_eq!(with_checksum(id), app, "{id}");
+        }
+        assert_eq!(testnet_checksum("0.0.12x"), None);
+        assert_eq!(testnet_checksum("0.0"), None);
+        assert_eq!(with_checksum("junk"), "junk");
+    }
 
     fn request(memo: &str) -> String {
         build_request("0.0.1001", "0.0.1002", 150_000_000, memo)
