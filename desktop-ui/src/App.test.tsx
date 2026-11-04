@@ -30,6 +30,7 @@ type Backend = {
   overview: unknown
   sendError: string | null
   transactionResult?: string
+  hidden: string[]
   detection: { keyType: string | null; accounts: string[] }
   allowExternalSends: boolean
   allowExternalDeletes: boolean
@@ -114,6 +115,7 @@ function installBackend(overrides: Partial<Backend> = {}) {
     foundAccounts: [],
     overview: null,
     sendError: null,
+    hidden: [],
     detection: { keyType: null, accounts: [] },
     allowExternalSends: true,
     allowExternalDeletes: false,
@@ -196,6 +198,19 @@ function installBackend(overrides: Partial<Backend> = {}) {
           admin_key: 'ab'.repeat(32),
           memo: '',
         }
+      case 'get_hidden_tokens':
+        return [...backend.hidden]
+      case 'set_token_hidden':
+        backend.hidden = args?.hidden
+          ? [...backend.hidden.filter((id) => id !== args.tokenId), String(args.tokenId)]
+          : backend.hidden.filter((id) => id !== args?.tokenId)
+        return [...backend.hidden]
+      case 'associate_token':
+        if (backend.sendError) throw new Error(backend.sendError)
+        return { transactionId: '0.0.1001-1700000000-000000011' }
+      case 'dissociate_token':
+        if (backend.sendError) throw new Error(backend.sendError)
+        return { transactionId: '0.0.1001-1700000000-000000012' }
       case 'create_token':
         if (backend.sendError) throw new Error(backend.sendError)
         return { transactionId: '0.0.1001-1700000000-000000009' }
@@ -205,6 +220,7 @@ function installBackend(overrides: Partial<Backend> = {}) {
       case 'get_account_overview':
         return backend.overview
       case 'send_hbar':
+      case 'send_token':
         if (backend.sendError) throw new Error(backend.sendError)
         return { transactionId: '0.0.1001-1700000000-000000005' }
       case 'prepare_unsigned_transfer':
@@ -1392,8 +1408,39 @@ describe('watch-only wallet', () => {
     expect(items.map((item) => item.textContent)).toEqual(['HBAR', 'ALP123.45', 'EMP0', 'ZED5'])
     expect(screen.getByRole('menuitem', { name: /EMP/ })).toBeDisabled()
     await user.click(screen.getByRole('menuitem', { name: /ZED/ }))
-    expect(screen.getByRole('status')).toHaveTextContent('not available yet')
+    expect(screen.getByRole('heading', { name: 'Send ZED' })).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Send HBAR' })).not.toBeInTheDocument()
+  })
+
+  it('sends a token with the chosen amount after review', async () => {
+    const user = userEvent.setup()
+    installBackend({
+      wallets: [wallet('w1', 'Savings', '0.0.1001'), wallet('w2', 'Trading', '0.0.1002')],
+      overview: {
+        account_id: 'x',
+        balance_tinybars: 150_000_000,
+        transactions: [],
+        tokens: [{ token_id: '0.0.8', symbol: 'ALP', name: 'Alpha', balance: '12345', decimals: 2 }],
+      },
+    })
+    render(<App />)
+    await unlock(user)
+    await openAccount(user, 'Savings')
+    await screen.findByRole('button', { name: 'Refresh transactions' })
+    await user.click(screen.getByRole('button', { name: 'Send' }))
+    await user.click(screen.getByRole('menuitem', { name: /ALP/ }))
+    await user.selectOptions(screen.getByLabelText('Recipient from the address book'), '0.0.1002-abcde')
+    await user.type(screen.getByLabelText('Amount'), '1.5')
+    await user.click(screen.getByRole('button', { name: 'Review transfer' }))
+    expect(await screen.findByText('1.5 ALP')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Sign and send' }))
+    await screen.findByText('SUCCESS!')
+    expect(commandsCalled('send_token')[0].args).toMatchObject({
+      fromAccount: '0.0.1001',
+      tokenId: '0.0.8',
+      amount: '1.5',
+    })
+    expect(commandsCalled('send_hbar')).toHaveLength(0)
   })
 
   it('looks up a token from Token management', async () => {
@@ -1481,6 +1528,110 @@ describe('watch-only wallet', () => {
       accountId: '0.0.1001',
       tokenId: '0.0.8',
     })
+  })
+
+  it('adds a token only after a lookup and review, and removes one with a zero balance', async () => {
+    const user = userEvent.setup()
+    installBackend({
+      wallets: [wallet('w1', 'Savings', '0.0.1001')],
+      overview: {
+        account_id: 'x',
+        balance_tinybars: 150_000_000,
+        transactions: [],
+        tokens: [
+          { token_id: '0.0.7', symbol: 'EMP', name: 'Empty', balance: '0', decimals: 0 },
+          { token_id: '0.0.9', symbol: 'ZED', name: 'Zed Coin', balance: '5', decimals: 0 },
+        ],
+      },
+    })
+    render(<App />)
+    await unlock(user)
+    await openAccount(user, 'Savings')
+    await screen.findByRole('button', { name: 'Refresh transactions' })
+    await chooseMenu(user, 'Token management', 'Add token')
+    expect(screen.queryByRole('button', { name: 'Sign and add token' })).not.toBeInTheDocument()
+    await user.type(screen.getByLabelText('Token ID'), '0.0.8')
+    await user.click(screen.getByRole('button', { name: 'Look up token' }))
+    expect(await screen.findByRole('group', { name: 'Confirm adding token' })).toHaveTextContent('Alpha')
+    expect(commandsCalled('associate_token')).toHaveLength(0)
+    await user.click(screen.getByRole('button', { name: 'Sign and add token' }))
+    await waitFor(() => expect(commandsCalled('associate_token')).toHaveLength(1))
+    expect(commandsCalled('associate_token')[0].args).toEqual({
+      walletId: 'w1',
+      accountId: '0.0.1001',
+      tokenId: '0.0.8',
+    })
+
+    await chooseMenu(user, 'Token management', 'Remove token')
+    const submit = screen.getByRole('button', { name: 'Sign and remove token' })
+    expect(submit).toBeDisabled()
+    expect(screen.getByRole('option', { name: /ZED.*must be 0/ })).toBeDisabled()
+    await user.selectOptions(screen.getByLabelText('Token to remove'), '0.0.7')
+    await user.click(submit)
+    await waitFor(() => expect(commandsCalled('dissociate_token')).toHaveLength(1))
+    expect(commandsCalled('dissociate_token')[0].args).toEqual({
+      walletId: 'w1',
+      accountId: '0.0.1001',
+      tokenId: '0.0.7',
+    })
+  })
+
+  it('hides a token everywhere and shows it again on request', async () => {
+    const user = userEvent.setup()
+    installBackend({
+      wallets: [wallet('w1', 'Savings', '0.0.1001')],
+      overview: {
+        account_id: 'x',
+        balance_tinybars: 150_000_000,
+        transactions: [],
+        tokens: [
+          { token_id: '0.0.8', symbol: 'ALP', name: 'Alpha', balance: '12345', decimals: 2 },
+          { token_id: '0.0.9', symbol: 'ZED', name: 'Zed Coin', balance: '5', decimals: 0 },
+        ],
+      },
+    })
+    render(<App />)
+    await unlock(user)
+    await openAccount(user, 'Savings')
+    await screen.findByRole('button', { name: 'Refresh transactions' })
+    await chooseMenu(user, 'Token management', 'Hide or show tokens')
+    await user.click(screen.getByRole('button', { name: 'Hide ZED' }))
+    expect(await screen.findByRole('button', { name: 'Show ZED' })).toBeInTheDocument()
+    expect(commandsCalled('set_token_hidden')[0].args).toEqual({
+      walletId: 'w1',
+      tokenId: '0.0.9',
+      hidden: true,
+    })
+    await user.click(screen.getByRole('button', { name: 'Close' }))
+
+    await user.click(screen.getByRole('button', { name: 'Send' }))
+    expect(screen.getAllByRole('menuitem').map((item) => item.textContent)).toEqual(['HBAR', 'ALP123.45'])
+    await user.keyboard('{Escape}')
+    await user.click(screen.getByRole('button', { name: 'Account assets' }))
+    const rows = () => within(screen.getByRole('list', { name: 'Account assets' })).getAllByRole('listitem')
+    expect(rows().map((row) => row.textContent)).toEqual(['HBAR1.50 ℏ', 'ALP Alpha123.45'])
+    await user.click(screen.getByRole('button', { name: 'Show hidden tokens (1)' }))
+    expect(rows().map((row) => row.textContent)).toEqual([
+      'HBAR1.50 ℏ',
+      'ALP Alpha123.45',
+      'ZED Zed Coin (hidden)5',
+    ])
+    await user.click(screen.getByRole('button', { name: 'Hide hidden tokens' }))
+    expect(rows()).toHaveLength(2)
+  })
+
+  it('lets watch-only wallets hide tokens but not add or remove them', async () => {
+    const user = userEvent.setup()
+    installBackend({
+      wallets: [{ ...wallet('w1', 'Watcher', '0.0.1001'), secret_kind: 'watchonly', key_type: 'ed25519' }],
+    })
+    render(<App />)
+    await unlock(user)
+    await openAccount(user, 'Watcher')
+    await user.click(screen.getByRole('button', { name: 'Token management' }))
+    expect(screen.getByRole('menuitem', { name: /Add token/ })).toBeDisabled()
+    expect(screen.getByRole('menuitem', { name: /Remove token/ })).toBeDisabled()
+    expect(screen.getByRole('menuitem', { name: /Hide or show tokens/ })).toBeEnabled()
   })
 
   it('disables token creation and deletion for watch-only wallets', async () => {

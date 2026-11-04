@@ -110,8 +110,8 @@ Password change and encrypted backup export/restore are tracked under
 4. HTS tokens, in stages (hot wallets first):
    - (Done) Stage 1: token balances in Account assets and Send menu, and Token info lookup.
    - Stage 2 (built, awaiting Testnet test): create and delete a fungible token. The wallet key is the treasury, admin and supply key; the fee cap for creation is 20 HBAR.
-   - Stage 3: associate, dissociate and hide tokens.
-   - Stage 4: send a token, with a receiver-association check.
+   - Stage 3 (built, awaiting Testnet test): associate, dissociate and hide tokens.
+   - Stage 4 (built, awaiting Rust compile and Testnet test): send a token, with a receiver-association check.
    - Stage 5: mint and burn.
    - Stage 6: signer support for watch-only wallets (association, token send, create, delete, mint and burn).
    - Later: NFTs, key change and hardware work.

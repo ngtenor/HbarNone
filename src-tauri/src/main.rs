@@ -417,6 +417,116 @@ async fn create_token(
     })
 }
 
+/// Associates this wallet's account with a fungible token so it can hold it.
+#[tauri::command]
+async fn associate_token(
+    wallet_id: String,
+    account_id: String,
+    token_id: String,
+    state: State<'_, AppState>,
+) -> Result<SendResult, String> {
+    let account = testnet_account_of(&state, &wallet_id, &account_id)?;
+    let token_id = validate_account_id(&token_id)?;
+    let mirror = MirrorClient::testnet()?;
+    let info = mirror
+        .token_info(&token_id)
+        .await?
+        .ok_or_else(|| "The mirror node does not know this token.".to_string())?;
+    if info.deleted {
+        return Err("This token has been deleted.".to_string());
+    }
+    if info.token_type != "FUNGIBLE_COMMON" {
+        return Err("Only fungible tokens are supported for now.".to_string());
+    }
+    if let Some(overview) = mirror.account_overview(&account).await? {
+        if overview.tokens.iter().any(|t| t.token_id == token_id) {
+            return Err("This account is already associated with the token.".to_string());
+        }
+    }
+    let (key_type, secret) = lock_service(&state)?
+        .with_wallet_key(&wallet_id, |key_type, secret| {
+            Ok((key_type, Zeroizing::new(*secret)))
+        })?;
+    let receipt = hedera_tx::submit::change_testnet_token_association(
+        &account,
+        (key_type, &secret),
+        &token_id,
+        true,
+    )
+    .await?;
+    Ok(SendResult {
+        transaction_id: receipt.transaction_id,
+    })
+}
+
+/// Removes a token from this wallet's account, after checking that the
+/// balance is zero and the account is not the token's treasury.
+#[tauri::command]
+async fn dissociate_token(
+    wallet_id: String,
+    account_id: String,
+    token_id: String,
+    state: State<'_, AppState>,
+) -> Result<SendResult, String> {
+    let account = testnet_account_of(&state, &wallet_id, &account_id)?;
+    let token_id = validate_account_id(&token_id)?;
+    let mirror = MirrorClient::testnet()?;
+    let overview = mirror
+        .account_overview(&account)
+        .await?
+        .ok_or_else(|| "This account was not found on Testnet.".to_string())?;
+    let held = overview
+        .tokens
+        .iter()
+        .find(|t| t.token_id == token_id)
+        .ok_or_else(|| "This account is not associated with that token.".to_string())?;
+    if held.balance != "0" {
+        return Err(
+            "The balance must be zero before a token can be removed. Send the rest away first."
+                .to_string(),
+        );
+    }
+    if let Some(info) = mirror.token_info(&token_id).await? {
+        if !info.deleted && info.treasury == account {
+            return Err("The treasury account cannot remove its own token.".to_string());
+        }
+    }
+    let (key_type, secret) = lock_service(&state)?
+        .with_wallet_key(&wallet_id, |key_type, secret| {
+            Ok((key_type, Zeroizing::new(*secret)))
+        })?;
+    let receipt = hedera_tx::submit::change_testnet_token_association(
+        &account,
+        (key_type, &secret),
+        &token_id,
+        false,
+    )
+    .await?;
+    Ok(SendResult {
+        transaction_id: receipt.transaction_id,
+    })
+}
+
+#[tauri::command]
+fn get_hidden_tokens(wallet_id: String, state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    lock_service(&state)?.hidden_tokens(&wallet_id)
+}
+
+#[tauri::command]
+fn set_token_hidden(
+    wallet_id: String,
+    token_id: String,
+    hidden: bool,
+    state: State<'_, AppState>,
+) -> Result<Vec<String>, String> {
+    lock_service(&state)?.set_token_hidden(
+        &wallet_id,
+        &token_id,
+        hidden,
+        &state.store_path.to_string_lossy(),
+    )
+}
+
 /// Deletes a token after checking on the mirror node that this wallet's key is
 /// its admin key, so a doomed transaction never costs a fee.
 #[tauri::command]
@@ -477,6 +587,81 @@ async fn send_hbar(
     ensure_send_allowed(&state, &recipient)?;
     let receipt = hedera_tx::submit::send_testnet_transfer(
         key_type, &secret, &sender, &recipient, tinybars, &memo,
+    )
+    .await?;
+    Ok(SendResult {
+        transaction_id: receipt.transaction_id,
+    })
+}
+
+/// Sends a fungible token. The mirror node is checked first so a transfer that
+/// would fail (token deleted, not enough balance, receiver not associated)
+/// never costs a fee. `amount` is in whole tokens, such as `12.5`.
+#[tauri::command]
+async fn send_token(
+    wallet_id: String,
+    from_account: String,
+    recipient: String,
+    token_id: String,
+    amount: String,
+    memo: String,
+    state: State<'_, AppState>,
+) -> Result<SendResult, String> {
+    let sender = testnet_account_of(&state, &wallet_id, &from_account)?;
+    let token_id = validate_account_id(&token_id)?;
+    let recipient = parse_account_input(&recipient, Network::Testnet, true)?;
+    ensure_send_allowed(&state, &recipient)?;
+    let mirror = MirrorClient::testnet()?;
+    let info = mirror
+        .token_info(&token_id)
+        .await?
+        .ok_or_else(|| "The mirror node does not know this token.".to_string())?;
+    if info.deleted {
+        return Err("This token has been deleted.".to_string());
+    }
+    if info.token_type != "FUNGIBLE_COMMON" {
+        return Err("Only fungible tokens are supported for now.".to_string());
+    }
+    let units = hedera_tx::submit::parse_token_amount(&amount, info.decimals)?;
+    if units == 0 {
+        return Err("Amount must be greater than zero.".to_string());
+    }
+    let held = mirror
+        .account_overview(&sender)
+        .await?
+        .and_then(|o| o.tokens.into_iter().find(|t| t.token_id == token_id))
+        .ok_or_else(|| "This account does not hold that token.".to_string())?;
+    let balance: u64 = held
+        .balance
+        .parse()
+        .map_err(|_| "The mirror node returned an unreadable balance.".to_string())?;
+    if units > balance {
+        return Err("The balance is too low for this amount.".to_string());
+    }
+    let receiver_associated = mirror
+        .account_overview(&recipient)
+        .await?
+        .ok_or_else(|| "The recipient was not found on Testnet.".to_string())?
+        .tokens
+        .iter()
+        .any(|t| t.token_id == token_id);
+    if !receiver_associated {
+        return Err(
+            "The recipient has not associated this token, so it cannot receive it yet.".to_string(),
+        );
+    }
+    let (key_type, secret) = lock_service(&state)?
+        .with_wallet_key(&wallet_id, |key_type, secret| {
+            Ok((key_type, Zeroizing::new(*secret)))
+        })?;
+    let receipt = hedera_tx::submit::send_testnet_token(
+        (key_type, &secret),
+        &sender,
+        &recipient,
+        &token_id,
+        units,
+        info.decimals,
+        &memo,
     )
     .await?;
     Ok(SendResult {
@@ -1255,6 +1440,11 @@ fn main() {
             get_token_info,
             create_token,
             delete_token,
+            associate_token,
+            send_token,
+            dissociate_token,
+            get_hidden_tokens,
+            set_token_hidden,
             get_transaction_result,
             get_account_overview,
             send_hbar,

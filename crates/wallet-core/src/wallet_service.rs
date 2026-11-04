@@ -37,6 +37,7 @@ fn unlock_delay(failed_attempts: u32) -> Option<Duration> {
 pub const UNNAMED_ACCOUNT: &str = "NONAME";
 pub const MAX_ACCOUNT_NAME_CHARS: usize = 25;
 pub const MAX_ADDRESS_BOOK_ENTRIES: usize = 200;
+pub const MAX_HIDDEN_TOKENS: usize = 500;
 
 /// An account as shown to the user: `display_id` carries the checksum.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -941,6 +942,60 @@ impl WalletService {
         self.persist_payload(next_payload, path)
     }
 
+    /// The token IDs this wallet hides, in the order they were hidden.
+    pub fn hidden_tokens(&mut self, wallet_id: &str) -> Result<Vec<String>, String> {
+        self.ensure_unlocked()?;
+        Ok(self
+            .payload
+            .as_ref()
+            .expect("checked unlocked")
+            .hidden_tokens
+            .get(wallet_id)
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    /// Hides or shows a token for the whole wallet. Purely local; it changes
+    /// nothing on the network.
+    pub fn set_token_hidden(
+        &mut self,
+        wallet_id: &str,
+        token_id: &str,
+        hidden: bool,
+        path: &str,
+    ) -> Result<Vec<String>, String> {
+        self.ensure_unlocked()?;
+        let token_id = validate_account_id(token_id)?;
+        let mut next_payload = self.payload.as_ref().expect("checked unlocked").clone();
+        if !next_payload
+            .wallets
+            .iter()
+            .any(|wallet| wallet.id == wallet_id)
+        {
+            return Err(format!("wallet not found: {wallet_id}"));
+        }
+        let list = next_payload
+            .hidden_tokens
+            .entry(wallet_id.to_string())
+            .or_default();
+        if hidden {
+            if list.len() >= MAX_HIDDEN_TOKENS && !list.contains(&token_id) {
+                return Err("Too many hidden tokens. Show some before hiding more.".to_string());
+            }
+            if !list.contains(&token_id) {
+                list.push(token_id);
+            }
+        } else {
+            list.retain(|id| *id != token_id);
+        }
+        let result = list.clone();
+        if result.is_empty() {
+            next_payload.hidden_tokens.remove(wallet_id);
+        }
+        self.persist_payload(next_payload, path)?;
+        Ok(result)
+    }
+
     /// Whether the account is in the address book (a wallet account or a
     /// third-party entry).
     pub fn address_book_contains(
@@ -1213,6 +1268,7 @@ impl WalletService {
             .position(|wallet| wallet.id == wallet_id)
             .ok_or_else(|| format!("wallet not found: {wallet_id}"))?;
         next_payload.wallets.remove(index);
+        next_payload.hidden_tokens.remove(wallet_id);
         self.persist_payload(next_payload, path)
     }
 
@@ -1472,6 +1528,50 @@ mod tests {
         service.create_vault("vault password", path).unwrap();
         let mode = std::fs::metadata(path).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[test]
+    fn hidden_tokens_are_per_wallet_persist_and_go_with_the_wallet() {
+        let (_directory, path) = temp_path();
+        let path = path.to_str().unwrap();
+        let mut service = WalletService::new();
+        service.create_vault("vault password", path).unwrap();
+        let first = service.create_and_save_wallet("First", path).unwrap();
+        let second = service.create_and_save_wallet("Second", path).unwrap();
+        assert!(service.hidden_tokens(&first.id).unwrap().is_empty());
+
+        service
+            .set_token_hidden(&first.id, "0.0.8", true, path)
+            .unwrap();
+        service
+            .set_token_hidden(&first.id, "0.0.8", true, path)
+            .unwrap();
+        let hidden = service
+            .set_token_hidden(&first.id, "0.0.9", true, path)
+            .unwrap();
+        assert_eq!(hidden, vec!["0.0.8".to_string(), "0.0.9".to_string()]);
+        assert!(service.hidden_tokens(&second.id).unwrap().is_empty());
+        assert!(
+            service
+                .set_token_hidden(&first.id, "nope", true, path)
+                .is_err()
+        );
+        assert!(
+            service
+                .set_token_hidden("missing", "0.0.8", true, path)
+                .is_err()
+        );
+
+        service.lock();
+        service.unlock_vault("vault password").unwrap();
+        assert_eq!(service.hidden_tokens(&first.id).unwrap().len(), 2);
+        let shown = service
+            .set_token_hidden(&first.id, "0.0.8", false, path)
+            .unwrap();
+        assert_eq!(shown, vec!["0.0.9".to_string()]);
+
+        service.delete_wallet_and_save(&first.id, path).unwrap();
+        assert!(service.hidden_tokens(&first.id).unwrap().is_empty());
     }
 
     #[test]

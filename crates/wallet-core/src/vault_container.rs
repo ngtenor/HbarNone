@@ -105,6 +105,9 @@ pub struct VaultPayload {
     /// the address book.
     #[serde(default)]
     pub allow_external_deletes: bool,
+    /// Token IDs each wallet has chosen to hide, keyed by wallet ID.
+    #[serde(default)]
+    pub hidden_tokens: std::collections::BTreeMap<String, Vec<String>>,
 }
 
 impl Default for VaultPayload {
@@ -115,6 +118,7 @@ impl Default for VaultPayload {
             address_book: Vec::new(),
             allow_external_sends: false,
             allow_external_deletes: false,
+            hidden_tokens: Default::default(),
         }
     }
 }
