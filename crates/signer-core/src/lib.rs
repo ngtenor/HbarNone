@@ -1,9 +1,10 @@
 //! Offline signer core.
 //!
 //! Reads a `HVTX1-REQ:` request, decodes the transaction body itself, and
-//! signs only if the body is exactly an HBAR transfer it can show in full.
-//! Anything else (an unknown field, another transaction type, extra transfer
-//! lines, a long validity window) is rejected. It never touches the network.
+//! signs only if the body is exactly a transaction it can show in full: an
+//! HBAR transfer, an account deletion or an account creation. Anything else
+//! (an unknown field, another transaction type, extra transfer lines, a long
+//! validity window) is rejected. It never touches the network.
 
 use ed25519_dalek::Signer;
 use k256::ecdsa::SigningKey as EcdsaKey;
@@ -21,6 +22,10 @@ pub const MAX_FEE_TINYBARS: u64 = 100_000_000;
 pub const MAX_MEMO_BYTES: usize = 100;
 /// The only node the app targets (Testnet 0.0.3).
 const NODE_NUM: i64 = 3;
+/// Ninety days, the only renewal period the app uses for new accounts.
+const AUTO_RENEW_SECONDS: i64 = 7_776_000;
+/// Largest opening balance the app will fund a new account with (10,000 HBAR).
+const MAX_INITIAL_TINYBARS: i64 = 1_000_000_000_000;
 /// A request larger than this is not a plain transfer.
 const MAX_REQUEST_HEX_CHARS: usize = 2_000;
 
@@ -76,8 +81,36 @@ struct CryptoTransferBody {
     transfers: Option<TransferList>,
 }
 
-/// Only the fields of a plain transfer. Any other field is dropped on decode,
-/// so re-encoding no longer matches the input and the request is rejected.
+#[derive(Clone, PartialEq, Message)]
+struct CryptoDeleteBody {
+    #[prost(message, optional, tag = "1")]
+    transfer_account: Option<AccountId>,
+    #[prost(message, optional, tag = "2")]
+    delete_account: Option<AccountId>,
+}
+
+#[derive(Clone, PartialEq, Message)]
+struct Key {
+    #[prost(bytes = "vec", optional, tag = "2")]
+    ed25519: Option<Vec<u8>>,
+    #[prost(bytes = "vec", optional, tag = "7")]
+    ecdsa_secp256k1: Option<Vec<u8>>,
+}
+
+#[derive(Clone, PartialEq, Message)]
+struct CryptoCreateBody {
+    #[prost(message, optional, tag = "1")]
+    key: Option<Key>,
+    #[prost(uint64, tag = "2")]
+    initial_balance: u64,
+    #[prost(message, optional, tag = "9")]
+    auto_renew_period: Option<Duration>,
+    #[prost(string, tag = "13")]
+    memo: String,
+}
+
+/// Only the fields of the supported transactions. Any other field is dropped on
+/// decode, so re-encoding no longer matches the input and the request is rejected.
 #[derive(Clone, PartialEq, Message)]
 struct TransactionBody {
     #[prost(message, optional, tag = "1")]
@@ -90,16 +123,40 @@ struct TransactionBody {
     valid_duration: Option<Duration>,
     #[prost(string, tag = "6")]
     memo: String,
+    #[prost(message, optional, tag = "11")]
+    crypto_create: Option<CryptoCreateBody>,
+    #[prost(message, optional, tag = "12")]
+    crypto_delete: Option<CryptoDeleteBody>,
     #[prost(message, optional, tag = "14")]
     crypto_transfer: Option<CryptoTransferBody>,
 }
 
+/// What the request does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Action {
+    Transfer {
+        recipient: String,
+        tinybars: i64,
+    },
+    /// Deletes `account` and sends everything left in it to `recipient`.
+    DeleteAccount {
+        account: String,
+        recipient: String,
+    },
+    /// Creates an account controlled by the public key `key_hex` (lowercase hex).
+    CreateAccount {
+        key_kind: KeyKind,
+        key_hex: String,
+        initial_tinybars: i64,
+    },
+}
+
 /// Every field the signer shows before signing.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TransferSummary {
+pub struct Summary {
     pub payer: String,
-    pub recipient: String,
-    pub tinybars: i64,
+    pub action: Action,
+    /// The transaction memo for a transfer, or the new account's memo.
     pub memo: String,
     pub node: String,
     pub fee_limit_tinybars: u64,
@@ -111,7 +168,7 @@ pub struct TransferSummary {
 pub enum Reject {
     NotARequest,
     BadEncoding,
-    NotAPlainTransfer(&'static str),
+    Unsupported(&'static str),
     Expired,
     NotYetValid,
 }
@@ -121,8 +178,11 @@ impl std::fmt::Display for Reject {
         match self {
             Reject::NotARequest => write!(f, "This is not a HederaVault signing request."),
             Reject::BadEncoding => write!(f, "The request text is damaged or incomplete."),
-            Reject::NotAPlainTransfer(why) => {
-                write!(f, "Refusing to sign: not a plain HBAR transfer ({why}).")
+            Reject::Unsupported(why) => {
+                write!(
+                    f,
+                    "Refusing to sign: not a request this signer supports ({why})."
+                )
             }
             Reject::Expired => write!(f, "This request has expired. Ask for a new one."),
             Reject::NotYetValid => write!(f, "This request starts in the future. Check the clock."),
@@ -152,21 +212,25 @@ fn id_text(id: &AccountId) -> String {
 
 /// Decodes and strictly validates the body. Returns the body bytes to sign
 /// and what the user must be shown.
-pub fn parse_request(request: &str) -> Result<(Vec<u8>, TransferSummary), Reject> {
+pub fn parse_request(request: &str) -> Result<(Vec<u8>, Summary), Reject> {
     let compact: String = request.split_whitespace().collect();
     let hex = compact
         .strip_prefix(REQUEST_PREFIX)
         .ok_or(Reject::NotARequest)?;
     if hex.len() > MAX_REQUEST_HEX_CHARS {
-        return Err(Reject::NotAPlainTransfer("too large"));
+        return Err(Reject::Unsupported("too large"));
     }
     let bytes = from_hex(hex).ok_or(Reject::BadEncoding)?;
     let summary = summarise(&bytes)?;
     Ok((bytes, summary))
 }
 
-fn summarise(bytes: &[u8]) -> Result<TransferSummary, Reject> {
-    use Reject::NotAPlainTransfer as No;
+fn plain_text(text: &str) -> bool {
+    text.len() <= MAX_MEMO_BYTES && !text.chars().any(char::is_control)
+}
+
+fn summarise(bytes: &[u8]) -> Result<Summary, Reject> {
+    use Reject::Unsupported as No;
     let body = TransactionBody::decode(bytes).map_err(|_| Reject::BadEncoding)?;
     if body.encode_to_vec() != bytes {
         return Err(No("unexpected or unordered fields"));
@@ -192,37 +256,108 @@ fn summarise(bytes: &[u8]) -> Result<TransferSummary, Reject> {
     if body.fee > MAX_FEE_TINYBARS {
         return Err(No("fee limit too high"));
     }
-    if body.memo.len() > MAX_MEMO_BYTES || body.memo.chars().any(char::is_control) {
+    if !plain_text(&body.memo) {
         return Err(No("memo is too long or has control characters"));
     }
     if !(0..1_000_000_000).contains(&start.nanos) {
         return Err(No("bad start time"));
     }
-    let list = body
-        .crypto_transfer
-        .as_ref()
-        .and_then(|t| t.transfers.as_ref())
-        .ok_or(No("no transfer"))?;
-    let [debit, credit] = list.amounts.as_slice() else {
-        return Err(No("must be exactly one payer and one recipient"));
-    };
-    let from = debit.account.as_ref().ok_or(No("missing account"))?;
-    let to = credit.account.as_ref().ok_or(No("missing account"))?;
     let on_main = |a: &AccountId| a.shard == 0 && a.realm == 0 && a.num > 0;
-    if from != payer
-        || to == payer
-        || !on_main(from)
-        || !on_main(to)
-        || debit.amount >= 0
-        || debit.amount.checked_neg() != Some(credit.amount)
-    {
-        return Err(No("amounts do not form a simple payment"));
+    if !on_main(payer) {
+        return Err(No("payer is not a shard 0 realm 0 account"));
     }
-    Ok(TransferSummary {
+    let actions = usize::from(body.crypto_transfer.is_some())
+        + usize::from(body.crypto_delete.is_some())
+        + usize::from(body.crypto_create.is_some());
+    if actions != 1 {
+        return Err(No("must do exactly one thing"));
+    }
+    let (action, memo) = if let Some(transfer) = &body.crypto_transfer {
+        let list = transfer.transfers.as_ref().ok_or(No("no transfer"))?;
+        let [debit, credit] = list.amounts.as_slice() else {
+            return Err(No("must be exactly one payer and one recipient"));
+        };
+        let from = debit.account.as_ref().ok_or(No("missing account"))?;
+        let to = credit.account.as_ref().ok_or(No("missing account"))?;
+        if from != payer
+            || to == payer
+            || !on_main(to)
+            || debit.amount >= 0
+            || debit.amount.checked_neg() != Some(credit.amount)
+        {
+            return Err(No("amounts do not form a simple payment"));
+        }
+        (
+            Action::Transfer {
+                recipient: id_text(to),
+                tinybars: credit.amount,
+            },
+            body.memo.clone(),
+        )
+    } else if let Some(delete) = &body.crypto_delete {
+        let account = delete
+            .delete_account
+            .as_ref()
+            .ok_or(No("no account to delete"))?;
+        let recipient = delete
+            .transfer_account
+            .as_ref()
+            .ok_or(No("no recipient for the remaining HBAR"))?;
+        if !body.memo.is_empty() {
+            return Err(No("a deletion has no memo"));
+        }
+        if account == recipient || !on_main(account) || !on_main(recipient) {
+            return Err(No("bad accounts for a deletion"));
+        }
+        if payer != account && payer != recipient {
+            return Err(No("the payer must be one of the two accounts"));
+        }
+        (
+            Action::DeleteAccount {
+                account: id_text(account),
+                recipient: id_text(recipient),
+            },
+            String::new(),
+        )
+    } else {
+        let create = body.crypto_create.as_ref().ok_or(No("no account"))?;
+        if !body.memo.is_empty() {
+            return Err(No("a creation has no transaction memo"));
+        }
+        let key = create.key.as_ref().ok_or(No("no key"))?;
+        let (key_kind, key_bytes) = match (&key.ed25519, &key.ecdsa_secp256k1) {
+            (Some(k), None) if valid_ed25519(k) => (KeyKind::Ed25519, k),
+            (None, Some(k)) if valid_secp256k1(k) => (KeyKind::Ecdsa, k),
+            _ => return Err(No("the new account's key is not a valid single key")),
+        };
+        let renew = create
+            .auto_renew_period
+            .as_ref()
+            .ok_or(No("no renewal period"))?
+            .seconds;
+        if renew != AUTO_RENEW_SECONDS {
+            return Err(No("unexpected renewal period"));
+        }
+        let initial = i64::try_from(create.initial_balance)
+            .ok()
+            .filter(|v| *v <= MAX_INITIAL_TINYBARS)
+            .ok_or(No("opening balance too high"))?;
+        if !plain_text(&create.memo) {
+            return Err(No("account memo is too long or has control characters"));
+        }
+        (
+            Action::CreateAccount {
+                key_kind,
+                key_hex: key_bytes.iter().map(|b| format!("{b:02x}")).collect(),
+                initial_tinybars: initial,
+            },
+            create.memo.clone(),
+        )
+    };
+    Ok(Summary {
         payer: id_text(payer),
-        recipient: id_text(to),
-        tinybars: credit.amount,
-        memo: body.memo.clone(),
+        action,
+        memo,
         node: id_text(node),
         fee_limit_tinybars: body.fee,
         valid_start_seconds: start.seconds,
@@ -230,8 +365,18 @@ fn summarise(bytes: &[u8]) -> Result<TransferSummary, Reject> {
     })
 }
 
+fn valid_ed25519(key: &[u8]) -> bool {
+    <[u8; 32]>::try_from(key)
+        .ok()
+        .is_some_and(|k| ed25519_dalek::VerifyingKey::from_bytes(&k).is_ok())
+}
+
+fn valid_secp256k1(key: &[u8]) -> bool {
+    key.len() == 33 && k256::PublicKey::from_sec1_bytes(key).is_ok()
+}
+
 /// Fails if the request is not valid at `now_seconds` (Unix time).
-pub fn check_time(summary: &TransferSummary, now_seconds: i64) -> Result<(), Reject> {
+pub fn check_time(summary: &Summary, now_seconds: i64) -> Result<(), Reject> {
     if now_seconds >= summary.expires_at_seconds {
         return Err(Reject::Expired);
     }
@@ -391,7 +536,7 @@ pub fn with_checksum(account: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hedera_tx::offline::{assemble, build_request};
+    use hedera_tx::offline::{assemble, build_create_request, build_delete_request, build_request};
 
     const NOW: i64 = 1_700_000_000;
 
@@ -451,16 +596,186 @@ mod tests {
     #[test]
     fn shows_every_field_of_an_app_request() {
         let (_, s) = parse_request(&request("lunch")).unwrap();
-        assert_eq!(
-            (s.payer.as_str(), s.recipient.as_str()),
-            ("0.0.1001", "0.0.1002")
-        );
-        assert_eq!(s.tinybars, 150_000_000);
+        assert_eq!(s.payer, "0.0.1001");
+        let Action::Transfer {
+            recipient,
+            tinybars,
+        } = &s.action
+        else {
+            panic!("not a transfer");
+        };
+        assert_eq!(recipient, "0.0.1002");
+        assert_eq!(*tinybars, 150_000_000);
         assert_eq!(s.memo, "lunch");
         assert_eq!(s.node, "0.0.3");
         assert_eq!(s.fee_limit_tinybars, MAX_FEE_TINYBARS);
         assert_eq!(s.expires_at_seconds - s.valid_start_seconds, 180);
-        assert_eq!(format_hbar(s.tinybars), "1.50000000");
+        assert_eq!(format_hbar(*tinybars), "1.50000000");
+    }
+
+    fn delete_request() -> String {
+        build_delete_request("0.0.1001", "0.0.1002")
+            .unwrap()
+            .payload
+    }
+
+    fn create_request(key_kind: KeyKind, secret: [u8; 32]) -> (String, String) {
+        let key = SigningKey::new(key_kind, secret).unwrap();
+        let kind = match key_kind {
+            KeyKind::Ed25519 => wallet_core::key_import::KeyType::Ed25519,
+            KeyKind::Ecdsa => wallet_core::key_import::KeyType::Ecdsa,
+        };
+        let payload = build_create_request(
+            "0.0.1001",
+            kind,
+            &key.public_key().unwrap(),
+            250_000_000,
+            "savings",
+        )
+        .unwrap()
+        .payload;
+        (payload, key.public_key_hex().unwrap())
+    }
+
+    fn edit_body(request: &str, edit: impl FnOnce(&mut TransactionBody)) -> String {
+        let (bytes, _) = parse_request(request).unwrap();
+        let mut body = TransactionBody::decode(bytes.as_slice()).unwrap();
+        edit(&mut body);
+        format!("{REQUEST_PREFIX}{}", to_hex(&body.encode_to_vec()))
+    }
+
+    #[test]
+    fn shows_a_deletion_with_both_accounts() {
+        let (_, s) = parse_request(&delete_request()).unwrap();
+        assert_eq!(s.payer, "0.0.1002");
+        assert_eq!(
+            s.action,
+            Action::DeleteAccount {
+                account: "0.0.1001".to_string(),
+                recipient: "0.0.1002".to_string()
+            }
+        );
+        let key = SigningKey::new(KeyKind::Ed25519, [7u8; 32]).unwrap();
+        let reply = sign(&delete_request(), &key, now()).unwrap();
+        assert!(assemble(&delete_request(), &reply).is_ok());
+    }
+
+    #[test]
+    fn rejects_unsafe_deletions() {
+        let base = delete_request();
+        let same = edit_body(&base, |b| {
+            let d = b.crypto_delete.as_mut().unwrap();
+            d.transfer_account = d.delete_account.clone();
+        });
+        let stranger_pays = edit_body(&base, |b| {
+            b.transaction_id
+                .as_mut()
+                .unwrap()
+                .account
+                .as_mut()
+                .unwrap()
+                .num = 9;
+        });
+        let with_memo = edit_body(&base, |b| b.memo = "x".to_string());
+        let other_shard = edit_body(&base, |b| {
+            b.crypto_delete
+                .as_mut()
+                .unwrap()
+                .transfer_account
+                .as_mut()
+                .unwrap()
+                .shard = 1;
+        });
+        let no_recipient = edit_body(&base, |b| {
+            b.crypto_delete.as_mut().unwrap().transfer_account = None
+        });
+        let also_transfer = edit_body(&base, |b| {
+            b.crypto_transfer = Some(CryptoTransferBody { transfers: None })
+        });
+        for bad in [
+            same,
+            stranger_pays,
+            with_memo,
+            other_shard,
+            no_recipient,
+            also_transfer,
+        ] {
+            assert!(parse_request(&bad).is_err(), "should reject {bad}");
+        }
+    }
+
+    #[test]
+    fn shows_a_creation_with_the_full_key() {
+        for (kind, secret) in [(KeyKind::Ed25519, [7u8; 32]), (KeyKind::Ecdsa, [9u8; 32])] {
+            let (payload, key_hex) = create_request(kind, secret);
+            let (_, s) = parse_request(&payload).unwrap();
+            assert_eq!(s.payer, "0.0.1001");
+            assert_eq!(s.memo, "savings");
+            assert_eq!(
+                s.action,
+                Action::CreateAccount {
+                    key_kind: kind,
+                    key_hex,
+                    initial_tinybars: 250_000_000
+                }
+            );
+            let key = SigningKey::new(kind, secret).unwrap();
+            let reply = sign(&payload, &key, now()).unwrap();
+            assert!(assemble(&payload, &reply).is_ok());
+        }
+    }
+
+    #[test]
+    fn rejects_unsafe_creations() {
+        let (base, _) = create_request(KeyKind::Ed25519, [7u8; 32]);
+        let short_key = edit_body(&base, |b| {
+            b.crypto_create
+                .as_mut()
+                .unwrap()
+                .key
+                .as_mut()
+                .unwrap()
+                .ed25519 = Some(vec![1; 31])
+        });
+        let both_keys = edit_body(&base, |b| {
+            b.crypto_create
+                .as_mut()
+                .unwrap()
+                .key
+                .as_mut()
+                .unwrap()
+                .ecdsa_secp256k1 = Some(vec![2; 33])
+        });
+        let no_key = edit_body(&base, |b| b.crypto_create.as_mut().unwrap().key = None);
+        let huge = edit_body(&base, |b| {
+            b.crypto_create.as_mut().unwrap().initial_balance = MAX_INITIAL_TINYBARS as u64 + 1
+        });
+        let overflow = edit_body(&base, |b| {
+            b.crypto_create.as_mut().unwrap().initial_balance = u64::MAX
+        });
+        let renew = edit_body(&base, |b| {
+            b.crypto_create
+                .as_mut()
+                .unwrap()
+                .auto_renew_period
+                .as_mut()
+                .unwrap()
+                .seconds = 1
+        });
+        let escape = edit_body(&base, |b| {
+            b.crypto_create.as_mut().unwrap().memo = "\u{1b}[2J".to_string()
+        });
+        let tx_memo = edit_body(&base, |b| b.memo = "x".to_string());
+        let bad_point = edit_body(&base, |b| {
+            let key = b.crypto_create.as_mut().unwrap().key.as_mut().unwrap();
+            key.ed25519 = None;
+            key.ecdsa_secp256k1 = Some(vec![5; 33]);
+        });
+        for bad in [
+            short_key, both_keys, no_key, huge, overflow, renew, escape, tx_memo, bad_point,
+        ] {
+            assert!(parse_request(&bad).is_err(), "should reject {bad}");
+        }
     }
 
     #[test]
@@ -567,14 +882,21 @@ mod tests {
 
     #[test]
     fn survives_mutated_and_truncated_input() {
-        let bytes = parse_request(&request("fuzz")).unwrap().0;
-        for i in 0..bytes.len() {
-            let _ = summarise(&bytes[..i]);
-            let mut copy = bytes.clone();
-            for flip in [0x01u8, 0x80, 0xFF] {
-                copy[i] ^= flip;
-                let _ = summarise(&copy);
-                copy[i] ^= flip;
+        let requests = [
+            request("fuzz"),
+            delete_request(),
+            create_request(KeyKind::Ecdsa, [9u8; 32]).0,
+        ];
+        for request in requests {
+            let bytes = parse_request(&request).unwrap().0;
+            for i in 0..bytes.len() {
+                let _ = summarise(&bytes[..i]);
+                let mut copy = bytes.clone();
+                for flip in [0x01u8, 0x80, 0xFF] {
+                    copy[i] ^= flip;
+                    let _ = summarise(&copy);
+                    copy[i] ^= flip;
+                }
             }
         }
     }

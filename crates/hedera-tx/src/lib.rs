@@ -247,10 +247,18 @@ pub struct CreateAccountParams {
 }
 
 /// Ninety days, a common auto-renew period that the network accepts.
-const AUTO_RENEW_SECONDS: i64 = 7_776_000;
+pub(crate) const AUTO_RENEW_SECONDS: i64 = 7_776_000;
 
 /// Serialised `TransactionBody` for creating an account controlled by `public_key`.
 pub fn create_account_body_bytes(p: &CreateAccountParams) -> Result<Vec<u8>, String> {
+    create_account_body_bytes_valid_for(p, 120)
+}
+
+/// Like [`create_account_body_bytes`], but valid for `valid_seconds`.
+pub fn create_account_body_bytes_valid_for(
+    p: &CreateAccountParams,
+    valid_seconds: i64,
+) -> Result<Vec<u8>, String> {
     let key = key_message(p.key_type, &p.public_key)?;
     let body = TransactionBody {
         transaction_id: Some(TransactionId {
@@ -262,7 +270,9 @@ pub fn create_account_body_bytes(p: &CreateAccountParams) -> Result<Vec<u8>, Str
         }),
         node_account: Some(account(p.node)),
         fee: p.max_fee_tinybars,
-        valid_duration: Some(Duration { seconds: 120 }),
+        valid_duration: Some(Duration {
+            seconds: valid_seconds,
+        }),
         memo: String::new(),
         crypto_create: Some(CryptoCreateBody {
             key: Some(key),
@@ -294,6 +304,14 @@ pub struct DeleteAccountParams {
 
 /// Serialised `TransactionBody` that deletes an account and sweeps its HBAR.
 pub fn delete_account_body_bytes(p: &DeleteAccountParams) -> Result<Vec<u8>, String> {
+    delete_account_body_bytes_valid_for(p, 120)
+}
+
+/// Like [`delete_account_body_bytes`], but valid for `valid_seconds`.
+pub fn delete_account_body_bytes_valid_for(
+    p: &DeleteAccountParams,
+    valid_seconds: i64,
+) -> Result<Vec<u8>, String> {
     if p.delete_account == p.transfer_account {
         return Err("The recipient must be a different account.".into());
     }
@@ -310,7 +328,9 @@ pub fn delete_account_body_bytes(p: &DeleteAccountParams) -> Result<Vec<u8>, Str
         }),
         node_account: Some(account(p.node)),
         fee: p.max_fee_tinybars,
-        valid_duration: Some(Duration { seconds: 120 }),
+        valid_duration: Some(Duration {
+            seconds: valid_seconds,
+        }),
         memo: String::new(),
         crypto_create: None,
         crypto_transfer: None,

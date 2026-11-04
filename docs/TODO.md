@@ -119,6 +119,8 @@ Goal: a small, fully readable signer. It signs only what it can show in full and
 3. NFT transfer (token ID and serial number).
 4. Token association and dissociation.
 5. Account create, update (key change) and delete. Show the full key (or key structure) being set.
+   - **Done:** create (key shown in full, warning if it differs from the signing key) and delete (recipient must be another account of the same watch-only wallet, one signature).
+   - **Still to do:** key change (two signatures) and delete to a recipient with a different key; both need a multi-signature reply format.
 6. Optional later: approve/delete allowance, and `ScheduleCreate`/`ScheduleSign` (needed for multisig collection over days).
 
 **Rejected by default**
@@ -169,7 +171,7 @@ Goal: a small, fully readable signer. It signs only what it can show in full and
 - [x] Add watch-only wallets
 - [x] Add unsigned-transaction export (HBAR sends, QR request, pasted signature, 180 s window). Manually verified end to end on Testnet with the example signer; reply can also be scanned by camera, added after this test
 - [ ] Build QR-based offline transaction transport
-- [ ] Create an offline signer application (first iteration done: `crates/offline-signer` CLI + `crates/signer-core`, HBAR transfers only, keys typed in; still needed: dedicated air-gapped device, full camera/QR scanning of requests on the device)
+- [ ] Create an offline signer application (first iteration done: `crates/offline-signer` CLI + `crates/signer-core`, HBAR transfers only, keys typed in; still needed: dedicated air-gapped device, the signer can read a request from a screenshot or photo file, but live camera scanning on the device is still needed)
 - [ ] Add HTS token, NFT, and smart-contract support
 - [ ] Design a reproducible hardware prototype
 
