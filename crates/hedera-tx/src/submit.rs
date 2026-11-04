@@ -13,8 +13,8 @@ use wallet_core::wallet_service::validate_account_id;
 
 use crate::{
     ChangeKeyParams, CreateAccountParams, CreateTokenParams, DeleteAccountParams,
-    DeleteTokenParams, MAX_TOKEN_DECIMALS, TokenAssociationParams, Transaction,
-    TransactionResponse, TransferParams, TokenTransferParams, change_key_body_bytes,
+    DeleteTokenParams, MAX_TOKEN_DECIMALS, TokenAssociationParams, TokenTransferParams,
+    Transaction, TransactionResponse, TransferParams, change_key_body_bytes,
     create_account_body_bytes, create_token_body_bytes, delete_account_body_bytes,
     delete_token_body_bytes, sign_body, sign_body_multi, token_association_body_bytes,
     token_transfer_body_bytes, transfer_body_bytes,

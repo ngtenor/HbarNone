@@ -1032,7 +1032,8 @@ mod tests {
             max_fee_tinybars: 100_000_000,
             memo: "hi".to_string(),
         };
-        let body = TransactionBody::decode(token_transfer_body_bytes(&p).unwrap().as_slice()).unwrap();
+        let body =
+            TransactionBody::decode(token_transfer_body_bytes(&p).unwrap().as_slice()).unwrap();
         let transfer = body.crypto_transfer.unwrap();
         assert!(transfer.transfers.is_none());
         let list = &transfer.token_transfers[0];
