@@ -836,9 +836,14 @@ export function TestnetPanel({
                 value={memo}
                 onChange={(event) => setMemo(event.target.value)}
               />
-              <button className="secondary-button" type="submit" disabled={isBusy}>
-                Review transfer
-              </button>
+              <div className="button-pair">
+                <button className="secondary-button" type="submit" disabled={isBusy}>
+                  Review transfer
+                </button>
+                <button className="secondary-button" type="button" disabled={isBusy} onClick={() => toggleSection('send')}>
+                  Cancel
+                </button>
+              </div>
             </form>
           )}
         </div>
@@ -1027,9 +1032,14 @@ export function TestnetPanel({
                   <option key={item.id} value={item.id}>{item.name}</option>
                 ))}
               </select>
-              <button className="secondary-button" type="submit" disabled={isBusy}>
-                Review move
-              </button>
+              <div className="button-pair">
+                <button className="secondary-button" type="submit" disabled={isBusy}>
+                  Review move
+                </button>
+                <button className="secondary-button" type="button" disabled={isBusy} onClick={() => toggleSection('move')}>
+                  Cancel
+                </button>
+              </div>
             </form>
           )}
         </div>
@@ -1183,9 +1193,14 @@ export function TestnetPanel({
                   />
                 </>
               )}
-              <button className="secondary-button" type="submit" disabled={isBusy}>
-                Review deletion
-              </button>
+              <div className="button-pair">
+                <button className="secondary-button" type="submit" disabled={isBusy}>
+                  Review deletion
+                </button>
+                <button className="secondary-button" type="button" disabled={isBusy} onClick={() => toggleSection('delete')}>
+                  Cancel
+                </button>
+              </div>
             </form>
           )}
         </div>

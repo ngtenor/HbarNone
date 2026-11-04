@@ -1314,6 +1314,25 @@ describe('watch-only wallet', () => {
     expect(screen.getByRole('menuitem', { name: 'Delete account' })).toBeInTheDocument()
   })
 
+  it('closes the Send, Move and Delete sections with Cancel', async () => {
+    const user = userEvent.setup()
+    installBackend({ wallets: [wallet('w1', 'Savings', '0.0.1001'), wallet('w2', 'Trading')] })
+    render(<App />)
+    await unlock(user)
+    await openAccount(user, 'Savings')
+    const cases: [string, string, string][] = [
+      ['Send', 'HBAR', 'Send HBAR'],
+      ['Account management', 'Move account', 'Move account to another wallet'],
+      ['Account management', 'Delete account', 'Delete account'],
+    ]
+    for (const [menu, item, heading] of cases) {
+      await chooseMenu(user, menu, item)
+      expect(screen.getByRole('heading', { name: heading })).toBeInTheDocument()
+      await user.click(screen.getByRole('button', { name: 'Cancel' }))
+      expect(screen.queryByRole('heading', { name: heading })).not.toBeInTheDocument()
+    }
+  })
+
   it('closes a dropdown menu with Escape and refreshes everything from either refresh icon', async () => {
     const user = userEvent.setup()
     installBackend({
