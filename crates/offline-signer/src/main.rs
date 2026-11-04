@@ -4,8 +4,11 @@
 //! signs only after the user types `yes`. It never connects to a network.
 
 use std::io::{self, Write};
+use std::path::Path;
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+mod scan;
 
 use signer_core::{
     KeyKind, SigningKey, TransferSummary, check_time, format_hbar, parse_request, sign,
@@ -101,10 +104,23 @@ fn read_key() -> Result<SigningKey, String> {
     }
 }
 
+/// The request as text, or read from a screenshot or photo of its QR code.
+fn read_request() -> Result<String, String> {
+    let input = ask("Paste the signing request (HVTX1-REQ:...),\n\
+         or the path of a screenshot or photo of its QR code (PNG or JPEG): ")?;
+    if input.starts_with(signer_core::REQUEST_PREFIX) || input.is_empty() {
+        return Ok(input);
+    }
+    let path = scan::clean_path(&input);
+    let text = scan::read_qr_text(Path::new(path))?;
+    println!("Read the request from the picture.");
+    Ok(text.trim().to_string())
+}
+
 fn run() -> Result<(), String> {
     println!("HederaVault offline signer (test build). Testnet only. Use disposable keys.");
     println!("Nothing here connects to a network.\n");
-    let request = ask("Paste the signing request (HVTX1-REQ:...): ")?;
+    let request = read_request()?;
     let (_, summary) = parse_request(&request).map_err(|e| e.to_string())?;
     check_time(&summary, now_seconds()).map_err(|e| e.to_string())?;
     show(&summary);
