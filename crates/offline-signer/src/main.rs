@@ -11,7 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 mod scan;
 
 use signer_core::{
-    KeyKind, SigningKey, TransferSummary, check_time, format_hbar, parse_request, sign,
+    Action, KeyKind, SigningKey, Summary, check_time, format_hbar, parse_request, sign,
     with_checksum,
 };
 use wallet_core::key_import::parse_private_key;
@@ -51,19 +51,54 @@ fn ask_secret(label: &str) -> Result<Zeroizing<String>, String> {
     }
 }
 
-fn show(summary: &TransferSummary) {
+fn show(summary: &Summary) {
     println!();
     println!("  ====== PLEASE CHECK EVERY LINE ======");
-    println!("  Action        Send HBAR");
-    println!("  Network       Hedera Testnet (no real value)");
-    println!("  From          {}", with_checksum(&summary.payer));
-    println!("  To            {}", with_checksum(&summary.recipient));
-    println!(
-        "  Amount        {} HBAR ({} tinybars)",
-        format_hbar(summary.tinybars),
-        summary.tinybars
-    );
-    println!("  Memo          {:?}", summary.memo);
+    match &summary.action {
+        Action::Transfer {
+            recipient,
+            tinybars,
+        } => {
+            println!("  Action        Send HBAR");
+            println!("  Network       Hedera Testnet (no real value)");
+            println!("  From          {}", with_checksum(&summary.payer));
+            println!("  To            {}", with_checksum(recipient));
+            println!(
+                "  Amount        {} HBAR ({tinybars} tinybars)",
+                format_hbar(*tinybars)
+            );
+            println!("  Memo          {:?}", summary.memo);
+        }
+        Action::DeleteAccount { account, recipient } => {
+            println!("  Action        DELETE AN ACCOUNT (permanent)");
+            println!("  Network       Hedera Testnet (no real value)");
+            println!("  Delete        {}", with_checksum(account));
+            println!("  Remaining HBAR go to  {}", with_checksum(recipient));
+            println!("  Fee paid by   {}", with_checksum(&summary.payer));
+        }
+        Action::CreateAccount {
+            key_kind,
+            key_hex,
+            initial_tinybars,
+        } => {
+            println!("  Action        CREATE AN ACCOUNT");
+            println!("  Network       Hedera Testnet (no real value)");
+            println!("  Funded and paid by  {}", with_checksum(&summary.payer));
+            println!(
+                "  Opening balance  {} HBAR ({initial_tinybars} tinybars)",
+                format_hbar(*initial_tinybars)
+            );
+            println!(
+                "  New account key  {} {key_hex}",
+                match key_kind {
+                    KeyKind::Ed25519 => "(Ed25519)",
+                    KeyKind::Ecdsa => "(ECDSA)",
+                }
+            );
+            println!("  Account memo  {:?}", summary.memo);
+            println!("  Whoever holds that key controls the new account and its HBAR.");
+        }
+    }
     println!(
         "  Fee limit     {} HBAR (the real fee is far lower)",
         format_hbar(summary.fee_limit_tinybars as i64)
@@ -126,11 +161,26 @@ fn run() -> Result<(), String> {
     show(&summary);
 
     let key = read_key()?;
-    println!("\nSigning key (public): {}", key.public_key_hex()?);
+    let key_hex = key.public_key_hex()?;
+    println!("\nSigning key (public): {key_hex}");
     println!(
         "Check this is the key of the paying account, {}.",
         with_checksum(&summary.payer)
     );
+    match &summary.action {
+        Action::CreateAccount { key_hex: new, .. } if *new == key_hex => {
+            println!("The new account will use this same key.");
+        }
+        Action::CreateAccount { .. } => {
+            println!(
+                "WARNING: the new account's key is DIFFERENT from the key you are signing with."
+            );
+        }
+        Action::DeleteAccount { .. } => {
+            println!("A deletion needs this key to control both accounts shown above.");
+        }
+        Action::Transfer { .. } => {}
+    }
     if ask("Type yes to sign, anything else to cancel: ")? != "yes" {
         return Err("Cancelled. Nothing was signed.".to_string());
     }

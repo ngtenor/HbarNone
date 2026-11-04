@@ -59,8 +59,11 @@ type SigningRequest = {
   payload: string
   qrSize: number
   qrModules: boolean[]
+  action: 'transfer' | 'delete' | 'create'
   sender: string
   receiver: string
+  deleteAccount: string
+  newKey: string
   tinybars: number
   memo: string
   expiresAtSeconds: number
@@ -259,7 +262,9 @@ export function TestnetPanel({
     ? `${accountSummary.name} - ${accountSummary.display_id}`
     : account
   const sameAccount = (typed: string) => typed.trim().split('-')[0] === account
-  const funderRows = addressBook.rows.filter((row) => row.network === 'testnet' && row.wallet_id)
+  const funderRows = addressBook.rows.filter(
+    (row) => row.network === 'testnet' && row.wallet_id && (!isWatchOnly || row.wallet_id === wallet.id),
+  )
   const funderKey = funderRows.map((row) => row.display_id).join(',')
 
   useEffect(() => {
@@ -393,15 +398,143 @@ export function TestnetPanel({
 
   const handleSubmitSigned = () => run(async () => {
     if (!signing) return
-    const result = await invoke<{ transactionId: string }>('submit_signed_transfer', {
+    const action = signing.action
+    const result = await invoke<{ transactionId: string }>('submit_signed_request', {
       request: signing.payload,
       response: signatureText.trim(),
     })
-    resetSend()
-    void watchTransaction(result.transactionId, 'Sending HBAR', async () => {
-      await retry(loadOverview, 2)
-    })
+    if (action === 'delete') {
+      setSigning(null)
+      setSignatureText('')
+      setDeleteRecipient('')
+      void watchTransaction(result.transactionId, 'Deleting account', completeDelete)
+    } else if (action === 'create') {
+      setSigning(null)
+      setSignatureText('')
+      setOpeningBalance('')
+      void watchNewAccount(result.transactionId)
+    } else {
+      resetSend()
+      void watchTransaction(result.transactionId, 'Sending HBAR', async () => {
+        await retry(loadOverview, 2)
+      })
+    }
   })
+
+  const handlePrepareDelete = () => run(async () => {
+    const request = await invoke<SigningRequest>('prepare_unsigned_delete', {
+      walletId: wallet.id,
+      accountId: account,
+      recipient: deleteRecipient.trim(),
+    })
+    setSignatureText('')
+    setConfirmingDelete(false)
+    setDeleteAcknowledged(false)
+    setSigning(request)
+  })
+
+  const handlePrepareCreate = () => run(async () => {
+    const request = await invoke<SigningRequest>('prepare_unsigned_create', {
+      walletId: wallet.id,
+      fromAccount: funder.split('-')[0],
+      initialHbar: openingBalance.trim(),
+    })
+    setSignatureText('')
+    setConfirmingCreate(false)
+    setSigning(request)
+  })
+
+  const renderSigning = (submitLabel: string, onCancel: () => void) => signing && (
+    <div className="testnet-confirm" role="group" aria-label="Signing request">
+      <p>
+        Scan this code with your offline signer, check the details it shows, then paste its
+        reply below.
+      </p>
+      <QrCode request={signing} />
+      <p className="field-hint" role="timer">
+        {secondsLeft > 0
+          ? `Valid for ${secondsLeft} more seconds.`
+          : 'This request has expired. Go back and create a new one.'}
+      </p>
+      <dl>
+        {signing.action === 'transfer' && (
+          <>
+            <dt>From</dt>
+            <dd>{signing.sender}</dd>
+            <dt>To</dt>
+            <dd>{signing.receiver}</dd>
+            <dt>Amount</dt>
+            <dd>{formatHbar(signing.tinybars)} ℏ</dd>
+            {signing.memo && (
+              <>
+                <dt>Memo</dt>
+                <dd>{signing.memo}</dd>
+              </>
+            )}
+          </>
+        )}
+        {signing.action === 'delete' && (
+          <>
+            <dt>Delete account</dt>
+            <dd>{signing.deleteAccount}</dd>
+            <dt>Remaining ℏ go to</dt>
+            <dd>{signing.receiver}</dd>
+            <dt>Fee paid by</dt>
+            <dd>{signing.sender}</dd>
+          </>
+        )}
+        {signing.action === 'create' && (
+          <>
+            <dt>Funded by</dt>
+            <dd>{signing.sender}</dd>
+            <dt>Opening balance</dt>
+            <dd>{formatHbar(signing.tinybars)} ℏ</dd>
+            <dt>New account key</dt>
+            <dd className="key-text">{signing.newKey} (this wallet&apos;s own key)</dd>
+          </>
+        )}
+      </dl>
+      <details>
+        <summary>Show request as text</summary>
+        <textarea readOnly rows={4} aria-label="Signing request text" value={signing.payload} />
+      </details>
+      <label htmlFor={`signature-${wallet.id}`}>Signature from the signer</label>
+      {scanning ? (
+        <QrScanner prefix="HVTX1-SIG:" onScan={handleScanned} onClose={() => setScanning(false)} />
+      ) : (
+        <button
+          className="secondary-button"
+          type="button"
+          disabled={isBusy || secondsLeft === 0}
+          onClick={() => setScanning(true)}
+        >
+          Scan reply with camera
+        </button>
+      )}
+      <textarea
+        id={`signature-${wallet.id}`}
+        rows={3}
+        autoComplete="off"
+        spellCheck={false}
+        placeholder="HVTX1-SIG:..."
+        value={signatureText}
+        onChange={(event) => setSignatureText(event.target.value)}
+      />
+      <div className="button-pair">
+        <button
+          className="primary-button"
+          type="button"
+          disabled={isBusy || secondsLeft === 0 || !signatureText.trim()}
+          onClick={handleSubmitSigned}
+        >
+          {isBusy ? 'Submitting...' : submitLabel}
+        </button>
+        <button className="secondary-button" type="button" disabled={isBusy} onClick={onCancel}>
+          Cancel
+        </button>
+      </div>
+    </div>
+  )
 
   const handleReview = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -467,19 +600,13 @@ export function TestnetPanel({
     })
   }
 
-  const handleCreate = () => run(async () => {
-    const result = await invoke<{ transactionId: string }>('create_account', {
-      walletId: wallet.id,
-      fromAccount: funder,
-      initialHbar: openingBalance.trim(),
-    })
+  // Waits for the new account to show up on the mirror node, then names it.
+  const watchNewAccount = (transactionId: string) => {
     const accountsBefore = wallet.accounts.length
     const idsBefore = new Set(wallet.accounts.map((item) => item.id))
     const chosenName = newAccountName.trim()
-    setOpeningBalance('')
     setNewAccountName('')
-    setConfirmingCreate(false)
-    void watchTransaction(result.transactionId, 'Creating account', async () => {
+    return watchTransaction(transactionId, 'Creating account', async () => {
       let updated = await retry(async () => {
         const found = await invoke<WalletSummary>('find_wallet_accounts', { walletId: wallet.id })
         if (found.accounts.length <= accountsBefore) throw new Error('not listed yet')
@@ -501,6 +628,17 @@ export function TestnetPanel({
       }
       onWalletUpdated(updated)
     })
+  }
+
+  const handleCreate = () => run(async () => {
+    const result = await invoke<{ transactionId: string }>('create_account', {
+      walletId: wallet.id,
+      fromAccount: funder,
+      initialHbar: openingBalance.trim(),
+    })
+    setOpeningBalance('')
+    setConfirmingCreate(false)
+    void watchNewAccount(result.transactionId)
   })
 
   return (
@@ -545,16 +683,14 @@ export function TestnetPanel({
                 Move account
               </button>
             )}
-            {!isWatchOnly && (
-              <button
-                className="secondary-button risky-button"
-                type="button"
-                aria-expanded={section === 'delete'}
-                onClick={() => toggleSection('delete')}
-              >
-                Delete account
-              </button>
-            )}
+            <button
+              className="secondary-button risky-button"
+              type="button"
+              aria-expanded={section === 'delete'}
+              onClick={() => toggleSection('delete')}
+            >
+              Delete account
+            </button>
           </div>
         </>
       ) : null}
@@ -589,73 +725,7 @@ export function TestnetPanel({
       {account && section === 'send' && (
         <div className="testnet-send">
           <h3 className="section-title">Send HBAR</h3>
-          {signing ? (
-            <div className="testnet-confirm" role="group" aria-label="Signing request">
-              <p>
-                Scan this code with your offline signer, check the details it shows, then paste its
-                reply below.
-              </p>
-              <QrCode request={signing} />
-              <p className="field-hint" role="timer">
-                {secondsLeft > 0
-                  ? `Valid for ${secondsLeft} more seconds.`
-                  : 'This request has expired. Go back and create a new one.'}
-              </p>
-              <dl>
-                <dt>From</dt>
-                <dd>{signing.sender}</dd>
-                <dt>To</dt>
-                <dd>{signing.receiver}</dd>
-                <dt>Amount</dt>
-                <dd>{formatHbar(signing.tinybars)} ℏ</dd>
-                {signing.memo && (
-                  <>
-                    <dt>Memo</dt>
-                    <dd>{signing.memo}</dd>
-                  </>
-                )}
-              </dl>
-              <details>
-                <summary>Show request as text</summary>
-                <textarea readOnly rows={4} aria-label="Signing request text" value={signing.payload} />
-              </details>
-              <label htmlFor={`signature-${wallet.id}`}>Signature from the signer</label>
-              {scanning ? (
-                <QrScanner prefix="HVTX1-SIG:" onScan={handleScanned} onClose={() => setScanning(false)} />
-              ) : (
-                <button
-                  className="secondary-button"
-                  type="button"
-                  disabled={isBusy || secondsLeft === 0}
-                  onClick={() => setScanning(true)}
-                >
-                  Scan reply with camera
-                </button>
-              )}
-              <textarea
-                id={`signature-${wallet.id}`}
-                rows={3}
-                autoComplete="off"
-                spellCheck={false}
-                placeholder="HVTX1-SIG:..."
-                value={signatureText}
-                onChange={(event) => setSignatureText(event.target.value)}
-              />
-              <div className="button-pair">
-                <button
-                  className="primary-button"
-                  type="button"
-                  disabled={isBusy || secondsLeft === 0 || !signatureText.trim()}
-                  onClick={handleSubmitSigned}
-                >
-                  {isBusy ? 'Submitting...' : 'Submit signed transfer'}
-                </button>
-                <button className="secondary-button" type="button" disabled={isBusy} onClick={resetSend}>
-                  Cancel
-                </button>
-              </div>
-            </div>
-          ) : confirming ? (
+          {signing ? renderSigning('Submit signed transfer', resetSend) : confirming ? (
             <div className="testnet-confirm" role="group" aria-label="Confirm transfer">
               <p>Please check the details. A transfer cannot be undone.</p>
               <dl>
@@ -777,20 +847,25 @@ export function TestnetPanel({
 
       {!account && isWatchOnly && (
         <p className="field-hint">
-          Watch-only wallet: linked Testnet accounts and balances can be viewed, but this wallet
-          cannot sign or submit transactions.
+          Watch-only wallet: this app does not hold its private key. Anything that moves funds
+          or changes accounts is signed on your offline signer.
         </p>
       )}
 
-      {!account && !isWatchOnly && (
+      {!account && (
         <div className="testnet-send create-account">
           <h3 className="section-title">Create account</h3>
           <p className="field-hint">
-            Creates a new Testnet account controlled by this wallet&apos;s key. It is added to
-            this wallet automatically. Choose an account from the dropdown box below to fund the
-            account:
+            {isWatchOnly
+              ? 'Creates a new Testnet account that uses this wallet\u2019s public key. Your offline signer signs the request. It is added to this wallet automatically. Choose one of this wallet\u2019s accounts to fund it:'
+              : 'Creates a new Testnet account controlled by this wallet\u2019s key. It is added to this wallet automatically. Choose an account from the dropdown box below to fund the account:'}
           </p>
-          {confirmingCreate ? (
+          {signing ? (
+            renderSigning('Submit signed account creation', () => {
+              setSigning(null)
+              setSignatureText('')
+            })
+          ) : confirmingCreate ? (
             <div className="testnet-confirm" role="group" aria-label="Confirm new account">
               <dl className="create-confirm">
                 <dt>Network</dt>
@@ -811,8 +886,15 @@ export function TestnetPanel({
                 <dd>1 ℏ (the real fee is far lower)</dd>
               </dl>
               <div className="button-pair">
-                <button className="primary-button" type="button" disabled={isBusy} onClick={handleCreate}>
-                  {isBusy ? 'Creating...' : 'Sign and create'}
+                <button
+                  className="primary-button"
+                  type="button"
+                  disabled={isBusy}
+                  onClick={isWatchOnly ? handlePrepareCreate : handleCreate}
+                >
+                  {isWatchOnly
+                    ? isBusy ? 'Preparing...' : 'Create signing request'
+                    : isBusy ? 'Creating...' : 'Sign and create'}
                 </button>
                 <button className="secondary-button" type="button" disabled={isBusy} onClick={() => setConfirmingCreate(false)}>
                   Back
@@ -954,13 +1036,13 @@ export function TestnetPanel({
         </div>
       )}
 
-      {account && !isWatchOnly && section === 'delete' && (
+      {account && section === 'delete' && (
         <div className="testnet-send">
           <h3 className="section-title">Delete account</h3>
           <p className="field-hint">
-            Permanently deletes this account and sends its remaining ℏ to another account. The
-            recipient may be controlled by the same key. If the recipient is in this vault its key
-            signs too.
+            {isWatchOnly
+              ? 'Permanently deletes this account and sends its remaining ℏ to another account of this wallet. Your offline signer signs the request.'
+              : 'Permanently deletes this account and sends its remaining ℏ to another account. The recipient may be controlled by the same key. If the recipient is in this vault its key signs too.'}
           </p>
           {pendingDelete ? (
             <div className="wallet-tab-actions">
@@ -968,6 +1050,11 @@ export function TestnetPanel({
                 Check again
               </button>
             </div>
+          ) : signing ? (
+            renderSigning('Submit signed deletion', () => {
+              setSigning(null)
+              setSignatureText('')
+            })
           ) : confirmingDelete ? (
             <div className="testnet-confirm" role="group" aria-label="Confirm account deletion">
               <p className="testnet-warning" role="alert">
@@ -993,8 +1080,15 @@ export function TestnetPanel({
                 balance will be sent to the recipient.
               </label>
               <div className="button-pair">
-                <button className="primary-button risky-button" type="button" disabled={isBusy || !deleteAcknowledged} onClick={handleDelete}>
-                  {isBusy ? 'Deleting...' : 'Sign and delete'}
+                <button
+                  className="primary-button risky-button"
+                  type="button"
+                  disabled={isBusy || !deleteAcknowledged}
+                  onClick={isWatchOnly ? handlePrepareDelete : handleDelete}
+                >
+                  {isWatchOnly
+                    ? isBusy ? 'Preparing...' : 'Create signing request'
+                    : isBusy ? 'Deleting...' : 'Sign and delete'}
                 </button>
                 <button
                   className="secondary-button"
@@ -1025,16 +1119,20 @@ export function TestnetPanel({
                   return
                 }
                 void run(async () => {
-                  await invoke<string>('check_recipient', {
-                    recipient: deleteRecipient,
-                    forSend: false,
-                    forDelete: true,
-                  })
+                  if (!isWatchOnly) {
+                    await invoke<string>('check_recipient', {
+                      recipient: deleteRecipient,
+                      forSend: false,
+                      forDelete: true,
+                    })
+                  }
                   setConfirmingDelete(true)
                 })
               }}
             >
-              <label htmlFor={`delete-book-${wallet.id}`}>Recipient from the address book</label>
+              <label htmlFor={`delete-book-${wallet.id}`}>
+                {isWatchOnly ? 'Recipient (another account of this wallet)' : 'Recipient from the address book'}
+              </label>
               <select
                 id={`delete-book-${wallet.id}`}
                 disabled={useOtherDeleteRecipient}
@@ -1043,30 +1141,32 @@ export function TestnetPanel({
               >
                 <option value="">Select an account</option>
                 {addressBook.rows
-                  .filter((row) => row.id !== account)
+                  .filter((row) => row.id !== account && (!isWatchOnly || row.wallet_id === wallet.id))
                   .map((row) => (
                     <option key={`${row.network}/${row.id}`} value={row.display_id}>
                       {row.name} {row.display_id}
                     </option>
                   ))}
               </select>
-              <label
-                className={`testnet-acknowledge${addressBook.allowExternalDeletes ? '' : ' disabled-text'}`}
-                htmlFor={`delete-other-${wallet.id}`}
-              >
-                <input
-                  id={`delete-other-${wallet.id}`}
-                  type="checkbox"
-                  disabled={!addressBook.allowExternalDeletes}
-                  checked={useOtherDeleteRecipient}
-                  onChange={(event) => {
-                    setUseOtherDeleteRecipient(event.target.checked)
-                    setDeleteRecipient('')
-                  }}
-                />
-                <span>Check to send to a different account</span>
-              </label>
-              {!addressBook.allowExternalDeletes && (
+              {!isWatchOnly && (
+                <label
+                  className={`testnet-acknowledge${addressBook.allowExternalDeletes ? '' : ' disabled-text'}`}
+                  htmlFor={`delete-other-${wallet.id}`}
+                >
+                  <input
+                    id={`delete-other-${wallet.id}`}
+                    type="checkbox"
+                    disabled={!addressBook.allowExternalDeletes}
+                    checked={useOtherDeleteRecipient}
+                    onChange={(event) => {
+                      setUseOtherDeleteRecipient(event.target.checked)
+                      setDeleteRecipient('')
+                    }}
+                  />
+                  <span>Check to send to a different account</span>
+                </label>
+              )}
+              {!isWatchOnly && !addressBook.allowExternalDeletes && (
                 <p className="field-hint disabled-text">
                   Funds can only go to accounts in the address book. Remove this limit in the Settings menu.
                 </p>

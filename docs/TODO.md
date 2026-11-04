@@ -119,6 +119,8 @@ Goal: a small, fully readable signer. It signs only what it can show in full and
 3. NFT transfer (token ID and serial number).
 4. Token association and dissociation.
 5. Account create, update (key change) and delete. Show the full key (or key structure) being set.
+   - **Done:** create (key shown in full, warning if it differs from the signing key) and delete (recipient must be another account of the same watch-only wallet, one signature).
+   - **Still to do:** key change (two signatures) and delete to a recipient with a different key; both need a multi-signature reply format.
 6. Optional later: approve/delete allowance, and `ScheduleCreate`/`ScheduleSign` (needed for multisig collection over days).
 
 **Rejected by default**

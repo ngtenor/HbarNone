@@ -25,11 +25,11 @@ pub const MAX_FEE_TINYBARS: u64 = 100_000_000;
 pub const MAX_MEMO_BYTES: usize = 100;
 const TINYBARS_PER_HBAR: u64 = 100_000_000;
 pub(crate) const TRANSFER_PATH: &str = "/proto.CryptoService/cryptoTransfer";
-const CREATE_PATH: &str = "/proto.CryptoService/createAccount";
+pub(crate) const CREATE_PATH: &str = "/proto.CryptoService/createAccount";
 const UPDATE_PATH: &str = "/proto.CryptoService/updateAccount";
-const DELETE_PATH: &str = "/proto.CryptoService/cryptoDelete";
+pub(crate) const DELETE_PATH: &str = "/proto.CryptoService/cryptoDelete";
 /// Largest opening balance the app will fund a new account with.
-const MAX_INITIAL_TINYBARS: i64 = 10_000 * TINYBARS_PER_HBAR as i64;
+pub(crate) const MAX_INITIAL_TINYBARS: i64 = 10_000 * TINYBARS_PER_HBAR as i64;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SendReceipt {

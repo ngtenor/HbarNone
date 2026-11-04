@@ -192,13 +192,44 @@ function installBackend(overrides: Partial<Backend> = {}) {
           payload: 'HVTX1-REQ:00',
           qrSize: 2,
           qrModules: [true, false, false, true],
+          action: 'transfer',
           sender: '0.0.1001',
           receiver: '0.0.2002',
+          deleteAccount: '',
+          newKey: '',
           tinybars: 100_000_000,
           memo: '',
           expiresAtSeconds: Math.floor(Date.now() / 1000) + 170,
         }
-      case 'submit_signed_transfer':
+      case 'prepare_unsigned_delete':
+        return {
+          payload: 'HVTX1-REQ:01',
+          qrSize: 2,
+          qrModules: [true, false, false, true],
+          action: 'delete',
+          sender: '0.0.1002-abcde',
+          receiver: '0.0.1002-abcde',
+          deleteAccount: '0.0.1001-abcde',
+          newKey: '',
+          tinybars: 0,
+          memo: '',
+          expiresAtSeconds: Math.floor(Date.now() / 1000) + 170,
+        }
+      case 'prepare_unsigned_create':
+        return {
+          payload: 'HVTX1-REQ:02',
+          qrSize: 2,
+          qrModules: [true, false, false, true],
+          action: 'create',
+          sender: '0.0.1001-abcde',
+          receiver: '',
+          deleteAccount: '',
+          newKey: 'ab'.repeat(32),
+          tinybars: 200_000_000,
+          memo: '',
+          expiresAtSeconds: Math.floor(Date.now() / 1000) + 170,
+        }
+      case 'submit_signed_request':
         return { transactionId: '0.0.1001-1700000000-000000008' }
       case 'create_account':
         if (backend.sendError) throw new Error(backend.sendError)
@@ -1238,7 +1269,7 @@ describe('watch-only wallet', () => {
     await openWalletTab(user, 'Monitor')
     expect(screen.getByTitle('Watch-only wallet')).toHaveClass('wallet-watch-only')
     expect(screen.queryByRole('button', { name: 'Reveal recovery phrase' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('heading', { name: 'Create account' })).not.toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Create account' })).toBeInTheDocument()
   })
 
   it('clears the form and closes the tab when Cancel is clicked', async () => {
@@ -1270,7 +1301,7 @@ describe('watch-only wallet', () => {
     expect(screen.getByRole('button', { name: 'Name this account' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Send' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Move account' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Delete account' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Delete account' })).toBeInTheDocument()
   })
 
   it('exports a signing request, then submits the pasted signature', async () => {
@@ -1298,10 +1329,82 @@ describe('watch-only wallet', () => {
     await user.type(screen.getByLabelText('Signature from the signer'), 'HVTX1-SIG:AB')
     await user.click(submit)
     await screen.findByText('SUCCESS!')
-    expect(commandsCalled('submit_signed_transfer')[0].args).toEqual({
+    expect(commandsCalled('submit_signed_request')[0].args).toEqual({
       request: 'HVTX1-REQ:00',
       response: 'HVTX1-SIG:AB',
     })
+  })
+
+  it('deletes a watch-only account through a signing request and Testnet’s confirmation', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+      installBackend({
+        status: 'unlocked',
+        wallets: [{
+          ...wallet('w-watch', 'Monitor', ['0.0.1001', '0.0.1002']),
+          secret_kind: 'watchonly',
+          key_type: 'ed25519',
+        }],
+      })
+      render(<App />)
+      await openWalletTab(user, 'Monitor')
+      await user.click(await screen.findByRole('button', { name: /0\.0\.1001/ }))
+      await user.click(screen.getByRole('button', { name: 'Delete account' }))
+      expect(screen.queryByLabelText('Check to send to a different account')).not.toBeInTheDocument()
+      await user.selectOptions(
+        await screen.findByLabelText('Recipient (another account of this wallet)'),
+        '0.0.1002-abcde',
+      )
+      await user.click(screen.getByRole('button', { name: 'Review deletion' }))
+      const confirm = await screen.findByRole('group', { name: 'Confirm account deletion' })
+      await user.click(within(confirm).getByRole('checkbox'))
+      await user.click(screen.getByRole('button', { name: 'Create signing request' }))
+      expect(await screen.findByRole('img', { name: 'Signing request QR code' })).toBeInTheDocument()
+      expect(commandsCalled('prepare_unsigned_delete')[0].args).toEqual({
+        walletId: 'w-watch',
+        accountId: '0.0.1001',
+        recipient: '0.0.1002-abcde',
+      })
+      expect(commandsCalled('delete_account')).toHaveLength(0)
+      await user.type(screen.getByLabelText('Signature from the signer'), 'HVTX1-SIG:AB')
+      await user.click(screen.getByRole('button', { name: 'Submit signed deletion' }))
+      await screen.findByText('SUCCESS!')
+      await waitFor(() => expect(commandsCalled('finish_account_delete')).toHaveLength(1))
+      expect(backend.wallets[0].accounts.map((item) => item.id)).toEqual(['0.0.1002'])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('creates an account for a watch-only wallet through a signing request', async () => {
+    const user = userEvent.setup()
+    installBackend({
+      status: 'unlocked',
+      wallets: [{
+        ...wallet('w-watch', 'Monitor', ['0.0.1001']),
+        secret_kind: 'watchonly',
+        key_type: 'ed25519',
+      }],
+      foundAccounts: ['0.0.1003'],
+    })
+    render(<App />)
+    await openWalletTab(user, 'Monitor')
+    await user.selectOptions(await screen.findByLabelText('Fund from'), '0.0.1001-abcde')
+    await user.type(screen.getByLabelText('Opening balance (ℏ)'), '2')
+    await user.click(screen.getByRole('button', { name: 'Review new account' }))
+    await user.click(await screen.findByRole('button', { name: 'Create signing request' }))
+    expect(await screen.findByText(/this wallet.s own key/)).toBeInTheDocument()
+    expect(commandsCalled('create_account')).toHaveLength(0)
+    await user.type(screen.getByLabelText('Signature from the signer'), 'HVTX1-SIG:AB')
+    await user.click(screen.getByRole('button', { name: 'Submit signed account creation' }))
+    await screen.findByText('SUCCESS!')
+    expect(commandsCalled('prepare_unsigned_create')[0].args).toEqual({
+      walletId: 'w-watch',
+      fromAccount: '0.0.1001',
+      initialHbar: '2',
+    })
+    await waitFor(() => expect(backend.wallets[0].accounts).toHaveLength(2))
   })
 
   it('offers camera scanning of the reply and falls back to pasting when no camera exists', async () => {

@@ -994,6 +994,11 @@ h2.section-title,
   overflow-wrap: anywhere;
 }
 
+.key-text {
+  font-family: monospace;
+  word-break: break-all;
+}
+
 .testnet-transactions {
   display: grid;
   padding: 0;

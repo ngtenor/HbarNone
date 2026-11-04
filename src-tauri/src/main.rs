@@ -409,11 +409,83 @@ struct SigningRequest {
     qr_size: usize,
     /// One flag per module, row by row; true is dark.
     qr_modules: Vec<bool>,
+    /// "transfer", "delete" or "create".
+    action: String,
+    /// The account that pays and whose key signs.
     sender: String,
+    /// The recipient of a transfer or of a deleted account's remaining HBAR.
     receiver: String,
+    /// The account a deletion removes.
+    delete_account: String,
+    /// The public key of a new account, in hex.
+    new_key: String,
+    /// HBAR sent, or the opening balance of a new account.
     tinybars: i64,
     memo: String,
     expires_at_seconds: i64,
+}
+
+fn require_watch_only(state: &AppState, wallet_id: &str) -> Result<(), String> {
+    let is_watch_only = lock_service(state)?
+        .list_wallets()?
+        .iter()
+        .any(|w| w.id == wallet_id && w.secret_kind == SecretKind::WatchOnly);
+    if is_watch_only {
+        Ok(())
+    } else {
+        Err("Signing requests are only for watch-only wallets.".to_string())
+    }
+}
+
+fn signing_request(request: hedera_tx::offline::UnsignedRequest) -> Result<SigningRequest, String> {
+    use hedera_tx::offline::Action;
+    let code =
+        qrcode::QrCode::with_error_correction_level(request.payload.as_bytes(), qrcode::EcLevel::L)
+            .map_err(|_| {
+                "The request is too large for a QR code. Use a shorter memo.".to_string()
+            })?;
+    let shown = |id: &str| with_checksum(Network::Testnet, id).unwrap_or_else(|_| id.to_string());
+    let d = request.description;
+    let (action, receiver, delete_account, new_key, tinybars) = match &d.action {
+        Action::Transfer { receiver, tinybars } => (
+            "transfer",
+            shown(receiver),
+            String::new(),
+            String::new(),
+            *tinybars,
+        ),
+        Action::DeleteAccount { account, recipient } => {
+            ("delete", shown(recipient), shown(account), String::new(), 0)
+        }
+        Action::CreateAccount {
+            key_hex,
+            initial_tinybars,
+            ..
+        } => (
+            "create",
+            String::new(),
+            String::new(),
+            key_hex.clone(),
+            *initial_tinybars,
+        ),
+    };
+    Ok(SigningRequest {
+        payload: request.payload,
+        qr_size: code.width(),
+        qr_modules: code
+            .to_colors()
+            .into_iter()
+            .map(|c| c == qrcode::Color::Dark)
+            .collect(),
+        action: action.to_string(),
+        sender: shown(&d.payer),
+        receiver,
+        delete_account,
+        new_key,
+        tinybars,
+        memo: d.memo,
+        expires_at_seconds: d.expires_at_seconds,
+    })
 }
 
 /// Builds an unsigned transfer for a watch-only wallet to be signed elsewhere.
@@ -428,66 +500,117 @@ fn prepare_unsigned_transfer(
 ) -> Result<SigningRequest, String> {
     let tinybars = hedera_tx::submit::parse_hbar(&amount_hbar)?;
     let sender = testnet_account_of(&state, &wallet_id, &from_account)?;
-    let is_watch_only = lock_service(&state)?
-        .list_wallets()?
-        .iter()
-        .any(|w| w.id == wallet_id && w.secret_kind == SecretKind::WatchOnly);
-    if !is_watch_only {
-        return Err("Signing requests are only for watch-only wallets.".to_string());
-    }
+    require_watch_only(&state, &wallet_id)?;
     let recipient = parse_account_input(&recipient, Network::Testnet, true)?;
     ensure_send_allowed(&state, &recipient)?;
-    let request = hedera_tx::offline::build_request(&sender, &recipient, tinybars, &memo)?;
-    let code =
-        qrcode::QrCode::with_error_correction_level(request.payload.as_bytes(), qrcode::EcLevel::L)
-            .map_err(|_| {
-                "The request is too large for a QR code. Use a shorter memo.".to_string()
-            })?;
-    let d = request.description;
-    Ok(SigningRequest {
-        payload: request.payload,
-        qr_size: code.width(),
-        qr_modules: code
-            .to_colors()
-            .into_iter()
-            .map(|c| c == qrcode::Color::Dark)
-            .collect(),
-        sender: with_checksum(Network::Testnet, &d.sender).unwrap_or(d.sender),
-        receiver: with_checksum(Network::Testnet, &d.receiver).unwrap_or(d.receiver),
-        tinybars: d.tinybars,
-        memo: d.memo,
-        expires_at_seconds: d.expires_at_seconds,
-    })
+    signing_request(hedera_tx::offline::build_request(
+        &sender, &recipient, tinybars, &memo,
+    )?)
+}
+
+/// Builds an unsigned deletion of one of a watch-only wallet's accounts. The
+/// remaining HBAR go to another account of the same wallet, so one key signs.
+#[tauri::command]
+fn prepare_unsigned_delete(
+    wallet_id: String,
+    account_id: String,
+    recipient: String,
+    state: State<'_, AppState>,
+) -> Result<SigningRequest, String> {
+    require_watch_only(&state, &wallet_id)?;
+    let account = testnet_account_of(&state, &wallet_id, &account_id)?;
+    let recipient = parse_account_input(&recipient, Network::Testnet, true)?;
+    let recipient = testnet_account_of(&state, &wallet_id, &recipient)?;
+    if recipient == account {
+        return Err("Choose a different recipient account.".to_string());
+    }
+    signing_request(hedera_tx::offline::build_delete_request(
+        &account, &recipient,
+    )?)
+}
+
+/// Builds an unsigned creation of a new account that uses the watch-only
+/// wallet's own key and is funded by one of the wallet's accounts.
+#[tauri::command]
+fn prepare_unsigned_create(
+    wallet_id: String,
+    from_account: String,
+    initial_hbar: String,
+    state: State<'_, AppState>,
+) -> Result<SigningRequest, String> {
+    require_watch_only(&state, &wallet_id)?;
+    let tinybars = hedera_tx::submit::parse_hbar(&initial_hbar)?;
+    let payer = testnet_account_of(&state, &wallet_id, &from_account)?;
+    let wallet = lock_service(&state)?
+        .list_wallets()?
+        .into_iter()
+        .find(|w| w.id == wallet_id)
+        .ok_or_else(|| format!("wallet not found: {wallet_id}"))?;
+    let public_key = lock_service(&state)?.wallet_public_key(&wallet_id)?;
+    let key_bytes = (0..public_key.len())
+        .step_by(2)
+        .map(|i| {
+            public_key
+                .get(i..i + 2)
+                .and_then(|h| u8::from_str_radix(h, 16).ok())
+        })
+        .collect::<Option<Vec<u8>>>()
+        .ok_or_else(|| "The wallet key is damaged.".to_string())?;
+    signing_request(hedera_tx::offline::build_create_request(
+        &payer,
+        wallet.key_type,
+        &key_bytes,
+        tinybars,
+        "",
+    )?)
 }
 
 /// Verifies the signer's response against the request and submits to Testnet.
 #[tauri::command]
-async fn submit_signed_transfer(
+async fn submit_signed_request(
     request: String,
     response: String,
     state: State<'_, AppState>,
 ) -> Result<SendResult, String> {
+    use hedera_tx::offline::Action;
     let verified = hedera_tx::offline::assemble(&request, &response)?;
     if hedera_tx::offline::seconds_remaining(&verified.description)? <= 0 {
         return Err("The signing request has expired. Create a new one.".to_string());
     }
-    let sender = verified.description.sender.clone();
+    let payer = verified.description.payer.clone();
     let wallets = lock_service(&state)?.list_wallets()?;
-    let wallet_id = wallets
+    let wallet = wallets
         .iter()
         .find(|w| {
             w.secret_kind == SecretKind::WatchOnly
                 && w.accounts
                     .iter()
-                    .any(|a| a.network == Network::Testnet && a.id == sender)
+                    .any(|a| a.network == Network::Testnet && a.id == payer)
         })
-        .map(|w| w.id.clone())
         .ok_or_else(|| "The paying account is not in a watch-only wallet here.".to_string())?;
-    let wallet_key = lock_service(&state)?.wallet_public_key(&wallet_id)?;
+    let wallet_key = lock_service(&state)?.wallet_public_key(&wallet.id)?;
     if !wallet_key.eq_ignore_ascii_case(&verified.public_key_hex) {
         return Err("The signature was made with a different key than this wallet's.".to_string());
     }
-    ensure_send_allowed(&state, &verified.description.receiver)?;
+    let owned = |id: &str| {
+        wallet
+            .accounts
+            .iter()
+            .any(|a| a.network == Network::Testnet && a.id == id)
+    };
+    match &verified.description.action {
+        Action::Transfer { receiver, .. } => ensure_send_allowed(&state, receiver)?,
+        Action::DeleteAccount { account, recipient } => {
+            if !owned(account) || !owned(recipient) {
+                return Err("Both accounts of a deletion must belong to this wallet.".to_string());
+            }
+        }
+        Action::CreateAccount { key_hex, .. } => {
+            if !wallet_key.eq_ignore_ascii_case(key_hex) {
+                return Err("The new account must use this wallet's own key.".to_string());
+            }
+        }
+    }
     let transaction_id = hedera_tx::offline::submit_verified(&verified).await?;
     Ok(SendResult { transaction_id })
 }
@@ -1042,7 +1165,9 @@ fn main() {
             rename_wallet,
             link_wallet_account,
             prepare_unsigned_transfer,
-            submit_signed_transfer,
+            prepare_unsigned_delete,
+            prepare_unsigned_create,
+            submit_signed_request,
             find_wallet_accounts,
             get_account_balance,
             get_transaction_result,

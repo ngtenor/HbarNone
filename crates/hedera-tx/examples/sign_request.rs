@@ -26,8 +26,10 @@ fn sign(request: &str, key_type: &str, key: &str) -> Result<String, String> {
     };
     let (_, d) = decode_request(request)?;
     println!(
-        "Signing: send {} tinybars from {} to {} (memo: {:?})",
-        d.tinybars, d.sender, d.receiver, d.memo
+        "Signing: {} (paid by {}, memo: {:?})",
+        d.action_text(),
+        d.payer,
+        d.memo
     );
     let parsed = parse_private_key(key)?;
     sign_request(request, key_type, &parsed.secret)
