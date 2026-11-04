@@ -32,10 +32,18 @@ type TransactionSummary = {
   counterparty?: string
 }
 
+type AccountToken = {
+  token_id: string
+  symbol: string
+  balance: number
+  decimals: number
+}
+
 type AccountOverview = {
   account_id: string
   balance_tinybars: number
   transactions: TransactionSummary[]
+  tokens?: AccountToken[]
 }
 
 const TINYBARS_PER_HBAR = 100_000_000
@@ -146,6 +154,7 @@ export function TestnetPanel({
   const [confirmingDelete, setConfirmingDelete] = useState(false)
   const [deleteAcknowledged, setDeleteAcknowledged] = useState(false)
   const [pendingDelete, setPendingDelete] = useState(false)
+  const [showAssets, setShowAssets] = useState(false)
   const [section, setSection] = useState<'send' | 'rename' | 'move' | 'delete' | null>(null)
   const isWatchOnly = wallet.secret_kind === 'watchonly'
   const [signing, setSigning] = useState<SigningRequest | null>(null)
@@ -667,6 +676,13 @@ export function TestnetPanel({
               <strong className="account-heading-balance">
                 {overview ? `${formatHbar(overview.balance_tinybars, 2)} ℏ` : ''}
               </strong>
+              <button
+                className="secondary-button assets-toggle"
+                type="button"
+                onClick={() => setShowAssets((current) => !current)}
+              >
+                {showAssets ? 'Recent transactions' : 'Account assets'}
+              </button>
             </div>
           </div>
           <div className="wallet-tab-actions account-actions">
@@ -1209,10 +1225,30 @@ export function TestnetPanel({
       {overview && (
         <div className="testnet-overview">
           <div className="testnet-overview-heading">
-            <h3>Recent transactions</h3>
             {refreshButton('Refresh transactions')}
+            <h3>{showAssets ? 'Account assets' : 'Recent transactions'}</h3>
           </div>
-          {overview.transactions.length === 0 ? (
+          {showAssets ? (
+            <ul className="testnet-transactions testnet-assets" aria-label="Account assets">
+              <li>
+                <span className="testnet-kind">HBAR</span>
+                <span className="testnet-net">{formatHbar(overview.balance_tinybars)} ℏ</span>
+              </li>
+              {[...(overview.tokens ?? [])]
+                .sort((a, b) => (a.symbol || a.token_id).localeCompare(b.symbol || b.token_id))
+                .map((token) => (
+                  <li key={token.token_id}>
+                    <span className="testnet-kind">{token.symbol || token.token_id}</span>
+                    <span className="testnet-net">
+                      {(token.balance / 10 ** token.decimals).toLocaleString(undefined, {
+                        minimumFractionDigits: token.decimals,
+                        maximumFractionDigits: token.decimals,
+                      })}
+                    </span>
+                  </li>
+                ))}
+            </ul>
+          ) : overview.transactions.length === 0 ? (
             <p className="field-hint">No transactions yet.</p>
           ) : (
             <ul className="testnet-transactions" aria-label="Recent transactions">

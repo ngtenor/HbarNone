@@ -1314,6 +1314,34 @@ describe('watch-only wallet', () => {
     expect(screen.getByRole('menuitem', { name: 'Delete account' })).toBeInTheDocument()
   })
 
+  it('swaps Recent transactions for Account assets, listing HBAR then tokens alphabetically', async () => {
+    const user = userEvent.setup()
+    installBackend({
+      wallets: [wallet('w1', 'Savings', '0.0.1001')],
+      overview: {
+        account_id: 'x',
+        balance_tinybars: 150_000_000,
+        transactions: [],
+        tokens: [
+          { token_id: '0.0.9', symbol: 'ZED', balance: 5, decimals: 0 },
+          { token_id: '0.0.8', symbol: 'ALP', balance: 12345, decimals: 2 },
+        ],
+      },
+    })
+    render(<App />)
+    await unlock(user)
+    await openAccount(user, 'Savings')
+    expect(await screen.findByRole('heading', { name: 'Recent transactions' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Account assets' }))
+    expect(screen.getByRole('heading', { name: 'Account assets' })).toBeInTheDocument()
+    expect(screen.queryByRole('list', { name: 'Recent transactions' })).not.toBeInTheDocument()
+    const rows = within(screen.getByRole('list', { name: 'Account assets' })).getAllByRole('listitem')
+    expect(rows.map((row) => row.textContent)).toEqual(['HBAR1.50 ℏ', 'ALP123.45', 'ZED5'])
+    await user.click(screen.getByRole('button', { name: 'Recent transactions' }))
+    expect(screen.getByRole('heading', { name: 'Recent transactions' })).toBeInTheDocument()
+    expect(screen.queryByRole('list', { name: 'Account assets' })).not.toBeInTheDocument()
+  })
+
   it('closes the Send, Move and Delete sections with Cancel', async () => {
     const user = userEvent.setup()
     installBackend({ wallets: [wallet('w1', 'Savings', '0.0.1001'), wallet('w2', 'Trading')] })
