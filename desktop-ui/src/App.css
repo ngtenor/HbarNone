@@ -1144,6 +1144,15 @@ h2.section-title,
   font-weight: 600;
 }
 
+.testnet-token-name {
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.token-details {
+  margin-top: 12px;
+}
+
 .testnet-counterparty {
   overflow-wrap: anywhere;
   text-align: left;

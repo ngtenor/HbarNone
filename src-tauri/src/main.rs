@@ -2,7 +2,7 @@
 
 use std::{path::PathBuf, sync::Mutex};
 
-use hedera_mirror::{AccountOverview, MirrorClient};
+use hedera_mirror::{AccountOverview, MirrorClient, TokenInfo};
 use serde::{Deserialize, Serialize};
 use tauri::{Manager, State};
 use tauri_plugin_dialog::DialogExt;
@@ -350,6 +350,11 @@ async fn get_account_overview(
 ) -> Result<Option<AccountOverview>, String> {
     let account_id = testnet_account_of(&state, &wallet_id, &account_id)?;
     MirrorClient::testnet()?.account_overview(&account_id).await
+}
+
+#[tauri::command]
+async fn get_token_info(token_id: String) -> Result<Option<TokenInfo>, String> {
+    MirrorClient::testnet()?.token_info(&token_id).await
 }
 
 #[tauri::command]
@@ -1170,6 +1175,7 @@ fn main() {
             submit_signed_request,
             find_wallet_accounts,
             get_account_balance,
+            get_token_info,
             get_transaction_result,
             get_account_overview,
             send_hbar,

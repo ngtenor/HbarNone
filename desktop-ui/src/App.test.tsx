@@ -182,6 +182,19 @@ function installBackend(overrides: Partial<Backend> = {}) {
         return backend.overview
           ? (backend.overview as { balance_tinybars: number }).balance_tinybars
           : null
+      case 'get_token_info':
+        return {
+          token_id: '0.0.8',
+          name: 'Alpha',
+          symbol: 'ALP',
+          decimals: 2,
+          token_type: 'FUNGIBLE_COMMON',
+          total_supply: '100000',
+          treasury: '0.0.5',
+          deleted: false,
+          has_admin_key: true,
+          memo: '',
+        }
       case 'get_account_overview':
         return backend.overview
       case 'send_hbar':
@@ -1323,8 +1336,9 @@ describe('watch-only wallet', () => {
         balance_tinybars: 150_000_000,
         transactions: [],
         tokens: [
-          { token_id: '0.0.9', symbol: 'ZED', balance: 5, decimals: 0 },
-          { token_id: '0.0.8', symbol: 'ALP', balance: 12345, decimals: 2 },
+          { token_id: '0.0.9', symbol: 'ZED', name: 'Zed Coin', balance: '5', decimals: 0 },
+          { token_id: '0.0.8', symbol: 'ALP', name: 'Alpha', balance: '12345', decimals: 2 },
+          { token_id: '0.0.7', symbol: 'EMP', name: 'Empty', balance: '0', decimals: 0 },
         ],
       },
     })
@@ -1336,10 +1350,61 @@ describe('watch-only wallet', () => {
     expect(screen.getByRole('heading', { name: 'Account assets' })).toBeInTheDocument()
     expect(screen.queryByRole('list', { name: 'Recent transactions' })).not.toBeInTheDocument()
     const rows = within(screen.getByRole('list', { name: 'Account assets' })).getAllByRole('listitem')
-    expect(rows.map((row) => row.textContent)).toEqual(['HBAR1.50 ℏ', 'ALP123.45', 'ZED5'])
+    expect(rows.map((row) => row.textContent)).toEqual([
+      'HBAR1.50 ℏ',
+      'ALP Alpha123.45',
+      'EMP Empty0',
+      'ZED Zed Coin5',
+    ])
     await user.click(screen.getByRole('button', { name: 'Recent transactions' }))
     expect(screen.getByRole('heading', { name: 'Recent transactions' })).toBeInTheDocument()
     expect(screen.queryByRole('list', { name: 'Account assets' })).not.toBeInTheDocument()
+  })
+
+  it('lists tokens in the Send menu with balances, greying out empty ones', async () => {
+    const user = userEvent.setup()
+    installBackend({
+      wallets: [wallet('w1', 'Savings', '0.0.1001')],
+      overview: {
+        account_id: 'x',
+        balance_tinybars: 150_000_000,
+        transactions: [],
+        tokens: [
+          { token_id: '0.0.9', symbol: 'ZED', name: 'Zed Coin', balance: '5', decimals: 0 },
+          { token_id: '0.0.8', symbol: 'ALP', name: 'Alpha', balance: '12345', decimals: 2 },
+          { token_id: '0.0.7', symbol: 'EMP', name: 'Empty', balance: '0', decimals: 0 },
+        ],
+      },
+    })
+    render(<App />)
+    await unlock(user)
+    await openAccount(user, 'Savings')
+    await screen.findByRole('button', { name: 'Refresh transactions' })
+    await user.click(screen.getByRole('button', { name: 'Send' }))
+    const items = screen.getAllByRole('menuitem')
+    expect(items.map((item) => item.textContent)).toEqual(['HBAR', 'ALP123.45', 'EMP0', 'ZED5'])
+    expect(screen.getByRole('menuitem', { name: /EMP/ })).toBeDisabled()
+    await user.click(screen.getByRole('menuitem', { name: /ZED/ }))
+    expect(screen.getByRole('status')).toHaveTextContent('not available yet')
+    expect(screen.queryByRole('heading', { name: 'Send HBAR' })).not.toBeInTheDocument()
+  })
+
+  it('looks up a token from Token management', async () => {
+    const user = userEvent.setup()
+    installBackend({ wallets: [wallet('w1', 'Savings', '0.0.1001')] })
+    render(<App />)
+    await unlock(user)
+    await openAccount(user, 'Savings')
+    await chooseMenu(user, 'Token management', 'Token info')
+    await user.type(screen.getByLabelText('Token ID'), '0.0.8')
+    await user.click(screen.getByRole('button', { name: 'Look up token' }))
+    const details = await screen.findByLabelText('Token details')
+    expect(commandsCalled('get_token_info')[0].args).toEqual({ tokenId: '0.0.8' })
+    expect(details).toHaveTextContent('Alpha')
+    expect(details).toHaveTextContent('1,000.00')
+    expect(details).toHaveTextContent('Yes (the token can be changed or deleted)')
+    await user.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(screen.queryByRole('heading', { name: 'Token info' })).not.toBeInTheDocument()
   })
 
   it('closes the Send, Move and Delete sections with Cancel', async () => {

@@ -35,8 +35,22 @@ type TransactionSummary = {
 type AccountToken = {
   token_id: string
   symbol: string
-  balance: number
+  name: string
+  balance: string
   decimals: number
+}
+
+type TokenInfo = {
+  token_id: string
+  name: string
+  symbol: string
+  decimals: number
+  token_type: string
+  total_supply: string
+  treasury: string
+  deleted: boolean
+  has_admin_key: boolean
+  memo: string
 }
 
 type AccountOverview = {
@@ -53,6 +67,25 @@ function formatHbar(tinybars: number, maxDecimals = 8) {
     minimumFractionDigits: 2,
     maximumFractionDigits: maxDecimals,
   })
+}
+
+// Token amounts are integers in the smallest unit; BigInt keeps large supplies exact.
+function formatTokenAmount(units: string, decimals: number) {
+  let value: bigint
+  try {
+    value = BigInt(units)
+  } catch {
+    return units
+  }
+  const scale = 10n ** BigInt(decimals)
+  const whole = (value / scale).toLocaleString()
+  if (decimals === 0) return whole
+  const point = (1.1).toLocaleString().charAt(1)
+  return `${whole}${point}${(value % scale).toString().padStart(decimals, '0')}`
+}
+
+function tokenLabel(token: AccountToken) {
+  return token.symbol || token.token_id
 }
 
 function formatNet(tinybars: number) {
@@ -155,7 +188,11 @@ export function TestnetPanel({
   const [deleteAcknowledged, setDeleteAcknowledged] = useState(false)
   const [pendingDelete, setPendingDelete] = useState(false)
   const [showAssets, setShowAssets] = useState(false)
-  const [section, setSection] = useState<'send' | 'rename' | 'move' | 'delete' | null>(null)
+  const [section, setSection] = useState<
+    'send' | 'rename' | 'move' | 'delete' | 'token-info' | null
+  >(null)
+  const [tokenQuery, setTokenQuery] = useState('')
+  const [tokenDetails, setTokenDetails] = useState<TokenInfo | null>(null)
   const isWatchOnly = wallet.secret_kind === 'watchonly'
   const [signing, setSigning] = useState<SigningRequest | null>(null)
   const [signatureText, setSignatureText] = useState('')
@@ -176,7 +213,7 @@ export function TestnetPanel({
     const timer = window.setInterval(tick, 1000)
     return () => window.clearInterval(timer)
   }, [signing])
-  const toggleSection = (next: 'send' | 'rename' | 'move' | 'delete') => {
+  const toggleSection = (next: 'send' | 'rename' | 'move' | 'delete' | 'token-info') => {
     setSection((current) => (current === next ? null : next))
     // Leaving a section discards anything typed into it and any pending review.
     setRecipient('')
@@ -193,8 +230,22 @@ export function TestnetPanel({
     setUseOtherDeleteRecipient(false)
     setConfirmingDelete(false)
     setDeleteAcknowledged(false)
+    setTokenQuery('')
+    setTokenDetails(null)
     setError('')
     setNotice('')
+  }
+  const sendableTokens = [...(overview?.tokens ?? [])].sort((a, b) =>
+    tokenLabel(a).localeCompare(tokenLabel(b)),
+  )
+  const handleLookupToken = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    setTokenDetails(null)
+    void run(async () => {
+      const found = await invoke<TokenInfo | null>('get_token_info', { tokenId: tokenQuery.trim() })
+      if (!found) throw new Error('Testnet does not know this token.')
+      setTokenDetails(found)
+    })
   }
   const alive = useRef(true)
   async function run(task: () => Promise<void>) {
@@ -682,8 +733,23 @@ export function TestnetPanel({
             <DropdownMenu
               label="Send"
               primary
-              entries={[{ id: 'hbar', label: 'HBAR' }]}
-              onSelect={() => toggleSection('send')}
+              entries={[
+                { id: 'hbar', label: 'HBAR' },
+                ...sendableTokens.map((token) => ({
+                  id: `token:${token.token_id}`,
+                  label: tokenLabel(token),
+                  detail: formatTokenAmount(token.balance, token.decimals),
+                  disabled: token.balance === '0',
+                })),
+              ]}
+              onSelect={(id) => {
+                if (id === 'hbar') {
+                  toggleSection('send')
+                } else {
+                  setSection(null)
+                  setNotice('Sending tokens is not available yet.')
+                }
+              }}
             />
             <button
               className="secondary-button"
@@ -692,6 +758,14 @@ export function TestnetPanel({
             >
               {showAssets ? 'Recent transactions' : 'Account assets'}
             </button>
+            <DropdownMenu
+              label="Token management"
+              entries={[
+                { kind: 'heading', label: 'Holding' },
+                { id: 'token-info', label: 'Token info' },
+              ]}
+              onSelect={() => toggleSection('token-info')}
+            />
             <DropdownMenu
               label="Account management"
               entries={[
@@ -734,6 +808,63 @@ export function TestnetPanel({
               </button>
             </div>
           </form>
+        </div>
+      )}
+
+      {account && section === 'token-info' && (
+        <div className="testnet-send">
+          <h3 className="section-title">Token info</h3>
+          <form className="testnet-link-form" onSubmit={handleLookupToken} noValidate>
+            <label htmlFor={`token-id-${wallet.id}`}>Token ID</label>
+            <input
+              id={`token-id-${wallet.id}`}
+              autoComplete="off"
+              placeholder="0.0.12345"
+              maxLength={32}
+              value={tokenQuery}
+              onChange={(event) => setTokenQuery(event.target.value)}
+            />
+            <div className="button-pair">
+              <button className="secondary-button" type="submit" disabled={isBusy}>
+                Look up token
+              </button>
+              <button className="secondary-button" type="button" onClick={() => setSection(null)}>
+                Cancel
+              </button>
+            </div>
+          </form>
+          {tokenDetails && (
+            <dl className="testnet-confirm token-details" aria-label="Token details">
+              <dt>Name</dt>
+              <dd>{tokenDetails.name || '(none)'}</dd>
+              <dt>Symbol</dt>
+              <dd>{tokenDetails.symbol || '(none)'}</dd>
+              <dt>Token ID</dt>
+              <dd>{tokenDetails.token_id}</dd>
+              <dt>Type</dt>
+              <dd>{tokenDetails.token_type}</dd>
+              <dt>Decimals</dt>
+              <dd>{tokenDetails.decimals}</dd>
+              <dt>Total supply</dt>
+              <dd>{formatTokenAmount(tokenDetails.total_supply, tokenDetails.decimals)}</dd>
+              <dt>Treasury</dt>
+              <dd>{tokenDetails.treasury}</dd>
+              <dt>Admin key</dt>
+              <dd>{tokenDetails.has_admin_key ? 'Yes (the token can be changed or deleted)' : 'None (fixed)'}</dd>
+              {tokenDetails.deleted && (
+                <>
+                  <dt>Status</dt>
+                  <dd>Deleted</dd>
+                </>
+              )}
+              {tokenDetails.memo && (
+                <>
+                  <dt>Memo</dt>
+                  <dd>{tokenDetails.memo}</dd>
+                </>
+              )}
+            </dl>
+          )}
         </div>
       )}
 
@@ -1234,19 +1365,17 @@ export function TestnetPanel({
                 <span className="testnet-kind">HBAR</span>
                 <span className="testnet-net">{formatHbar(overview.balance_tinybars)} ℏ</span>
               </li>
-              {[...(overview.tokens ?? [])]
-                .sort((a, b) => (a.symbol || a.token_id).localeCompare(b.symbol || b.token_id))
-                .map((token) => (
-                  <li key={token.token_id}>
-                    <span className="testnet-kind">{token.symbol || token.token_id}</span>
-                    <span className="testnet-net">
-                      {(token.balance / 10 ** token.decimals).toLocaleString(undefined, {
-                        minimumFractionDigits: token.decimals,
-                        maximumFractionDigits: token.decimals,
-                      })}
-                    </span>
-                  </li>
-                ))}
+              {sendableTokens.map((token) => (
+                <li key={token.token_id}>
+                  <span className="testnet-kind">
+                    {tokenLabel(token)}
+                    {token.name && token.symbol ? (
+                      <span className="testnet-token-name"> {token.name}</span>
+                    ) : null}
+                  </span>
+                  <span className="testnet-net">{formatTokenAmount(token.balance, token.decimals)}</span>
+                </li>
+              ))}
             </ul>
           ) : overview.transactions.length === 0 ? (
             <p className="field-hint">No transactions yet.</p>
