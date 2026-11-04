@@ -193,8 +193,15 @@ function installBackend(overrides: Partial<Backend> = {}) {
           treasury: '0.0.5',
           deleted: false,
           has_admin_key: true,
+          admin_key: 'ab'.repeat(32),
           memo: '',
         }
+      case 'create_token':
+        if (backend.sendError) throw new Error(backend.sendError)
+        return { transactionId: '0.0.1001-1700000000-000000009' }
+      case 'delete_token':
+        if (backend.sendError) throw new Error(backend.sendError)
+        return { transactionId: '0.0.1001-1700000000-000000010' }
       case 'get_account_overview':
         return backend.overview
       case 'send_hbar':
@@ -1405,6 +1412,88 @@ describe('watch-only wallet', () => {
     expect(details).toHaveTextContent('Yes (the token can be changed or deleted)')
     await user.click(screen.getByRole('button', { name: 'Cancel' }))
     expect(screen.queryByRole('heading', { name: 'Token info' })).not.toBeInTheDocument()
+  })
+
+  it('creates a token after a review step, and Cancel discards the form', async () => {
+    const user = userEvent.setup()
+    installBackend({ wallets: [wallet('w1', 'Savings', '0.0.1001')] })
+    render(<App />)
+    await unlock(user)
+    await openAccount(user, 'Savings')
+    await chooseMenu(user, 'Token management', 'Create token')
+    await user.click(screen.getByRole('button', { name: 'Review token' }))
+    expect(screen.getByRole('alert')).toHaveTextContent('Enter a token name and symbol.')
+    await user.type(screen.getByLabelText('Token name'), 'Gold')
+    await user.type(screen.getByLabelText('Symbol'), 'GLD')
+    await user.clear(screen.getByLabelText(/Decimals/))
+    await user.type(screen.getByLabelText(/Decimals/), '2')
+    await user.click(screen.getByRole('button', { name: 'Review token' }))
+    expect(screen.getByRole('alert')).toHaveTextContent('initial supply')
+    await user.type(screen.getByLabelText(/Initial supply/), '1000')
+    await user.click(screen.getByRole('button', { name: 'Review token' }))
+    const review = screen.getByRole('group', { name: 'Confirm token creation' })
+    expect(review).toHaveTextContent('Gold')
+    expect(review).toHaveTextContent('at most 20')
+    expect(commandsCalled('create_token')).toHaveLength(0)
+    await user.click(screen.getByRole('button', { name: 'Sign and create token' }))
+    await waitFor(() => expect(commandsCalled('create_token')).toHaveLength(1))
+    expect(commandsCalled('create_token')[0].args).toEqual({
+      walletId: 'w1',
+      fromAccount: '0.0.1001',
+      name: 'Gold',
+      symbol: 'GLD',
+      decimals: 2,
+      initialSupply: '1000',
+    })
+    expect(screen.queryByRole('heading', { name: 'Create token' })).not.toBeInTheDocument()
+
+    await chooseMenu(user, 'Token management', 'Create token')
+    await user.type(screen.getByLabelText('Token name'), 'Temp')
+    await user.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(screen.queryByRole('heading', { name: 'Create token' })).not.toBeInTheDocument()
+  })
+
+  it('deletes a held token only after it is chosen and acknowledged', async () => {
+    const user = userEvent.setup()
+    installBackend({
+      wallets: [wallet('w1', 'Savings', '0.0.1001')],
+      overview: {
+        account_id: 'x',
+        balance_tinybars: 150_000_000,
+        transactions: [],
+        tokens: [{ token_id: '0.0.8', symbol: 'ALP', name: 'Alpha', balance: '12345', decimals: 2 }],
+      },
+    })
+    render(<App />)
+    await unlock(user)
+    await openAccount(user, 'Savings')
+    await screen.findByRole('button', { name: 'Refresh transactions' })
+    await chooseMenu(user, 'Token management', 'Delete token')
+    const submit = screen.getByRole('button', { name: 'Sign and delete token' })
+    expect(submit).toBeDisabled()
+    await user.selectOptions(screen.getByLabelText('Token to delete'), '0.0.8')
+    expect(submit).toBeDisabled()
+    await user.click(screen.getByRole('checkbox'))
+    await user.click(submit)
+    await waitFor(() => expect(commandsCalled('delete_token')).toHaveLength(1))
+    expect(commandsCalled('delete_token')[0].args).toEqual({
+      walletId: 'w1',
+      accountId: '0.0.1001',
+      tokenId: '0.0.8',
+    })
+  })
+
+  it('disables token creation and deletion for watch-only wallets', async () => {
+    const user = userEvent.setup()
+    installBackend({
+      wallets: [{ ...wallet('w1', 'Watcher', '0.0.1001'), secret_kind: 'watchonly', key_type: 'ed25519' }],
+    })
+    render(<App />)
+    await unlock(user)
+    await openAccount(user, 'Watcher')
+    await user.click(screen.getByRole('button', { name: 'Token management' }))
+    expect(screen.getByRole('menuitem', { name: /Create token/ })).toBeDisabled()
+    expect(screen.getByRole('menuitem', { name: /Delete token/ })).toBeDisabled()
   })
 
   it('closes the Send, Move and Delete sections with Cancel', async () => {

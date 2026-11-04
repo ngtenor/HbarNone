@@ -380,6 +380,83 @@ struct SendResult {
     transaction_id: String,
 }
 
+/// Creates a fungible token owned by the wallet's key. `initial_supply` is in
+/// whole tokens, such as `1000` or `12.5`.
+#[tauri::command]
+async fn create_token(
+    wallet_id: String,
+    from_account: String,
+    name: String,
+    symbol: String,
+    decimals: u32,
+    initial_supply: String,
+    state: State<'_, AppState>,
+) -> Result<SendResult, String> {
+    hedera_tx::check_token_text("name", &name)?;
+    hedera_tx::check_token_text("symbol", &symbol)?;
+    if decimals > hedera_tx::MAX_TOKEN_DECIMALS {
+        return Err("Decimals can be 18 at most.".to_string());
+    }
+    let supply = hedera_tx::submit::parse_token_amount(&initial_supply, decimals)?;
+    let payer = testnet_account_of(&state, &wallet_id, &from_account)?;
+    let (key_type, secret) = lock_service(&state)?
+        .with_wallet_key(&wallet_id, |key_type, secret| {
+            Ok((key_type, Zeroizing::new(*secret)))
+        })?;
+    let receipt = hedera_tx::submit::create_testnet_token(
+        &payer,
+        (key_type, &secret),
+        &name,
+        &symbol,
+        decimals,
+        supply,
+    )
+    .await?;
+    Ok(SendResult {
+        transaction_id: receipt.transaction_id,
+    })
+}
+
+/// Deletes a token after checking on the mirror node that this wallet's key is
+/// its admin key, so a doomed transaction never costs a fee.
+#[tauri::command]
+async fn delete_token(
+    wallet_id: String,
+    account_id: String,
+    token_id: String,
+    state: State<'_, AppState>,
+) -> Result<SendResult, String> {
+    let payer = testnet_account_of(&state, &wallet_id, &account_id)?;
+    let token_id = validate_account_id(&token_id)?;
+    let info = MirrorClient::testnet()?
+        .token_info(&token_id)
+        .await?
+        .ok_or_else(|| "The mirror node does not know this token.".to_string())?;
+    if info.deleted {
+        return Err("This token has already been deleted.".to_string());
+    }
+    let wallet_key = lock_service(&state)?
+        .wallet_public_key(&wallet_id)?
+        .to_ascii_lowercase();
+    match info.admin_key.as_deref() {
+        Some(key) if key == wallet_key => {}
+        Some(_) => return Err("This wallet's key is not the token's admin key.".to_string()),
+        None if info.has_admin_key => {
+            return Err("This token's admin key is not one this wallet can sign with.".to_string());
+        }
+        None => return Err("This token has no admin key, so it cannot be deleted.".to_string()),
+    }
+    let (key_type, secret) = lock_service(&state)?
+        .with_wallet_key(&wallet_id, |key_type, secret| {
+            Ok((key_type, Zeroizing::new(*secret)))
+        })?;
+    let receipt =
+        hedera_tx::submit::delete_testnet_token(&payer, (key_type, &secret), &token_id).await?;
+    Ok(SendResult {
+        transaction_id: receipt.transaction_id,
+    })
+}
+
 /// Signs in the backend with the wallet's own key and submits to Testnet only.
 #[tauri::command]
 async fn send_hbar(
@@ -1176,6 +1253,8 @@ fn main() {
             find_wallet_accounts,
             get_account_balance,
             get_token_info,
+            create_token,
+            delete_token,
             get_transaction_result,
             get_account_overview,
             send_hbar,

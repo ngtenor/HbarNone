@@ -12,9 +12,11 @@ use wallet_core::key_import::KeyType;
 use wallet_core::wallet_service::validate_account_id;
 
 use crate::{
-    ChangeKeyParams, CreateAccountParams, DeleteAccountParams, Transaction, TransactionResponse,
-    TransferParams, change_key_body_bytes, create_account_body_bytes, delete_account_body_bytes,
-    sign_body, sign_body_multi, transfer_body_bytes,
+    ChangeKeyParams, CreateAccountParams, CreateTokenParams, DeleteAccountParams,
+    DeleteTokenParams, MAX_TOKEN_DECIMALS, Transaction, TransactionResponse, TransferParams,
+    change_key_body_bytes, create_account_body_bytes, create_token_body_bytes,
+    delete_account_body_bytes, delete_token_body_bytes, sign_body, sign_body_multi,
+    transfer_body_bytes,
 };
 
 /// Testnet node account 0.0.3 and its plain-gRPC endpoint.
@@ -22,12 +24,16 @@ pub const TESTNET_NODE_ACCOUNT: (i64, i64, i64) = (0, 0, 3);
 pub const TESTNET_NODE_URL: &str = "http://34.94.106.61:50211";
 /// Upper bound on the fee the payer agrees to (1 HBAR). The real fee is far lower.
 pub const MAX_FEE_TINYBARS: u64 = 100_000_000;
+/// Creating a token costs about one US dollar, so its limit is higher (20 HBAR).
+pub const MAX_TOKEN_CREATE_FEE_TINYBARS: u64 = 2_000_000_000;
 pub const MAX_MEMO_BYTES: usize = 100;
 const TINYBARS_PER_HBAR: u64 = 100_000_000;
 pub(crate) const TRANSFER_PATH: &str = "/proto.CryptoService/cryptoTransfer";
 pub(crate) const CREATE_PATH: &str = "/proto.CryptoService/createAccount";
 const UPDATE_PATH: &str = "/proto.CryptoService/updateAccount";
 pub(crate) const DELETE_PATH: &str = "/proto.CryptoService/cryptoDelete";
+const TOKEN_CREATE_PATH: &str = "/proto.TokenService/createToken";
+const TOKEN_DELETE_PATH: &str = "/proto.TokenService/deleteToken";
 /// Largest opening balance the app will fund a new account with.
 pub(crate) const MAX_INITIAL_TINYBARS: i64 = 10_000 * TINYBARS_PER_HBAR as i64;
 
@@ -305,6 +311,130 @@ pub async fn delete_testnet_account(
     })
 }
 
+/// Parses a token amount such as `1000` or `12.34` into the token's smallest
+/// unit, given its decimals. Zero is allowed (a token can start with no supply).
+pub fn parse_token_amount(input: &str, decimals: u32) -> Result<u64, String> {
+    let text = input.trim();
+    let (whole, fraction) = text.split_once('.').unwrap_or((text, ""));
+    let digits_ok = |part: &str| part.bytes().all(|b| b.is_ascii_digit());
+    if (whole.is_empty() && fraction.is_empty())
+        || !digits_ok(whole)
+        || !digits_ok(fraction)
+        || fraction.len() > decimals as usize
+    {
+        return Err(format!(
+            "Enter an amount with at most {decimals} decimal places."
+        ));
+    }
+    let too_large = || "The amount is too large.".to_string();
+    let whole: u128 = if whole.is_empty() {
+        0
+    } else {
+        whole.parse().map_err(|_| too_large())?
+    };
+    let fraction_units: u128 = if fraction.is_empty() {
+        0
+    } else {
+        format!("{fraction:0<width$}", width = decimals as usize)
+            .parse()
+            .map_err(|_| too_large())?
+    };
+    let scale = 10u128.checked_pow(decimals).ok_or_else(too_large)?;
+    let units = whole
+        .checked_mul(scale)
+        .and_then(|v| v.checked_add(fraction_units))
+        .filter(|v| *v <= i64::MAX as u128)
+        .ok_or_else(too_large)?;
+    Ok(units as u64)
+}
+
+fn start_time() -> Result<(i64, i32), String> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| "The system clock is before 1970.".to_string())?;
+    // Start slightly in the past so a small clock skew is not rejected.
+    let start = now.saturating_sub(Duration::from_secs(10));
+    Ok((start.as_secs() as i64, start.subsec_nanos() as i32))
+}
+
+/// Creates a fungible token whose treasury is `payer`, and whose admin and
+/// supply keys are the payer's key. The token ID shows up on the mirror node
+/// once consensus is reached.
+pub async fn create_testnet_token(
+    payer: &str,
+    key: (KeyType, &[u8; 32]),
+    name: &str,
+    symbol: &str,
+    decimals: u32,
+    initial_supply: u64,
+) -> Result<SendReceipt, String> {
+    if decimals > MAX_TOKEN_DECIMALS {
+        return Err("Decimals can be 18 at most.".to_string());
+    }
+    let payer_id = parse_account(payer)?;
+    let (seconds, nanos) = start_time()?;
+    let params = CreateTokenParams {
+        payer: payer_id,
+        name: name.trim().to_string(),
+        symbol: symbol.trim().to_string(),
+        decimals,
+        initial_supply,
+        key_type: key.0,
+        public_key: wallet_core::key_import::public_key_bytes(key.0, key.1)?,
+        node: TESTNET_NODE_ACCOUNT,
+        valid_start_seconds: seconds,
+        valid_start_nanos: nanos,
+        max_fee_tinybars: MAX_TOKEN_CREATE_FEE_TINYBARS,
+    };
+    let body = create_token_body_bytes(&params)?;
+    let encoded = sign_body(&body, key.0, key.1)?;
+    let transaction =
+        <Transaction as prost::Message>::decode(encoded.as_slice()).map_err(|e| e.to_string())?;
+    let response = submit(transaction, TOKEN_CREATE_PATH).await?;
+    if response.precheck_code != 0 {
+        return Err(format!(
+            "The node rejected the token creation: {}",
+            precheck_message(response.precheck_code)
+        ));
+    }
+    Ok(SendReceipt {
+        transaction_id: format!("0.0.{}-{}-{:09}", payer_id.2, seconds, nanos),
+    })
+}
+
+/// Deletes a token. `payer` pays the fee; the key must be the token's admin key.
+pub async fn delete_testnet_token(
+    payer: &str,
+    key: (KeyType, &[u8; 32]),
+    token: &str,
+) -> Result<SendReceipt, String> {
+    let payer_id = parse_account(payer)?;
+    let token_id = parse_account(token)?;
+    let (seconds, nanos) = start_time()?;
+    let params = DeleteTokenParams {
+        payer: payer_id,
+        token: token_id,
+        node: TESTNET_NODE_ACCOUNT,
+        valid_start_seconds: seconds,
+        valid_start_nanos: nanos,
+        max_fee_tinybars: MAX_FEE_TINYBARS,
+    };
+    let body = delete_token_body_bytes(&params)?;
+    let encoded = sign_body(&body, key.0, key.1)?;
+    let transaction =
+        <Transaction as prost::Message>::decode(encoded.as_slice()).map_err(|e| e.to_string())?;
+    let response = submit(transaction, TOKEN_DELETE_PATH).await?;
+    if response.precheck_code != 0 {
+        return Err(format!(
+            "The node rejected the token deletion: {}",
+            precheck_message(response.precheck_code)
+        ));
+    }
+    Ok(SendReceipt {
+        transaction_id: format!("0.0.{}-{}-{:09}", payer_id.2, seconds, nanos),
+    })
+}
+
 pub(crate) async fn submit(
     transaction: Transaction,
     path: &'static str,
@@ -335,6 +465,25 @@ pub(crate) async fn submit(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_token_amounts_in_smallest_units() {
+        assert_eq!(parse_token_amount("1000", 0).unwrap(), 1000);
+        assert_eq!(parse_token_amount("12.34", 2).unwrap(), 1234);
+        assert_eq!(parse_token_amount("12.3", 2).unwrap(), 1230);
+        assert_eq!(parse_token_amount(".5", 1).unwrap(), 5);
+        assert_eq!(parse_token_amount("0", 2).unwrap(), 0);
+        assert!(parse_token_amount("1.234", 2).is_err());
+        assert!(parse_token_amount("1.5", 0).is_err());
+        assert!(parse_token_amount("", 2).is_err());
+        assert!(parse_token_amount("-1", 2).is_err());
+        assert!(parse_token_amount("9223372036854775808", 0).is_err());
+        assert_eq!(
+            parse_token_amount("9223372036854775807", 0).unwrap(),
+            i64::MAX as u64
+        );
+        assert!(parse_token_amount("99999999999999999999999999999999999999999", 18).is_err());
+    }
 
     #[test]
     fn parses_hbar_amounts() {

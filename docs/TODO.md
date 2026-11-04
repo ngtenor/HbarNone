@@ -107,7 +107,14 @@ Password change and encrypted backup export/restore are tracked under
 1. All Linux manual verification is complete.
 2. (Done) Watch-only wallets and unsigned-transaction export.
 3. Design and build QR-based offline transaction transport and a signer application.
-4. Consider HTS tokens/NFTs and hardware work after the current HBAR flows are fully verified.
+4. HTS tokens, in stages (hot wallets first):
+   - (Done) Stage 1: token balances in Account assets and Send menu, and Token info lookup.
+   - Stage 2 (built, awaiting Testnet test): create and delete a fungible token. The wallet key is the treasury, admin and supply key; the fee cap for creation is 20 HBAR.
+   - Stage 3: associate, dissociate and hide tokens.
+   - Stage 4: send a token, with a receiver-association check.
+   - Stage 5: mint and burn.
+   - Stage 6: signer support for watch-only wallets (association, token send, create, delete, mint and burn).
+   - Later: NFTs, key change and hardware work.
 5. Defer Mainnet until the implementation has been reviewed and tested.
 
 ## Cold signer (SeedSigner) design notes
