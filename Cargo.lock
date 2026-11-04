@@ -3780,6 +3780,7 @@ dependencies = [
  "k256",
  "prost",
  "sha3",
+ "wallet-core",
  "zeroize",
 ]
 

@@ -9,6 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use signer_core::{
     KeyKind, SigningKey, TransferSummary, check_time, format_hbar, parse_request, sign,
+    with_checksum,
 };
 use wallet_core::key_import::parse_private_key;
 use wallet_core::wallet::Wallet;
@@ -52,8 +53,8 @@ fn show(summary: &TransferSummary) {
     println!("  ====== PLEASE CHECK EVERY LINE ======");
     println!("  Action        Send HBAR");
     println!("  Network       Hedera Testnet (no real value)");
-    println!("  From          {}", summary.payer);
-    println!("  To            {}", summary.recipient);
+    println!("  From          {}", with_checksum(&summary.payer));
+    println!("  To            {}", with_checksum(&summary.recipient));
     println!(
         "  Amount        {} HBAR ({} tinybars)",
         format_hbar(summary.tinybars),
@@ -69,6 +70,7 @@ fn show(summary: &TransferSummary) {
         "  Time left     {} seconds",
         summary.expires_at_seconds - now_seconds()
     );
+    println!("  (Account checksums are the letters after the dash. Compare them with the app.)");
     println!("  =====================================");
     println!();
 }
@@ -111,7 +113,7 @@ fn run() -> Result<(), String> {
     println!("\nSigning key (public): {}", key.public_key_hex()?);
     println!(
         "Check this is the key of the paying account, {}.",
-        summary.payer
+        with_checksum(&summary.payer)
     );
     if ask("Type yes to sign, anything else to cancel: ")? != "yes" {
         return Err("Cancelled. Nothing was signed.".to_string());
