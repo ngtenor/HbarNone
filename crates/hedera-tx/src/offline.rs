@@ -235,6 +235,8 @@ pub fn describe_body(body_bytes: &[u8]) -> Result<RequestDescription, String> {
         || body.fee > MAX_FEE_TINYBARS
         || body.memo.len() > MAX_MEMO_BYTES
         || body.crypto_update.is_some()
+        || body.token_creation.is_some()
+        || body.token_deletion.is_some()
         || actions != 1
         || !on_main(payer)
         || !(0..1_000_000_000).contains(&start.nanos)

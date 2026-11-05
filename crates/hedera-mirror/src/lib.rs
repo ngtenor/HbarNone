@@ -55,6 +55,8 @@ pub struct TokenInfo {
     pub treasury: String,
     pub deleted: bool,
     pub has_admin_key: bool,
+    /// Lowercase hex of the admin key when it is a single ED25519 or ECDSA key.
+    pub admin_key: Option<String>,
     pub memo: String,
 }
 
@@ -227,6 +229,16 @@ pub fn parse_token_relationships(body: &[u8]) -> Result<Vec<(String, String)>, S
         .collect())
 }
 
+fn single_key_hex(key: &serde_json::Value) -> Option<String> {
+    let kind = key.get("_type")?.as_str()?;
+    let hex = key.get("key")?.as_str()?;
+    let well_formed = matches!(kind, "ED25519" | "ECDSA_SECP256K1")
+        && !hex.is_empty()
+        && hex.len() <= 132
+        && hex.bytes().all(|b| b.is_ascii_hexdigit());
+    well_formed.then(|| hex.to_ascii_lowercase())
+}
+
 pub fn parse_token_info(body: &[u8], expected_token: &str) -> Result<TokenInfo, String> {
     let entry: TokenInfoEntry = serde_json::from_slice(body)
         .map_err(|_| "unexpected response from the mirror node".to_string())?;
@@ -256,6 +268,7 @@ pub fn parse_token_info(body: &[u8], expected_token: &str) -> Result<TokenInfo, 
             .unwrap_or_default(),
         deleted: entry.deleted == Some(true),
         has_admin_key: entry.admin_key.as_ref().is_some_and(|key| !key.is_null()),
+        admin_key: entry.admin_key.as_ref().and_then(single_key_hex),
         memo: clean_text(entry.memo.as_deref().unwrap_or_default()),
     })
 }
@@ -530,8 +543,9 @@ mod tests {
     fn parses_token_info_with_text_numbers_and_checks_the_token() {
         let body = br#"{"token_id":"0.0.8","name":"Alpha\u0007","symbol":"ALP","decimals":"2",
             "type":"FUNGIBLE_COMMON","total_supply":"1000000","treasury_account_id":"0.0.5",
-            "deleted":false,"admin_key":{"_type":"ED25519","key":"ab"},"memo":"hi"}"#;
+            "deleted":false,"admin_key":{"_type":"ED25519","key":"AB"},"memo":"hi"}"#;
         let info = parse_token_info(body, "0.0.8").unwrap();
+        assert_eq!(info.admin_key.as_deref(), Some("ab"));
         assert_eq!(info.name, "Alpha");
         assert_eq!(info.decimals, 2);
         assert_eq!(info.total_supply, "1000000");
@@ -543,7 +557,13 @@ mod tests {
             "0.0.8",
         )
         .unwrap();
-        assert!(!bare.has_admin_key);
+        assert!(!bare.has_admin_key && bare.admin_key.is_none());
+        let listed = parse_token_info(
+            br#"{"token_id":"0.0.8","admin_key":{"_type":"ProtobufEncoded","key":"zz"}}"#,
+            "0.0.8",
+        )
+        .unwrap();
+        assert!(listed.has_admin_key && listed.admin_key.is_none());
         assert_eq!(bare.decimals, 18);
     }
 

@@ -84,6 +84,49 @@ pub struct TransactionBody {
     pub crypto_transfer: Option<CryptoTransferBody>,
     #[prost(message, optional, tag = "15")]
     pub crypto_update: Option<CryptoUpdateBody>,
+    #[prost(message, optional, tag = "29")]
+    pub token_creation: Option<TokenCreateBody>,
+    #[prost(message, optional, tag = "35")]
+    pub token_deletion: Option<TokenDeleteBody>,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct TokenId {
+    #[prost(int64, tag = "1")]
+    pub shard: i64,
+    #[prost(int64, tag = "2")]
+    pub realm: i64,
+    #[prost(int64, tag = "3")]
+    pub num: i64,
+}
+
+/// A fungible token whose treasury, admin key and supply key are all one key.
+#[derive(Clone, PartialEq, Message)]
+pub struct TokenCreateBody {
+    #[prost(string, tag = "1")]
+    pub name: String,
+    #[prost(string, tag = "2")]
+    pub symbol: String,
+    #[prost(uint32, tag = "3")]
+    pub decimals: u32,
+    #[prost(uint64, tag = "4")]
+    pub initial_supply: u64,
+    #[prost(message, optional, tag = "5")]
+    pub treasury: Option<AccountId>,
+    #[prost(message, optional, tag = "6")]
+    pub admin_key: Option<Key>,
+    #[prost(message, optional, tag = "10")]
+    pub supply_key: Option<Key>,
+    #[prost(message, optional, tag = "14")]
+    pub auto_renew_account: Option<AccountId>,
+    #[prost(message, optional, tag = "15")]
+    pub auto_renew_period: Option<Duration>,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct TokenDeleteBody {
+    #[prost(message, optional, tag = "1")]
+    pub token: Option<TokenId>,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -214,6 +257,8 @@ pub fn transfer_body_bytes_valid_for(
         crypto_create: None,
         crypto_delete: None,
         crypto_update: None,
+        token_creation: None,
+        token_deletion: None,
         crypto_transfer: Some(CryptoTransferBody {
             transfers: Some(TransferList {
                 amounts: vec![
@@ -285,6 +330,8 @@ pub fn create_account_body_bytes_valid_for(
         crypto_transfer: None,
         crypto_delete: None,
         crypto_update: None,
+        token_creation: None,
+        token_deletion: None,
     };
     Ok(body.encode_to_vec())
 }
@@ -335,6 +382,8 @@ pub fn delete_account_body_bytes_valid_for(
         crypto_create: None,
         crypto_transfer: None,
         crypto_update: None,
+        token_creation: None,
+        token_deletion: None,
         crypto_delete: Some(CryptoDeleteBody {
             transfer_account: Some(account(p.transfer_account)),
             delete_account: Some(account(p.delete_account)),
@@ -387,9 +436,126 @@ pub fn change_key_body_bytes(p: &ChangeKeyParams) -> Result<Vec<u8>, String> {
         crypto_create: None,
         crypto_delete: None,
         crypto_transfer: None,
+        token_creation: None,
+        token_deletion: None,
         crypto_update: Some(CryptoUpdateBody {
             account_to_update: Some(account(p.account)),
             key: Some(key_message(p.new_key_type, &p.new_public_key)?),
+        }),
+    };
+    Ok(body.encode_to_vec())
+}
+
+/// Parameters of a `TokenCreate` for a fungible token. The payer is the
+/// treasury and auto-renew account, and its key is the admin and supply key.
+pub struct CreateTokenParams {
+    pub payer: (i64, i64, i64),
+    pub name: String,
+    pub symbol: String,
+    pub decimals: u32,
+    /// In the token's smallest unit.
+    pub initial_supply: u64,
+    pub key_type: KeyType,
+    pub public_key: Vec<u8>,
+    pub node: (i64, i64, i64),
+    pub valid_start_seconds: i64,
+    pub valid_start_nanos: i32,
+    pub max_fee_tinybars: u64,
+}
+
+pub const MAX_TOKEN_DECIMALS: u32 = 18;
+pub const MAX_TOKEN_TEXT_BYTES: usize = 100;
+
+pub fn check_token_text(label: &str, value: &str) -> Result<(), String> {
+    if value.trim().is_empty() || value.len() > MAX_TOKEN_TEXT_BYTES {
+        return Err(format!("The token {label} must be 1 to 100 bytes."));
+    }
+    if value.chars().any(|c| c.is_control()) {
+        return Err(format!(
+            "The token {label} cannot contain control characters."
+        ));
+    }
+    Ok(())
+}
+
+pub fn create_token_body_bytes(p: &CreateTokenParams) -> Result<Vec<u8>, String> {
+    check_token_text("name", &p.name)?;
+    check_token_text("symbol", &p.symbol)?;
+    if p.decimals > MAX_TOKEN_DECIMALS {
+        return Err("Decimals can be 18 at most.".into());
+    }
+    if p.initial_supply > i64::MAX as u64 {
+        return Err("The initial supply is too large.".into());
+    }
+    let key = key_message(p.key_type, &p.public_key)?;
+    let body = TransactionBody {
+        transaction_id: Some(TransactionId {
+            valid_start: Some(Timestamp {
+                seconds: p.valid_start_seconds,
+                nanos: p.valid_start_nanos,
+            }),
+            account: Some(account(p.payer)),
+        }),
+        node_account: Some(account(p.node)),
+        fee: p.max_fee_tinybars,
+        valid_duration: Some(Duration { seconds: 120 }),
+        memo: String::new(),
+        crypto_create: None,
+        crypto_delete: None,
+        crypto_transfer: None,
+        crypto_update: None,
+        token_deletion: None,
+        token_creation: Some(TokenCreateBody {
+            name: p.name.clone(),
+            symbol: p.symbol.clone(),
+            decimals: p.decimals,
+            initial_supply: p.initial_supply,
+            treasury: Some(account(p.payer)),
+            admin_key: Some(key.clone()),
+            supply_key: Some(key),
+            auto_renew_account: Some(account(p.payer)),
+            auto_renew_period: Some(Duration {
+                seconds: AUTO_RENEW_SECONDS,
+            }),
+        }),
+    };
+    Ok(body.encode_to_vec())
+}
+
+/// Parameters of a `TokenDelete`. The payer signs along with the token's admin key.
+pub struct DeleteTokenParams {
+    pub payer: (i64, i64, i64),
+    pub token: (i64, i64, i64),
+    pub node: (i64, i64, i64),
+    pub valid_start_seconds: i64,
+    pub valid_start_nanos: i32,
+    pub max_fee_tinybars: u64,
+}
+
+pub fn delete_token_body_bytes(p: &DeleteTokenParams) -> Result<Vec<u8>, String> {
+    let body = TransactionBody {
+        transaction_id: Some(TransactionId {
+            valid_start: Some(Timestamp {
+                seconds: p.valid_start_seconds,
+                nanos: p.valid_start_nanos,
+            }),
+            account: Some(account(p.payer)),
+        }),
+        node_account: Some(account(p.node)),
+        fee: p.max_fee_tinybars,
+        valid_duration: Some(Duration { seconds: 120 }),
+        memo: String::new(),
+        crypto_create: None,
+        crypto_delete: None,
+        crypto_transfer: None,
+        crypto_update: None,
+        token_creation: None,
+        token_deletion: Some(TokenDeleteBody {
+            token: Some(TokenId {
+                shard: p.token.0,
+                realm: p.token.1,
+                num: p.token.2,
+            }),
         }),
     };
     Ok(body.encode_to_vec())
@@ -564,6 +730,61 @@ mod tests {
         stranger.transfer_account = (0, 0, 1002);
         stranger.payer = (0, 0, 7);
         assert!(delete_account_body_bytes(&stranger).is_err());
+    }
+
+    #[test]
+    fn token_create_body_uses_payer_as_treasury_and_key() {
+        let p = CreateTokenParams {
+            payer: (0, 0, 1001),
+            name: "Gold".into(),
+            symbol: "GLD".into(),
+            decimals: 2,
+            initial_supply: 100_000,
+            key_type: KeyType::Ed25519,
+            public_key: vec![7u8; 32],
+            node: (0, 0, 3),
+            valid_start_seconds: 1_700_000_000,
+            valid_start_nanos: 5,
+            max_fee_tinybars: 2_000_000_000,
+        };
+        let body =
+            TransactionBody::decode(create_token_body_bytes(&p).unwrap().as_slice()).unwrap();
+        let create = body.token_creation.unwrap();
+        assert_eq!(create.name, "Gold");
+        assert_eq!(create.decimals, 2);
+        assert_eq!(create.initial_supply, 100_000);
+        assert_eq!(create.treasury.unwrap().num, 1001);
+        assert_eq!(create.admin_key, create.supply_key);
+        assert!(create.admin_key.is_some());
+        assert!(body.token_deletion.is_none() && body.crypto_transfer.is_none());
+
+        let mut bad = CreateTokenParams {
+            name: String::new(),
+            ..p
+        };
+        assert!(create_token_body_bytes(&bad).is_err());
+        bad.name = "Gold".into();
+        bad.decimals = 19;
+        assert!(create_token_body_bytes(&bad).is_err());
+        bad.decimals = 0;
+        bad.initial_supply = u64::MAX;
+        assert!(create_token_body_bytes(&bad).is_err());
+    }
+
+    #[test]
+    fn token_delete_body_names_the_token() {
+        let p = DeleteTokenParams {
+            payer: (0, 0, 1001),
+            token: (0, 0, 4242),
+            node: (0, 0, 3),
+            valid_start_seconds: 1_700_000_000,
+            valid_start_nanos: 5,
+            max_fee_tinybars: 100_000_000,
+        };
+        let body =
+            TransactionBody::decode(delete_token_body_bytes(&p).unwrap().as_slice()).unwrap();
+        assert_eq!(body.token_deletion.unwrap().token.unwrap().num, 4242);
+        assert!(body.token_creation.is_none());
     }
 
     #[test]

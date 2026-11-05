@@ -50,6 +50,7 @@ type TokenInfo = {
   treasury: string
   deleted: boolean
   has_admin_key: boolean
+  admin_key: string | null
   memo: string
 }
 
@@ -189,10 +190,17 @@ export function TestnetPanel({
   const [pendingDelete, setPendingDelete] = useState(false)
   const [showAssets, setShowAssets] = useState(false)
   const [section, setSection] = useState<
-    'send' | 'rename' | 'move' | 'delete' | 'token-info' | null
+    'send' | 'rename' | 'move' | 'delete' | 'token-info' | 'token-create' | 'token-delete' | null
   >(null)
   const [tokenQuery, setTokenQuery] = useState('')
   const [tokenDetails, setTokenDetails] = useState<TokenInfo | null>(null)
+  const [newTokenName, setNewTokenName] = useState('')
+  const [newTokenSymbol, setNewTokenSymbol] = useState('')
+  const [newTokenDecimals, setNewTokenDecimals] = useState('0')
+  const [newTokenSupply, setNewTokenSupply] = useState('')
+  const [confirmingToken, setConfirmingToken] = useState(false)
+  const [tokenToDelete, setTokenToDelete] = useState('')
+  const [tokenDeleteAcknowledged, setTokenDeleteAcknowledged] = useState(false)
   const isWatchOnly = wallet.secret_kind === 'watchonly'
   const [signing, setSigning] = useState<SigningRequest | null>(null)
   const [signatureText, setSignatureText] = useState('')
@@ -213,7 +221,9 @@ export function TestnetPanel({
     const timer = window.setInterval(tick, 1000)
     return () => window.clearInterval(timer)
   }, [signing])
-  const toggleSection = (next: 'send' | 'rename' | 'move' | 'delete' | 'token-info') => {
+  const toggleSection = (
+    next: 'send' | 'rename' | 'move' | 'delete' | 'token-info' | 'token-create' | 'token-delete',
+  ) => {
     setSection((current) => (current === next ? null : next))
     // Leaving a section discards anything typed into it and any pending review.
     setRecipient('')
@@ -232,12 +242,60 @@ export function TestnetPanel({
     setDeleteAcknowledged(false)
     setTokenQuery('')
     setTokenDetails(null)
+    setNewTokenName('')
+    setNewTokenSymbol('')
+    setNewTokenDecimals('0')
+    setNewTokenSupply('')
+    setConfirmingToken(false)
+    setTokenToDelete('')
+    setTokenDeleteAcknowledged(false)
     setError('')
     setNotice('')
   }
   const sendableTokens = [...(overview?.tokens ?? [])].sort((a, b) =>
     tokenLabel(a).localeCompare(tokenLabel(b)),
   )
+  const decimalsValid = /^\d{1,2}$/.test(newTokenDecimals) && Number(newTokenDecimals) <= 18
+  const handleReviewToken = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    setError('')
+    if (!newTokenName.trim() || !newTokenSymbol.trim()) {
+      setError('Enter a token name and symbol.')
+    } else if (!decimalsValid) {
+      setError('Decimals must be a whole number from 0 to 18.')
+    } else if (!/^(\d+\.?\d*|\.\d+)$/.test(newTokenSupply.trim())) {
+      setError('Enter the initial supply as a number, such as 1000 (0 is allowed).')
+    } else {
+      setConfirmingToken(true)
+    }
+  }
+  const handleCreateToken = () =>
+    run(async () => {
+      const result = await invoke<{ transactionId: string }>('create_token', {
+        walletId: wallet.id,
+        fromAccount: account,
+        name: newTokenName.trim(),
+        symbol: newTokenSymbol.trim(),
+        decimals: Number(newTokenDecimals),
+        initialSupply: newTokenSupply.trim(),
+      })
+      toggleSection('token-create')
+      void watchTransaction(result.transactionId, 'Creating token', async () => {
+        await retry(loadOverview, 2)
+      })
+    })
+  const handleDeleteToken = () =>
+    run(async () => {
+      const result = await invoke<{ transactionId: string }>('delete_token', {
+        walletId: wallet.id,
+        accountId: account,
+        tokenId: tokenToDelete,
+      })
+      toggleSection('token-delete')
+      void watchTransaction(result.transactionId, 'Deleting token', async () => {
+        await retry(loadOverview, 2)
+      })
+    })
   const handleLookupToken = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     setTokenDetails(null)
@@ -763,8 +821,24 @@ export function TestnetPanel({
               entries={[
                 { kind: 'heading', label: 'Holding' },
                 { id: 'token-info', label: 'Token info' },
+                { kind: 'heading', label: 'Issuing' },
+                {
+                  id: 'token-create',
+                  label: 'Create token',
+                  detail: isWatchOnly ? 'needs a signer' : undefined,
+                  disabled: isWatchOnly,
+                },
+                {
+                  id: 'token-delete',
+                  label: 'Delete token',
+                  detail: isWatchOnly ? 'needs a signer' : undefined,
+                  disabled: isWatchOnly,
+                  danger: true,
+                },
               ]}
-              onSelect={() => toggleSection('token-info')}
+              onSelect={(id) =>
+                toggleSection(id as 'token-info' | 'token-create' | 'token-delete')
+              }
             />
             <DropdownMenu
               label="Account management"
@@ -865,6 +939,143 @@ export function TestnetPanel({
               )}
             </dl>
           )}
+        </div>
+      )}
+
+      {account && !isWatchOnly && section === 'token-create' && (
+        <div className="testnet-send">
+          <h3 className="section-title">Create token</h3>
+          {confirmingToken ? (
+            <div className="testnet-confirm" role="group" aria-label="Confirm token creation">
+              <p>Please check the details. A token's name, symbol and decimals cannot be changed later.</p>
+              <dl>
+                <dt>Network</dt>
+                <dd>Hedera Testnet (no real value)</dd>
+                <dt>Name</dt>
+                <dd>{newTokenName.trim()}</dd>
+                <dt>Symbol</dt>
+                <dd>{newTokenSymbol.trim()}</dd>
+                <dt>Decimals</dt>
+                <dd>{newTokenDecimals}</dd>
+                <dt>Initial supply</dt>
+                <dd>{newTokenSupply.trim()}</dd>
+                <dt>Treasury</dt>
+                <dd>{accountLabel}</dd>
+                <dt>Keys</dt>
+                <dd>This wallet's key is the admin and supply key, so it can later delete the token.</dd>
+                <dt>Fee</dt>
+                <dd>About 1 USD in HBAR (at most 20 ℏ is allowed)</dd>
+              </dl>
+              <div className="button-pair">
+                <button className="primary-button" type="button" disabled={isBusy} onClick={handleCreateToken}>
+                  Sign and create token
+                </button>
+                <button className="secondary-button" type="button" disabled={isBusy} onClick={() => setConfirmingToken(false)}>
+                  Back
+                </button>
+                <button className="secondary-button" type="button" disabled={isBusy} onClick={() => toggleSection('token-create')}>
+                  Cancel
+                </button>
+              </div>
+            </div>
+          ) : (
+            <form className="testnet-link-form" onSubmit={handleReviewToken} noValidate>
+              <label htmlFor={`token-name-${wallet.id}`}>Token name</label>
+              <input
+                id={`token-name-${wallet.id}`}
+                autoComplete="off"
+                maxLength={100}
+                value={newTokenName}
+                onChange={(event) => setNewTokenName(event.target.value)}
+              />
+              <label htmlFor={`token-symbol-${wallet.id}`}>Symbol</label>
+              <input
+                id={`token-symbol-${wallet.id}`}
+                autoComplete="off"
+                maxLength={100}
+                value={newTokenSymbol}
+                onChange={(event) => setNewTokenSymbol(event.target.value)}
+              />
+              <label htmlFor={`token-decimals-${wallet.id}`}>Decimals (0 to 18)</label>
+              <input
+                id={`token-decimals-${wallet.id}`}
+                inputMode="numeric"
+                autoComplete="off"
+                maxLength={2}
+                value={newTokenDecimals}
+                onChange={(event) => setNewTokenDecimals(event.target.value)}
+              />
+              <label htmlFor={`token-supply-${wallet.id}`}>Initial supply (whole tokens)</label>
+              <input
+                id={`token-supply-${wallet.id}`}
+                inputMode="decimal"
+                autoComplete="off"
+                value={newTokenSupply}
+                onChange={(event) => setNewTokenSupply(event.target.value)}
+              />
+              <div className="button-pair">
+                <button className="primary-button" type="submit" disabled={isBusy}>
+                  Review token
+                </button>
+                <button className="secondary-button" type="button" disabled={isBusy} onClick={() => toggleSection('token-create')}>
+                  Cancel
+                </button>
+              </div>
+            </form>
+          )}
+        </div>
+      )}
+
+      {account && !isWatchOnly && section === 'token-delete' && (
+        <div className="testnet-send">
+          <h3 className="section-title">Delete token</h3>
+          <div className="testnet-link-form">
+            <label htmlFor={`token-delete-${wallet.id}`}>Token to delete</label>
+            <select
+              id={`token-delete-${wallet.id}`}
+              value={tokenToDelete}
+              onChange={(event) => {
+                setTokenToDelete(event.target.value)
+                setTokenDeleteAcknowledged(false)
+              }}
+            >
+              <option value="">Choose a token</option>
+              {sendableTokens.map((token) => (
+                <option key={token.token_id} value={token.token_id}>
+                  {tokenLabel(token)} ({token.token_id})
+                </option>
+              ))}
+            </select>
+            {tokenToDelete && (
+              <>
+                <p className="field-hint">
+                  Deleting a token is permanent: nobody can send or receive it afterwards. Only the token's admin
+                  key can delete it, and the app checks this before it signs. The fee is paid in HBAR.
+                </p>
+                <label className="testnet-acknowledge">
+                  <input
+                    type="checkbox"
+                    checked={tokenDeleteAcknowledged}
+                    onChange={(event) => setTokenDeleteAcknowledged(event.target.checked)}
+                  />
+                  I understand that this cannot be undone
+                </label>
+              </>
+            )}
+            <div className="button-pair">
+              <button
+                className="primary-button"
+                type="button"
+                disabled={isBusy || !tokenToDelete || !tokenDeleteAcknowledged}
+                onClick={handleDeleteToken}
+              >
+                Sign and delete token
+              </button>
+              <button className="secondary-button" type="button" disabled={isBusy} onClick={() => toggleSection('token-delete')}>
+                Cancel
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
