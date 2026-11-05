@@ -305,8 +305,12 @@ HTS tokens. Use it to pick up cold.
   account that has not associated the token and confirm the readable error and
   that no fee is charged. Stage 2 (create, delete) and stage 3 (add, remove,
   hide) have also not been tested on Testnet.
-- `signer-core` keeps its own copy of `CryptoTransferBody`; stage 6 must teach
-  it to parse token transfers.
+- Stage 6 (branch `feature/token-signer-support`) is built and committed locally, NOT yet tested end to end, not pushed, no PR.
+  Done: signer-core, hedera-tx offline builders, Tauri commands (prepare_unsigned_token_transfer, prepare_unsigned_token_association), UI, CLI signer display.
+  Rust tests, 89 UI tests and typecheck pass; release exe rebuilt 21:41 on 5 Nov.
+  NEXT: manual Testnet test with a watch-only wallet and the example signer (associate, send, disassociate), then push and open the PR
+  (I supply title and description). Create, delete, mint and burn stay rejected by the signer by design.
+  Tidy-up: delete merged branches feature/token-create-delete, feature/token-associate-hide, feature/token-mint-burn.
 - UI polish done: send error spacing, a Close button after a send (error or success),
   menu renamed to Associate token. Send section changes also apply to HBAR sends.
 - Test checklist: (2) create and delete token; watch-only greyed out. (3) associate,
