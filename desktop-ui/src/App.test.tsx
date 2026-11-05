@@ -1375,9 +1375,9 @@ describe('watch-only wallet', () => {
     const rows = within(screen.getByRole('list', { name: 'Account assets' })).getAllByRole('listitem')
     expect(rows.map((row) => row.textContent)).toEqual([
       'HBAR1.50 ℏ',
-      'ALP Alpha123.45',
-      'EMP Empty0',
-      'ZED Zed Coin5',
+      'ALP Alpha0.0.8123.45',
+      'EMP Empty0.0.70',
+      'ZED Zed Coin0.0.95',
     ])
     await user.click(screen.getByRole('button', { name: 'Recent transactions' }))
     expect(screen.getByRole('heading', { name: 'Recent transactions' })).toBeInTheDocument()
@@ -1548,7 +1548,7 @@ describe('watch-only wallet', () => {
     await unlock(user)
     await openAccount(user, 'Savings')
     await screen.findByRole('button', { name: 'Refresh transactions' })
-    await chooseMenu(user, 'Token management', 'Add token')
+    await chooseMenu(user, 'Token management', 'Associate token')
     expect(screen.queryByRole('button', { name: 'Sign and add token' })).not.toBeInTheDocument()
     await user.type(screen.getByLabelText('Token ID'), '0.0.8')
     await user.click(screen.getByRole('button', { name: 'Look up token' }))
@@ -1609,12 +1609,12 @@ describe('watch-only wallet', () => {
     await user.keyboard('{Escape}')
     await user.click(screen.getByRole('button', { name: 'Account assets' }))
     const rows = () => within(screen.getByRole('list', { name: 'Account assets' })).getAllByRole('listitem')
-    expect(rows().map((row) => row.textContent)).toEqual(['HBAR1.50 ℏ', 'ALP Alpha123.45'])
+    expect(rows().map((row) => row.textContent)).toEqual(['HBAR1.50 ℏ', 'ALP Alpha0.0.8123.45'])
     await user.click(screen.getByRole('button', { name: 'Show hidden tokens (1)' }))
     expect(rows().map((row) => row.textContent)).toEqual([
       'HBAR1.50 ℏ',
-      'ALP Alpha123.45',
-      'ZED Zed Coin (hidden)5',
+      'ALP Alpha0.0.8123.45',
+      'ZED Zed Coin (hidden)0.0.95',
     ])
     await user.click(screen.getByRole('button', { name: 'Hide hidden tokens' }))
     expect(rows()).toHaveLength(2)
@@ -1629,7 +1629,7 @@ describe('watch-only wallet', () => {
     await unlock(user)
     await openAccount(user, 'Watcher')
     await user.click(screen.getByRole('button', { name: 'Token management' }))
-    expect(screen.getByRole('menuitem', { name: /Add token/ })).toBeDisabled()
+    expect(screen.getByRole('menuitem', { name: /Associate token/ })).toBeDisabled()
     expect(screen.getByRole('menuitem', { name: /Remove token/ })).toBeDisabled()
     expect(screen.getByRole('menuitem', { name: /Hide or show tokens/ })).toBeEnabled()
   })
@@ -1661,7 +1661,7 @@ describe('watch-only wallet', () => {
     for (const [menu, item, heading] of cases) {
       await chooseMenu(user, menu, item)
       expect(screen.getByRole('heading', { name: heading })).toBeInTheDocument()
-      await user.click(screen.getByRole('button', { name: 'Cancel' }))
+      await user.click(screen.getByRole('button', { name: item === 'HBAR' ? 'Close' : 'Cancel' }))
       expect(screen.queryByRole('heading', { name: heading })).not.toBeInTheDocument()
     }
   })

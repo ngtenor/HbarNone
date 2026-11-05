@@ -201,3 +201,120 @@ listed above; do not use real funds or recovery phrases.
 Build note: this ARM64 Windows machine needs the x64 Rust toolchain
 (`RUSTUP_TOOLCHAIN=stable-x86_64-pc-windows-msvc`) and the x64 Visual Studio
 environment to build the x64 app.
+
+## Appendix: getting back to work after the chat break (4 Nov 2026)
+
+This records what was found and done when a long-running AI evaluation stalled
+(a session ran for over an hour and the app was closed) and work resumed on
+HTS tokens. Use it to pick up cold.
+
+### Where the work stood
+- The previous chat's transcript could not be recovered (the session store had
+  no history for it), but the workspace was intact. The state was rebuilt from
+  the code, this TODO and the saved session notes under
+  `C:\Users\ngt\.copilot\session-state\` (checkpoint files hold the build
+  recipes below).
+- Token stages (see Next steps, item 4): stage 1 done; stage 2 (create and
+  delete) was built; stage 3 (associate, dissociate, hide) turned out to be
+  already coded although this file listed it as not started; stage 4 (send) had
+  no code.
+
+### What was done
+1. **Reviewed stage 3.** Protobuf fields are right (`token_association` 40,
+   `token_dissociation` 41). The Tauri commands pre-check on the mirror node:
+   associate needs an existing, non-deleted, fungible token not already held;
+   dissociate needs a zero balance and refuses the treasury account. Hidden
+   tokens are stored per wallet.
+2. **Built stage 4, send a fungible token.**
+   - `hedera-tx`: `TokenTransferList`, `UInt32Value` (`expected_decimals`, so a
+     wrong scale is rejected by the network) and `token_transfer_body_bytes`,
+     with a unit test. `CryptoTransferBody` gained `token_transfers` (field 2).
+   - `submit.rs`: `send_testnet_token` (sender signs and pays, 1 HBAR fee cap,
+     memo up to 100 bytes).
+   - `src-tauri`: `send_token` command. It checks the token (exists, not
+     deleted, fungible), the amount (above zero, within balance) and the
+     recipient (exists on Testnet and has associated the token) before
+     submitting, so a doomed transfer never costs a fee. It honours the
+     address-book limit on external recipients.
+   - UI: picking a token in the Send menu opens the send form as
+     "Send <symbol>". Watch-only wallets get a notice (stage 6).
+3. **Account assets now has a middle column** showing the token ID (left
+   aligned, midway between asset and balance; balances are at the far right;
+   the HBAR row leaves it empty).
+4. **Menu names:** in Token management, "Associate token" (was "Add token") is association and
+   "Remove token" is dissociation.
+5. **Linux check script** `scripts/linux-token-check.sh`: fetches and checks
+   out `feature/token-associate-hide`, sets aside local lockfile changes with
+   `git stash` (npm rewrites them on that machine), then runs the Rust tests,
+   `cargo check --workspace`, `cargo fmt --check` and the frontend lint and
+   tests, and writes a log next to the script.
+
+### Results
+- Linux (Ubuntu): all checks passed (Rust tests, workspace check, formatting,
+  frontend tests).
+- Windows frontend: 85 of 85 UI tests pass.
+- CI first failed on `cargo fmt --check` only (two spots in the new code),
+  fixed in commit `303fca0`.
+- A release app was built after each change. The tokens still need a manual
+  Testnet test (see below).
+
+### How to build and run on this machine (all discovered or confirmed)
+- It is an ARM64 Windows machine with an x64 app target. Plain `cargo` fails
+  with "linker `link.exe` not found" (default aarch64 toolchain), and the
+  `arm64` or `arm64_x64` Visual Studio environments do not work either. Use:
+  `$env:RUSTUP_TOOLCHAIN='stable-x86_64-pc-windows-msvc'`, then run through
+  `cmd /c "call ...\BuildTools\VC\Auxiliary\Build\vcvars64.bat >nul && cd /d <repo> && <cmd>"`.
+- Release app: `npm.cmd run tauri:build -- --target x86_64-pc-windows-msvc --no-bundle`
+  from the repo root (about 90 seconds). The output is
+  `target\x86_64-pc-windows-msvc\release\hedera-vault-app.exe`. Close the app
+  first or the exe is locked ("Access is denied").
+- A stale exe is the usual reason a new feature seems to be missing: the check
+  scripts only test, they do not rebuild the app.
+- PowerShell blocks `npm.ps1` and `npx.ps1`; use `npm.cmd` and `npx.cmd`.
+- `git` is not on PATH. Use
+  `C:\Users\ngt\AppData\Local\GitHubDesktop\app-3.6.10\resources\app\git\cmd\git.exe`
+  (the red NativeCommandError text it prints is harmless). The version folder
+  in that path changes when GitHub Desktop updates.
+- WSL and Python are not installed. Node is available for helper scripts.
+
+### Linux testing procedure
+- Linux testing is done with a script that is copied to a USB stick, not typed
+  in by hand. The stick appears at `/run/media/nick/AEAC-A758/`, the project is
+  at `/home/nick/HederaVault`, and Rust and Node are installed.
+- Scripts must have LF line endings (Windows CRLF breaks bash on line one).
+- Run: `bash /run/media/nick/AEAC-A758/linux-token-check.sh`. The log
+  `token-check-<date>.log` is written to the stick and copied back to
+  `Documents` for reading. Always ask where things are before writing a script.
+- The Linux machine had modified `package-lock.json` files and untracked
+  backup and log folders; the script stashes only the two lockfiles.
+
+### Git and CI workflow
+- Commits carry a `Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>`
+  trailer. Work goes on a feature branch (now `feature/token-associate-hide`,
+  pull request #18); never push to main directly. The user opens the pull
+  request from the branch link, with a title and description supplied.
+- CI (`.github/workflows/ci.yml`) runs on Windows and Ubuntu. Failed job logs
+  are one long line; the useful part is the `Diff in ...` blocks from
+  `cargo fmt`.
+- The pull request also carries earlier uncommitted edits to `offline.rs`,
+  `vault_container.rs` and `wallet_service.rs`.
+
+### Still to do
+- Manual Testnet test with disposable accounts: create a token on account A;
+  Associate token on account B; send from A to B; check B's balance; try sending to an
+  account that has not associated the token and confirm the readable error and
+  that no fee is charged. Stage 2 (create, delete) and stage 3 (add, remove,
+  hide) have also not been tested on Testnet.
+- `signer-core` keeps its own copy of `CryptoTransferBody`; stage 6 must teach
+  it to parse token transfers.
+- UI polish done: send error spacing, a Close button after a send (error or success),
+  menu renamed to Associate token. Send section changes also apply to HBAR sends.
+- Test checklist: (2) create and delete token; watch-only greyed out. (3) associate,
+  duplicate and invalid ID errors, dissociate zero and non-zero balance, hide and
+  show persists after restart. (4) send to associated account, to an unassociated
+  account (readable error, no fee), more than balance, decimals, watch-only notice.
+  Regression: HBAR send and Close button, Account assets layout.
+- Stage 5 (mint and burn) is next after testing.
+- Tool approvals: the chat asks for permission often. This is an app setting
+  (the approvals picker or `chat.tools.global.autoApprove`), not something the
+  assistant can change.

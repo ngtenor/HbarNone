@@ -900,7 +900,7 @@ export function TestnetPanel({
                 { id: 'token-info', label: 'Token info' },
                 {
                   id: 'token-add',
-                  label: 'Add token',
+                  label: 'Associate token',
                   detail: isWatchOnly ? 'needs a signer' : undefined,
                   disabled: isWatchOnly,
                 },
@@ -1032,7 +1032,7 @@ export function TestnetPanel({
 
       {account && !isWatchOnly && section === 'token-add' && (
         <div className="testnet-send">
-          <h3 className="section-title">Add token</h3>
+          <h3 className="section-title">Associate token</h3>
           <form className="testnet-link-form" onSubmit={handleLookupToken} noValidate>
             <label htmlFor={`token-add-id-${wallet.id}`}>Token ID</label>
             <input
@@ -1346,6 +1346,11 @@ export function TestnetPanel({
                 <button className="secondary-button" type="button" disabled={isBusy} onClick={() => setConfirming(false)}>
                   Back
                 </button>
+                {error && (
+                  <button className="secondary-button" type="button" disabled={isBusy} onClick={() => toggleSection('send')}>
+                    Close
+                  </button>
+                )}
               </div>
             </div>
           ) : (
@@ -1428,7 +1433,7 @@ export function TestnetPanel({
                   Review transfer
                 </button>
                 <button className="secondary-button" type="button" disabled={isBusy} onClick={() => toggleSection('send')}>
-                  Cancel
+                  Close
                 </button>
               </div>
             </form>
@@ -1812,6 +1817,7 @@ export function TestnetPanel({
             <ul className="testnet-transactions testnet-assets" aria-label="Account assets">
               <li>
                 <span className="testnet-kind">HBAR</span>
+                <span className="testnet-token-id" />
                 <span className="testnet-net">{formatHbar(overview.balance_tinybars, 2)} ℏ</span>
               </li>
               {assetTokens.map((token) => (
@@ -1825,6 +1831,7 @@ export function TestnetPanel({
                       <span className="testnet-token-name"> (hidden)</span>
                     ) : null}
                   </span>
+                  <span className="testnet-token-id">{token.token_id}</span>
                   <span className="testnet-net">{formatTokenAmount(token.balance, token.decimals)}</span>
                 </li>
               ))}

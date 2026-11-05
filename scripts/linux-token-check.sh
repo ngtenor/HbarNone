@@ -33,15 +33,25 @@ step "Where we are"
 echo "Project: $REPO"
 git status --short | head -n 20
 
-step "Updating the code (git pull)"
-if ! git pull --ff-only; then
-  echo "git pull failed. Commit or stash local changes, or check the network, then re-run." >&2
+step "Updating the code (git fetch, checkout, pull)"
+BRANCH="${BRANCH:-feature/token-associate-hide}"
+if ! git fetch origin; then
+  echo "git fetch failed. Check the network, then re-run." >&2
+  exit 1
+fi
+# npm install on this machine rewrites the lockfiles; set only those aside.
+if ! git diff --quiet -- package-lock.json desktop-ui/package-lock.json; then
+  echo "Setting aside local lockfile changes (git stash)."
+  git stash push -m "token-check lockfiles $(date +%Y%m%d-%H%M%S)" -- package-lock.json desktop-ui/package-lock.json
+fi
+if ! git checkout "$BRANCH" || ! git pull --ff-only origin "$BRANCH"; then
+  echo "Could not switch to $BRANCH. Commit or stash local changes, then re-run." >&2
   exit 1
 fi
 echo "Now at: $(git rev-parse --abbrev-ref HEAD) $(git rev-parse --short HEAD)"
 if ! grep -q "send_testnet_token" crates/hedera-tx/src/submit.rs; then
   echo "This checkout does not contain the token-send code yet (send_testnet_token)." >&2
-  echo "Commit and push the latest changes from the Windows machine first." >&2
+  echo "Push the latest changes from the Windows machine, or re-run with BRANCH=<branch name>." >&2
   exit 1
 fi
 
