@@ -2,7 +2,8 @@
 //!
 //! Reads a `HVTX1-REQ:` request, decodes the transaction body itself, and
 //! signs only if the body is exactly a transaction it can show in full: an
-//! HBAR transfer, an account deletion or an account creation. Anything else
+//! HBAR transfer, a fungible token transfer, a token association or dissociation,
+//! an account deletion or an account creation. Anything else
 //! (an unknown field, another transaction type, extra transfer lines, a long
 //! validity window) is rejected. It never touches the network.
 
@@ -76,9 +77,45 @@ struct TransferList {
 }
 
 #[derive(Clone, PartialEq, Message)]
+struct TokenId {
+    #[prost(int64, tag = "1")]
+    shard: i64,
+    #[prost(int64, tag = "2")]
+    realm: i64,
+    #[prost(int64, tag = "3")]
+    num: i64,
+}
+
+#[derive(Clone, PartialEq, Message)]
+struct UInt32Value {
+    #[prost(uint32, tag = "1")]
+    value: u32,
+}
+
+#[derive(Clone, PartialEq, Message)]
+struct TokenTransferList {
+    #[prost(message, optional, tag = "1")]
+    token: Option<TokenId>,
+    #[prost(message, repeated, tag = "2")]
+    transfers: Vec<AccountAmount>,
+    #[prost(message, optional, tag = "4")]
+    expected_decimals: Option<UInt32Value>,
+}
+
+#[derive(Clone, PartialEq, Message)]
+struct TokenAssociationBody {
+    #[prost(message, optional, tag = "1")]
+    account: Option<AccountId>,
+    #[prost(message, repeated, tag = "2")]
+    tokens: Vec<TokenId>,
+}
+
+#[derive(Clone, PartialEq, Message)]
 struct CryptoTransferBody {
     #[prost(message, optional, tag = "1")]
     transfers: Option<TransferList>,
+    #[prost(message, repeated, tag = "2")]
+    token_transfers: Vec<TokenTransferList>,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -129,6 +166,10 @@ struct TransactionBody {
     crypto_delete: Option<CryptoDeleteBody>,
     #[prost(message, optional, tag = "14")]
     crypto_transfer: Option<CryptoTransferBody>,
+    #[prost(message, optional, tag = "40")]
+    token_association: Option<TokenAssociationBody>,
+    #[prost(message, optional, tag = "41")]
+    token_dissociation: Option<TokenAssociationBody>,
 }
 
 /// What the request does.
@@ -148,6 +189,22 @@ pub enum Action {
         key_kind: KeyKind,
         key_hex: String,
         initial_tinybars: i64,
+    },
+    /// Sends `amount` in the token's smallest unit. Neither the token's name nor
+    /// its decimals can be checked offline; `decimals` is only what the sender expects.
+    TokenTransfer {
+        token: String,
+        recipient: String,
+        amount: i64,
+        decimals: u32,
+    },
+    /// Lets the payer's account hold `token`.
+    TokenAssociate {
+        token: String,
+    },
+    /// Stops the payer's account holding `token`.
+    TokenDissociate {
+        token: String,
     },
 }
 
@@ -268,11 +325,79 @@ fn summarise(bytes: &[u8]) -> Result<Summary, Reject> {
     }
     let actions = usize::from(body.crypto_transfer.is_some())
         + usize::from(body.crypto_delete.is_some())
-        + usize::from(body.crypto_create.is_some());
+        + usize::from(body.crypto_create.is_some())
+        + usize::from(body.token_association.is_some())
+        + usize::from(body.token_dissociation.is_some());
     if actions != 1 {
         return Err(No("must do exactly one thing"));
     }
-    let (action, memo) = if let Some(transfer) = &body.crypto_transfer {
+    let token_text = |t: &TokenId| format!("{}.{}.{}", t.shard, t.realm, t.num);
+    let token_ok = |t: &TokenId| t.shard == 0 && t.realm == 0 && t.num > 0;
+    let (action, memo) = if let Some(change) = body
+        .token_association
+        .as_ref()
+        .or(body.token_dissociation.as_ref())
+    {
+        let [token] = change.tokens.as_slice() else {
+            return Err(No("must name exactly one token"));
+        };
+        if change.account.as_ref() != Some(payer) {
+            return Err(No("the account must be the payer's own"));
+        }
+        if !token_ok(token) {
+            return Err(No("the token is not a shard 0 realm 0 token"));
+        }
+        if !body.memo.is_empty() {
+            return Err(No("a token association has no memo"));
+        }
+        let token = token_text(token);
+        let action = if body.token_association.is_some() {
+            Action::TokenAssociate { token }
+        } else {
+            Action::TokenDissociate { token }
+        };
+        (action, String::new())
+    } else if let Some(transfer) = body
+        .crypto_transfer
+        .as_ref()
+        .filter(|t| !t.token_transfers.is_empty())
+    {
+        let [list] = transfer.token_transfers.as_slice() else {
+            return Err(No("must move exactly one token"));
+        };
+        if transfer.transfers.is_some() {
+            return Err(No("a token transfer cannot also move HBAR"));
+        }
+        let token = list.token.as_ref().ok_or(No("no token"))?;
+        let decimals = list
+            .expected_decimals
+            .as_ref()
+            .ok_or(No("no decimals"))?
+            .value;
+        let [debit, credit] = list.transfers.as_slice() else {
+            return Err(No("must be exactly one payer and one recipient"));
+        };
+        let from = debit.account.as_ref().ok_or(No("missing account"))?;
+        let to = credit.account.as_ref().ok_or(No("missing account"))?;
+        if !token_ok(token)
+            || from != payer
+            || to == payer
+            || !on_main(to)
+            || debit.amount >= 0
+            || debit.amount.checked_neg() != Some(credit.amount)
+        {
+            return Err(No("amounts do not form a simple token payment"));
+        }
+        (
+            Action::TokenTransfer {
+                token: token_text(token),
+                recipient: id_text(to),
+                amount: credit.amount,
+                decimals,
+            },
+            body.memo.clone(),
+        )
+    } else if let Some(transfer) = &body.crypto_transfer {
         let list = transfer.transfers.as_ref().ok_or(No("no transfer"))?;
         let [debit, credit] = list.amounts.as_slice() else {
             return Err(No("must be exactly one payer and one recipient"));
@@ -536,7 +661,10 @@ pub fn with_checksum(account: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hedera_tx::offline::{assemble, build_create_request, build_delete_request, build_request};
+    use hedera_tx::offline::{
+        assemble, build_create_request, build_delete_request, build_request,
+        build_token_association_request, build_token_transfer_request,
+    };
 
     const NOW: i64 = 1_700_000_000;
 
@@ -690,7 +818,10 @@ mod tests {
             b.crypto_delete.as_mut().unwrap().transfer_account = None
         });
         let also_transfer = edit_body(&base, |b| {
-            b.crypto_transfer = Some(CryptoTransferBody { transfers: None })
+            b.crypto_transfer = Some(CryptoTransferBody {
+                transfers: None,
+                token_transfers: Vec::new(),
+            })
         });
         for bad in [
             same,
@@ -773,6 +904,105 @@ mod tests {
         });
         for bad in [
             short_key, both_keys, no_key, huge, overflow, renew, escape, tx_memo, bad_point,
+        ] {
+            assert!(parse_request(&bad).is_err(), "should reject {bad}");
+        }
+    }
+
+    #[test]
+    fn shows_token_requests_and_rejects_unsafe_ones() {
+        let send = build_token_transfer_request("0.0.1001", "0.0.1002", "0.0.5005", 250, 2, "hi")
+            .unwrap()
+            .payload;
+        let (_, s) = parse_request(&send).unwrap();
+        assert_eq!(
+            s.action,
+            Action::TokenTransfer {
+                token: "0.0.5005".to_string(),
+                recipient: "0.0.1002".to_string(),
+                amount: 250,
+                decimals: 2
+            }
+        );
+        assert_eq!(s.memo, "hi");
+        let assoc = build_token_association_request("0.0.1001", "0.0.5005", true)
+            .unwrap()
+            .payload;
+        assert_eq!(
+            parse_request(&assoc).unwrap().1.action,
+            Action::TokenAssociate {
+                token: "0.0.5005".to_string()
+            }
+        );
+        let dissoc = build_token_association_request("0.0.1001", "0.0.5005", false)
+            .unwrap()
+            .payload;
+        assert_eq!(
+            parse_request(&dissoc).unwrap().1.action,
+            Action::TokenDissociate {
+                token: "0.0.5005".to_string()
+            }
+        );
+
+        let list = |b: &mut TransactionBody| {
+            b.crypto_transfer.as_mut().unwrap().token_transfers[0].clone()
+        };
+        let hbar_too = edit_body(&send, |b| {
+            b.crypto_transfer.as_mut().unwrap().transfers = Some(TransferList {
+                amounts: Vec::new(),
+            })
+        });
+        let two_tokens = edit_body(&send, |b| {
+            let l = list(b);
+            b.crypto_transfer.as_mut().unwrap().token_transfers.push(l)
+        });
+        let other_shard = edit_body(&send, |b| {
+            b.crypto_transfer.as_mut().unwrap().token_transfers[0]
+                .token
+                .as_mut()
+                .unwrap()
+                .shard = 1
+        });
+        let no_decimals = edit_body(&send, |b| {
+            b.crypto_transfer.as_mut().unwrap().token_transfers[0].expected_decimals = None
+        });
+        let third_line = edit_body(&send, |b| {
+            let extra = b.crypto_transfer.as_ref().unwrap().token_transfers[0].transfers[1].clone();
+            b.crypto_transfer.as_mut().unwrap().token_transfers[0]
+                .transfers
+                .push(extra)
+        });
+        let uneven = edit_body(&send, |b| {
+            b.crypto_transfer.as_mut().unwrap().token_transfers[0].transfers[1].amount = 251
+        });
+        let other_account = edit_body(&assoc, |b| {
+            b.token_association
+                .as_mut()
+                .unwrap()
+                .account
+                .as_mut()
+                .unwrap()
+                .num = 9
+        });
+        let two_assoc = edit_body(&assoc, |b| {
+            let t = b.token_association.as_ref().unwrap().tokens[0].clone();
+            b.token_association.as_mut().unwrap().tokens.push(t)
+        });
+        let assoc_memo = edit_body(&assoc, |b| b.memo = "x".to_string());
+        let both = edit_body(&assoc, |b| {
+            b.token_dissociation = b.token_association.clone()
+        });
+        for bad in [
+            hbar_too,
+            two_tokens,
+            other_shard,
+            no_decimals,
+            third_line,
+            uneven,
+            other_account,
+            two_assoc,
+            assoc_memo,
+            both,
         ] {
             assert!(parse_request(&bad).is_err(), "should reject {bad}");
         }

@@ -113,7 +113,7 @@ Password change and encrypted backup export/restore are tracked under
    - Stage 3 (built, awaiting Testnet test): associate, dissociate and hide tokens.
    - Stage 4 (built, awaiting Rust compile and Testnet test): send a token, with a receiver-association check.
    - Stage 5: mint and burn (built and tested on Testnet). Token management -> Issuing has Mint token and Burn token; the backend checks the supply key and treasury first.
-   - Stage 6: signer support for watch-only wallets (association, token send, create, delete, mint and burn).
+   - Stage 6: signer support for watch-only wallets: token send, associate and disassociate go through the offline request and signer flow (built, awaiting an end-to-end Testnet test). Create, delete, mint and burn stay rejected by the signer by design.
    - Later: NFTs, key change and hardware work.
 5. Defer Mainnet until the implementation has been reviewed and tested.
 

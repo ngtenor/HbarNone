@@ -111,12 +111,15 @@ type SigningRequest = {
   payload: string
   qrSize: number
   qrModules: boolean[]
-  action: 'transfer' | 'delete' | 'create'
+  action: 'transfer' | 'delete' | 'create' | 'token-transfer' | 'token-associate' | 'token-dissociate'
   sender: string
   receiver: string
   deleteAccount: string
   newKey: string
   tinybars: number
+  tokenId: string
+  tokenUnits: string
+  tokenDecimals: number
   memo: string
   expiresAtSeconds: number
 }
@@ -278,6 +281,17 @@ export function TestnetPanel({
   const handleAddToken = () =>
     run(async () => {
       if (!tokenDetails) return
+      if (isWatchOnly) {
+        const request = await invoke<SigningRequest>('prepare_unsigned_token_association', {
+          walletId: wallet.id,
+          accountId: account,
+          tokenId: tokenDetails.token_id,
+          associate: true,
+        })
+        setSignatureText('')
+        setSigning(request)
+        return
+      }
       const result = await invoke<{ transactionId: string }>('associate_token', {
         walletId: wallet.id,
         accountId: account,
@@ -290,6 +304,17 @@ export function TestnetPanel({
     })
   const handleRemoveToken = () =>
     run(async () => {
+      if (isWatchOnly) {
+        const request = await invoke<SigningRequest>('prepare_unsigned_token_association', {
+          walletId: wallet.id,
+          accountId: account,
+          tokenId: tokenToRemove,
+          associate: false,
+        })
+        setSignatureText('')
+        setSigning(request)
+        return
+      }
       const result = await invoke<{ transactionId: string }>('dissociate_token', {
         walletId: wallet.id,
         accountId: account,
@@ -629,13 +654,22 @@ export function TestnetPanel({
   }
 
   const handlePrepare = () => run(async () => {
-    const request = await invoke<SigningRequest>('prepare_unsigned_transfer', {
-      walletId: wallet.id,
-      fromAccount: account,
-      recipient: recipient.trim(),
-      amountHbar: amount.trim(),
-      memo,
-    })
+    const request = sendToken
+      ? await invoke<SigningRequest>('prepare_unsigned_token_transfer', {
+          walletId: wallet.id,
+          fromAccount: account,
+          recipient: recipient.trim(),
+          tokenId: sendToken.token_id,
+          amount: amount.trim(),
+          memo,
+        })
+      : await invoke<SigningRequest>('prepare_unsigned_transfer', {
+          walletId: wallet.id,
+          fromAccount: account,
+          recipient: recipient.trim(),
+          amountHbar: amount.trim(),
+          memo,
+        })
     setSignatureText('')
     setSigning(request)
   })
@@ -643,11 +677,23 @@ export function TestnetPanel({
   const handleSubmitSigned = () => run(async () => {
     if (!signing) return
     const action = signing.action
+    const tokenName = sendToken ? tokenLabel(sendToken) : 'token'
     const result = await invoke<{ transactionId: string }>('submit_signed_request', {
       request: signing.payload,
       response: signatureText.trim(),
     })
-    if (action === 'delete') {
+    if (action === 'token-associate' || action === 'token-dissociate') {
+      const adding = action === 'token-associate'
+      toggleSection(adding ? 'token-add' : 'token-remove')
+      void watchTransaction(result.transactionId, adding ? 'Adding token' : 'Removing token', async () => {
+        await retry(loadOverview, 2)
+      })
+    } else if (action === 'token-transfer') {
+      resetSend()
+      void watchTransaction(result.transactionId, `Sending ${tokenName}`, async () => {
+        await retry(loadOverview, 2)
+      })
+    } else if (action === 'delete') {
       setSigning(null)
       setSignatureText('')
       setDeleteRecipient('')
@@ -687,6 +733,8 @@ export function TestnetPanel({
     setConfirmingCreate(false)
     setSigning(request)
   })
+
+  const signingToken = signing ? allTokens.find((token) => token.token_id === signing.tokenId) : undefined
 
   const renderSigning = (submitLabel: string, onCancel: () => void) => signing && (
     <div className="testnet-confirm" role="group" aria-label="Signing request">
@@ -735,6 +783,38 @@ export function TestnetPanel({
             <dd>{formatHbar(signing.tinybars)} ℏ</dd>
             <dt>New account key</dt>
             <dd className="key-text">{signing.newKey} (this wallet&apos;s own key)</dd>
+          </>
+        )}
+        {signing.action === 'token-transfer' && (
+          <>
+            <dt>From</dt>
+            <dd>{signing.sender}</dd>
+            <dt>To</dt>
+            <dd>{signing.receiver}</dd>
+            <dt>Token</dt>
+            <dd>
+              {signingToken ? `${tokenLabel(signingToken)} ` : ''}({signing.tokenId})
+            </dd>
+            <dt>Amount</dt>
+            <dd>
+              {formatTokenAmount(signing.tokenUnits, signing.tokenDecimals)} (raw {signing.tokenUnits})
+            </dd>
+            {signing.memo && (
+              <>
+                <dt>Memo</dt>
+                <dd>{signing.memo}</dd>
+              </>
+            )}
+          </>
+        )}
+        {(signing.action === 'token-associate' || signing.action === 'token-dissociate') && (
+          <>
+            <dt>{signing.action === 'token-associate' ? 'Associate token' : 'Disassociate token'}</dt>
+            <dd>
+              {signingToken ? `${tokenLabel(signingToken)} ` : ''}({signing.tokenId})
+            </dd>
+            <dt>Account</dt>
+            <dd>{signing.sender}</dd>
           </>
         )}
       </dl>
@@ -933,9 +1013,6 @@ export function TestnetPanel({
                   toggleSection('send')
                   // Switching from a token send to HBAR must keep the section open.
                   if (sendTokenId) setSection('send')
-                } else if (isWatchOnly) {
-                  setSection(null)
-                  setNotice('Sending tokens from a watch-only wallet is not available yet.')
                 } else {
                   toggleSection('send')
                   setSection('send')
@@ -958,14 +1035,10 @@ export function TestnetPanel({
                 {
                   id: 'token-add',
                   label: 'Associate token',
-                  detail: isWatchOnly ? 'needs a signer' : undefined,
-                  disabled: isWatchOnly,
                 },
                 {
                   id: 'token-remove',
                   label: 'Disassociate token',
-                  detail: isWatchOnly ? 'needs a signer' : undefined,
-                  disabled: isWatchOnly,
                 },
                 { id: 'token-hide', label: 'Hide or show tokens' },
                 { kind: 'heading', label: 'Issuing' },
@@ -1099,9 +1172,11 @@ export function TestnetPanel({
         </div>
       )}
 
-      {account && !isWatchOnly && section === 'token-add' && (
+      {account && section === 'token-add' && (
         <div className="testnet-send">
           <h3 className="section-title">Associate token</h3>
+          {signing ? renderSigning('Submit signed association', () => toggleSection('token-add')) : (
+          <>
           <form className="testnet-link-form" onSubmit={handleLookupToken} noValidate>
             <label htmlFor={`token-add-id-${wallet.id}`}>Token ID</label>
             <input
@@ -1149,16 +1224,19 @@ export function TestnetPanel({
                 disabled={isBusy || tokenDetails.deleted}
                 onClick={handleAddToken}
               >
-                Sign and add token
+                {isWatchOnly ? 'Create signing request' : 'Sign and add token'}
               </button>
             </div>
+          )}
+          </>
           )}
         </div>
       )}
 
-      {account && !isWatchOnly && section === 'token-remove' && (
+      {account && section === 'token-remove' && (
         <div className="testnet-send">
           <h3 className="section-title">Disassociate token</h3>
+          {signing ? renderSigning('Submit signed disassociation', () => toggleSection('token-remove')) : (
           <div className="testnet-link-form">
             <label htmlFor={`token-remove-${wallet.id}`}>Token to remove</label>
             <select
@@ -1187,13 +1265,14 @@ export function TestnetPanel({
                 disabled={isBusy || !tokenToRemove}
                 onClick={handleRemoveToken}
               >
-                Sign and remove token
+                {isWatchOnly ? 'Create signing request' : 'Sign and remove token'}
               </button>
               <button className="secondary-button" type="button" disabled={isBusy} onClick={() => toggleSection('token-remove')}>
                 Cancel
               </button>
             </div>
           </div>
+          )}
         </div>
       )}
 

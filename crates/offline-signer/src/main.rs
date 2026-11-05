@@ -98,6 +98,38 @@ fn show(summary: &Summary) {
             println!("  Account memo  {:?}", summary.memo);
             println!("  Whoever holds that key controls the new account and its HBAR.");
         }
+        Action::TokenTransfer {
+            token,
+            recipient,
+            amount,
+            decimals,
+        } => {
+            println!("  Action        SEND A TOKEN");
+            println!("  Network       Hedera Testnet (no real value)");
+            println!("  From          {}", with_checksum(&summary.payer));
+            println!("  To            {}", with_checksum(recipient));
+            println!("  Token ID      {}", with_checksum(token));
+            println!("  Raw amount    {amount} (smallest unit of the token)");
+            println!(
+                "  Decimals      {decimals} (the app's claim; the network rejects a mismatch)"
+            );
+            println!(
+                "  The token's name cannot be checked here. Compare the token ID with the app."
+            );
+            println!("  Memo          {:?}", summary.memo);
+        }
+        Action::TokenAssociate { token } => {
+            println!("  Action        ASSOCIATE A TOKEN (lets the account hold it)");
+            println!("  Network       Hedera Testnet (no real value)");
+            println!("  Account       {}", with_checksum(&summary.payer));
+            println!("  Token ID      {}", with_checksum(token));
+        }
+        Action::TokenDissociate { token } => {
+            println!("  Action        DISASSOCIATE A TOKEN (the account stops holding it)");
+            println!("  Network       Hedera Testnet (no real value)");
+            println!("  Account       {}", with_checksum(&summary.payer));
+            println!("  Token ID      {}", with_checksum(token));
+        }
     }
     println!(
         "  Fee limit     {} HBAR (the real fee is far lower)",
@@ -179,7 +211,10 @@ fn run() -> Result<(), String> {
         Action::DeleteAccount { .. } => {
             println!("A deletion needs this key to control both accounts shown above.");
         }
-        Action::Transfer { .. } => {}
+        Action::Transfer { .. }
+        | Action::TokenTransfer { .. }
+        | Action::TokenAssociate { .. }
+        | Action::TokenDissociate { .. } => {}
     }
     if ask("Type yes to sign, anything else to cancel: ")? != "yes" {
         return Err("Cancelled. Nothing was signed.".to_string());

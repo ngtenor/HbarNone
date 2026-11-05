@@ -269,6 +269,40 @@ function installBackend(overrides: Partial<Backend> = {}) {
           memo: '',
           expiresAtSeconds: Math.floor(Date.now() / 1000) + 170,
         }
+      case 'prepare_unsigned_token_transfer':
+        return {
+          payload: 'HVTX1-REQ:03',
+          qrSize: 2,
+          qrModules: [true, false, false, true],
+          action: 'token-transfer',
+          sender: '0.0.1001-abcde',
+          receiver: '0.0.2002-abcde',
+          deleteAccount: '',
+          newKey: '',
+          tinybars: 0,
+          tokenId: '0.0.8',
+          tokenUnits: '150',
+          tokenDecimals: 2,
+          memo: '',
+          expiresAtSeconds: Math.floor(Date.now() / 1000) + 170,
+        }
+      case 'prepare_unsigned_token_association':
+        return {
+          payload: 'HVTX1-REQ:04',
+          qrSize: 2,
+          qrModules: [true, false, false, true],
+          action: (args as { associate: boolean }).associate ? 'token-associate' : 'token-dissociate',
+          sender: '0.0.1001-abcde',
+          receiver: '',
+          deleteAccount: '',
+          newKey: '',
+          tinybars: 0,
+          tokenId: (args as { tokenId: string }).tokenId,
+          tokenUnits: '',
+          tokenDecimals: 0,
+          memo: '',
+          expiresAtSeconds: Math.floor(Date.now() / 1000) + 170,
+        }
       case 'submit_signed_request':
         return { transactionId: '0.0.1001-1700000000-000000008' }
       case 'create_account':
@@ -1710,18 +1744,92 @@ describe('watch-only wallet', () => {
     expect(rows()).toHaveLength(2)
   })
 
-  it('lets watch-only wallets hide tokens but not add or remove them', async () => {
+  it('lets watch-only wallets associate and disassociate tokens through a signing request', async () => {
     const user = userEvent.setup()
     installBackend({
       wallets: [{ ...wallet('w1', 'Watcher', '0.0.1001'), secret_kind: 'watchonly', key_type: 'ed25519' }],
+      overview: {
+        account_id: 'x',
+        balance_tinybars: 150_000_000,
+        transactions: [],
+        tokens: [{ token_id: '0.0.7', symbol: 'EMP', name: 'Empty', balance: '0', decimals: 0 }],
+      },
     })
     render(<App />)
     await unlock(user)
     await openAccount(user, 'Watcher')
+    await screen.findByRole('button', { name: 'Refresh transactions' })
     await user.click(screen.getByRole('button', { name: 'Token management' }))
-    expect(screen.getByRole('menuitem', { name: /Associate token/ })).toBeDisabled()
-    expect(screen.getByRole('menuitem', { name: /Disassociate token/ })).toBeDisabled()
+    expect(screen.getByRole('menuitem', { name: /Associate token/ })).toBeEnabled()
+    expect(screen.getByRole('menuitem', { name: /Disassociate token/ })).toBeEnabled()
     expect(screen.getByRole('menuitem', { name: /Hide or show tokens/ })).toBeEnabled()
+    await user.keyboard('{Escape}')
+
+    await chooseMenu(user, 'Token management', 'Associate token')
+    await user.type(screen.getByLabelText('Token ID'), '0.0.8')
+    await user.click(screen.getByRole('button', { name: 'Look up token' }))
+    await user.click(await screen.findByRole('button', { name: 'Create signing request' }))
+    const request = await screen.findByRole('group', { name: 'Signing request' })
+    expect(request).toHaveTextContent('Associate token')
+    expect(request).toHaveTextContent('0.0.8')
+    expect(commandsCalled('prepare_unsigned_token_association')[0].args).toEqual({
+      walletId: 'w1',
+      accountId: '0.0.1001',
+      tokenId: '0.0.8',
+      associate: true,
+    })
+    expect(commandsCalled('associate_token')).toHaveLength(0)
+    await user.type(screen.getByLabelText('Signature from the signer'), 'HVTX1-SIG:AB')
+    await user.click(screen.getByRole('button', { name: 'Submit signed association' }))
+    await waitFor(() => expect(commandsCalled('submit_signed_request')).toHaveLength(1))
+
+    await chooseMenu(user, 'Token management', 'Disassociate token')
+    await user.selectOptions(screen.getByLabelText('Token to remove'), '0.0.7')
+    await user.click(screen.getByRole('button', { name: 'Create signing request' }))
+    expect(await screen.findByRole('group', { name: 'Signing request' })).toHaveTextContent('Disassociate token')
+    expect(commandsCalled('prepare_unsigned_token_association')[1].args).toMatchObject({
+      tokenId: '0.0.7',
+      associate: false,
+    })
+    expect(commandsCalled('dissociate_token')).toHaveLength(0)
+  })
+
+  it('sends a token from a watch-only wallet through a signing request', async () => {
+    const user = userEvent.setup()
+    installBackend({
+      wallets: [
+        { ...wallet('w1', 'Watcher', '0.0.1001'), secret_kind: 'watchonly', key_type: 'ed25519' },
+        wallet('w2', 'Trading', '0.0.1002'),
+      ],
+      overview: {
+        account_id: 'x',
+        balance_tinybars: 150_000_000,
+        transactions: [],
+        tokens: [{ token_id: '0.0.8', symbol: 'ALP', name: 'Alpha', balance: '12345', decimals: 2 }],
+      },
+    })
+    render(<App />)
+    await unlock(user)
+    await openAccount(user, 'Watcher')
+    await screen.findByRole('button', { name: 'Refresh transactions' })
+    await user.click(screen.getByRole('button', { name: 'Send' }))
+    await user.click(screen.getByRole('menuitem', { name: /ALP/ }))
+    await user.selectOptions(screen.getByLabelText('Recipient from the address book'), '0.0.1002-abcde')
+    await user.type(screen.getByLabelText('Amount'), '1.5')
+    await user.click(screen.getByRole('button', { name: 'Review transfer' }))
+    await user.click(await screen.findByRole('button', { name: 'Create signing request' }))
+    const request = await screen.findByRole('group', { name: 'Signing request' })
+    expect(request).toHaveTextContent('1.5')
+    expect(request).toHaveTextContent('(raw 150)')
+    expect(commandsCalled('prepare_unsigned_token_transfer')[0].args).toMatchObject({
+      fromAccount: '0.0.1001',
+      tokenId: '0.0.8',
+      amount: '1.5',
+    })
+    expect(commandsCalled('prepare_unsigned_transfer')).toHaveLength(0)
+    await user.type(screen.getByLabelText('Signature from the signer'), 'HVTX1-SIG:AB')
+    await user.click(screen.getByRole('button', { name: 'Submit signed transfer' }))
+    await screen.findByText('SUCCESS!')
   })
 
   it('disables token creation and deletion for watch-only wallets', async () => {

@@ -428,21 +428,7 @@ async fn associate_token(
     let account = testnet_account_of(&state, &wallet_id, &account_id)?;
     let token_id = validate_account_id(&token_id)?;
     let mirror = MirrorClient::testnet()?;
-    let info = mirror
-        .token_info(&token_id)
-        .await?
-        .ok_or_else(|| "The mirror node does not know this token.".to_string())?;
-    if info.deleted {
-        return Err("This token has been deleted.".to_string());
-    }
-    if info.token_type != "FUNGIBLE_COMMON" {
-        return Err("Only fungible tokens are supported for now.".to_string());
-    }
-    if let Some(overview) = mirror.account_overview(&account).await? {
-        if overview.tokens.iter().any(|t| t.token_id == token_id) {
-            return Err("This account is already associated with the token.".to_string());
-        }
-    }
+    check_associate(&mirror, &account, &token_id).await?;
     let (key_type, secret) = lock_service(&state)?
         .with_wallet_key(&wallet_id, |key_type, secret| {
             Ok((key_type, Zeroizing::new(*secret)))
@@ -471,26 +457,7 @@ async fn dissociate_token(
     let account = testnet_account_of(&state, &wallet_id, &account_id)?;
     let token_id = validate_account_id(&token_id)?;
     let mirror = MirrorClient::testnet()?;
-    let overview = mirror
-        .account_overview(&account)
-        .await?
-        .ok_or_else(|| "This account was not found on Testnet.".to_string())?;
-    let held = overview
-        .tokens
-        .iter()
-        .find(|t| t.token_id == token_id)
-        .ok_or_else(|| "This account is not associated with that token.".to_string())?;
-    if held.balance != "0" {
-        return Err(
-            "The balance must be zero before a token can be removed. Send the rest away first."
-                .to_string(),
-        );
-    }
-    if let Some(info) = mirror.token_info(&token_id).await? {
-        if !info.deleted && info.treasury == account {
-            return Err("The treasury account cannot remove its own token.".to_string());
-        }
-    }
+    check_dissociate(&mirror, &account, &token_id).await?;
     let (key_type, secret) = lock_service(&state)?
         .with_wallet_key(&wallet_id, |key_type, secret| {
             Ok((key_type, Zeroizing::new(*secret)))
@@ -720,8 +687,38 @@ async fn send_token(
     let recipient = parse_account_input(&recipient, Network::Testnet, true)?;
     ensure_send_allowed(&state, &recipient)?;
     let mirror = MirrorClient::testnet()?;
+    let (units, decimals) =
+        check_token_send(&mirror, &sender, &recipient, &token_id, &amount).await?;
+    let (key_type, secret) = lock_service(&state)?
+        .with_wallet_key(&wallet_id, |key_type, secret| {
+            Ok((key_type, Zeroizing::new(*secret)))
+        })?;
+    let receipt = hedera_tx::submit::send_testnet_token(
+        (key_type, &secret),
+        &sender,
+        &recipient,
+        &token_id,
+        units,
+        decimals,
+        &memo,
+    )
+    .await?;
+    Ok(SendResult {
+        transaction_id: receipt.transaction_id,
+    })
+}
+
+/// Mirror checks shared by hot and watch-only token sends. Returns the amount
+/// in the token's smallest unit and the token's decimals.
+async fn check_token_send(
+    mirror: &MirrorClient,
+    sender: &str,
+    recipient: &str,
+    token_id: &str,
+    amount: &str,
+) -> Result<(u64, u32), String> {
     let info = mirror
-        .token_info(&token_id)
+        .token_info(token_id)
         .await?
         .ok_or_else(|| "The mirror node does not know this token.".to_string())?;
     if info.deleted {
@@ -730,12 +727,12 @@ async fn send_token(
     if info.token_type != "FUNGIBLE_COMMON" {
         return Err("Only fungible tokens are supported for now.".to_string());
     }
-    let units = hedera_tx::submit::parse_token_amount(&amount, info.decimals)?;
+    let units = hedera_tx::submit::parse_token_amount(amount, info.decimals)?;
     if units == 0 {
         return Err("Amount must be greater than zero.".to_string());
     }
     let held = mirror
-        .account_overview(&sender)
+        .account_overview(sender)
         .await?
         .and_then(|o| o.tokens.into_iter().find(|t| t.token_id == token_id))
         .ok_or_else(|| "This account does not hold that token.".to_string())?;
@@ -747,7 +744,7 @@ async fn send_token(
         return Err("The balance is too low for this amount.".to_string());
     }
     let receiver_associated = mirror
-        .account_overview(&recipient)
+        .account_overview(recipient)
         .await?
         .ok_or_else(|| "The recipient was not found on Testnet.".to_string())?
         .tokens
@@ -758,23 +755,60 @@ async fn send_token(
             "The recipient has not associated this token, so it cannot receive it yet.".to_string(),
         );
     }
-    let (key_type, secret) = lock_service(&state)?
-        .with_wallet_key(&wallet_id, |key_type, secret| {
-            Ok((key_type, Zeroizing::new(*secret)))
-        })?;
-    let receipt = hedera_tx::submit::send_testnet_token(
-        (key_type, &secret),
-        &sender,
-        &recipient,
-        &token_id,
-        units,
-        info.decimals,
-        &memo,
-    )
-    .await?;
-    Ok(SendResult {
-        transaction_id: receipt.transaction_id,
-    })
+    Ok((units, info.decimals))
+}
+
+/// Mirror checks shared by hot and watch-only associations.
+async fn check_associate(
+    mirror: &MirrorClient,
+    account: &str,
+    token_id: &str,
+) -> Result<(), String> {
+    let info = mirror
+        .token_info(token_id)
+        .await?
+        .ok_or_else(|| "The mirror node does not know this token.".to_string())?;
+    if info.deleted {
+        return Err("This token has been deleted.".to_string());
+    }
+    if info.token_type != "FUNGIBLE_COMMON" {
+        return Err("Only fungible tokens are supported for now.".to_string());
+    }
+    if let Some(overview) = mirror.account_overview(account).await? {
+        if overview.tokens.iter().any(|t| t.token_id == token_id) {
+            return Err("This account is already associated with the token.".to_string());
+        }
+    }
+    Ok(())
+}
+
+/// Mirror checks shared by hot and watch-only dissociations.
+async fn check_dissociate(
+    mirror: &MirrorClient,
+    account: &str,
+    token_id: &str,
+) -> Result<(), String> {
+    let overview = mirror
+        .account_overview(account)
+        .await?
+        .ok_or_else(|| "This account was not found on Testnet.".to_string())?;
+    let held = overview
+        .tokens
+        .iter()
+        .find(|t| t.token_id == token_id)
+        .ok_or_else(|| "This account is not associated with that token.".to_string())?;
+    if held.balance != "0" {
+        return Err(
+            "The balance must be zero before a token can be removed. Send the rest away first."
+                .to_string(),
+        );
+    }
+    if let Some(info) = mirror.token_info(token_id).await? {
+        if !info.deleted && info.treasury == account {
+            return Err("The treasury account cannot remove its own token.".to_string());
+        }
+    }
+    Ok(())
 }
 
 #[derive(Serialize)]
@@ -784,7 +818,7 @@ struct SigningRequest {
     qr_size: usize,
     /// One flag per module, row by row; true is dark.
     qr_modules: Vec<bool>,
-    /// "transfer", "delete" or "create".
+    /// "transfer", "delete", "create", "token-transfer", "token-associate" or "token-dissociate".
     action: String,
     /// The account that pays and whose key signs.
     sender: String,
@@ -796,6 +830,11 @@ struct SigningRequest {
     new_key: String,
     /// HBAR sent, or the opening balance of a new account.
     tinybars: i64,
+    /// The token of a token request, or empty.
+    token_id: String,
+    /// The token amount in its smallest unit, as text.
+    token_units: String,
+    token_decimals: u32,
     memo: String,
     expires_at_seconds: i64,
 }
@@ -843,6 +882,39 @@ fn signing_request(request: hedera_tx::offline::UnsignedRequest) -> Result<Signi
             key_hex.clone(),
             *initial_tinybars,
         ),
+        Action::TokenTransfer { receiver, .. } => (
+            "token-transfer",
+            shown(receiver),
+            String::new(),
+            String::new(),
+            0,
+        ),
+        Action::TokenAssociate { .. } => (
+            "token-associate",
+            String::new(),
+            String::new(),
+            String::new(),
+            0,
+        ),
+        Action::TokenDissociate { .. } => (
+            "token-dissociate",
+            String::new(),
+            String::new(),
+            String::new(),
+            0,
+        ),
+    };
+    let (token_id, token_units, token_decimals) = match &d.action {
+        Action::TokenTransfer {
+            token,
+            amount,
+            decimals,
+            ..
+        } => (token.clone(), amount.to_string(), *decimals),
+        Action::TokenAssociate { token } | Action::TokenDissociate { token } => {
+            (token.clone(), String::new(), 0)
+        }
+        _ => (String::new(), String::new(), 0),
     };
     Ok(SigningRequest {
         payload: request.payload,
@@ -858,6 +930,9 @@ fn signing_request(request: hedera_tx::offline::UnsignedRequest) -> Result<Signi
         delete_account,
         new_key,
         tinybars,
+        token_id,
+        token_units,
+        token_decimals,
         memo: d.memo,
         expires_at_seconds: d.expires_at_seconds,
     })
@@ -880,6 +955,55 @@ fn prepare_unsigned_transfer(
     ensure_send_allowed(&state, &recipient)?;
     signing_request(hedera_tx::offline::build_request(
         &sender, &recipient, tinybars, &memo,
+    )?)
+}
+
+/// Builds an unsigned token transfer for a watch-only wallet, after the same
+/// mirror checks as a hot-wallet send.
+#[tauri::command]
+async fn prepare_unsigned_token_transfer(
+    wallet_id: String,
+    from_account: String,
+    recipient: String,
+    token_id: String,
+    amount: String,
+    memo: String,
+    state: State<'_, AppState>,
+) -> Result<SigningRequest, String> {
+    require_watch_only(&state, &wallet_id)?;
+    let sender = testnet_account_of(&state, &wallet_id, &from_account)?;
+    let token_id = validate_account_id(&token_id)?;
+    let recipient = parse_account_input(&recipient, Network::Testnet, true)?;
+    ensure_send_allowed(&state, &recipient)?;
+    let mirror = MirrorClient::testnet()?;
+    let (units, decimals) =
+        check_token_send(&mirror, &sender, &recipient, &token_id, &amount).await?;
+    let units = i64::try_from(units).map_err(|_| "The amount is too large.".to_string())?;
+    signing_request(hedera_tx::offline::build_token_transfer_request(
+        &sender, &recipient, &token_id, units, decimals, &memo,
+    )?)
+}
+
+/// Builds an unsigned association or dissociation for a watch-only wallet.
+#[tauri::command]
+async fn prepare_unsigned_token_association(
+    wallet_id: String,
+    account_id: String,
+    token_id: String,
+    associate: bool,
+    state: State<'_, AppState>,
+) -> Result<SigningRequest, String> {
+    require_watch_only(&state, &wallet_id)?;
+    let account = testnet_account_of(&state, &wallet_id, &account_id)?;
+    let token_id = validate_account_id(&token_id)?;
+    let mirror = MirrorClient::testnet()?;
+    if associate {
+        check_associate(&mirror, &account, &token_id).await?;
+    } else {
+        check_dissociate(&mirror, &account, &token_id).await?;
+    }
+    signing_request(hedera_tx::offline::build_token_association_request(
+        &account, &token_id, associate,
     )?)
 }
 
@@ -974,7 +1098,10 @@ async fn submit_signed_request(
             .any(|a| a.network == Network::Testnet && a.id == id)
     };
     match &verified.description.action {
-        Action::Transfer { receiver, .. } => ensure_send_allowed(&state, receiver)?,
+        Action::Transfer { receiver, .. } | Action::TokenTransfer { receiver, .. } => {
+            ensure_send_allowed(&state, receiver)?
+        }
+        Action::TokenAssociate { .. } | Action::TokenDissociate { .. } => {}
         Action::DeleteAccount { account, recipient } => {
             if !owned(account) || !owned(recipient) {
                 return Err("Both accounts of a deletion must belong to this wallet.".to_string());
@@ -1542,6 +1669,8 @@ fn main() {
             prepare_unsigned_transfer,
             prepare_unsigned_delete,
             prepare_unsigned_create,
+            prepare_unsigned_token_transfer,
+            prepare_unsigned_token_association,
             submit_signed_request,
             find_wallet_accounts,
             get_account_balance,

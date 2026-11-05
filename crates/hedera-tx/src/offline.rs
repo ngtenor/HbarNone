@@ -17,12 +17,15 @@ use wallet_core::key_import::KeyType;
 use crate::AUTO_RENEW_SECONDS;
 use crate::submit::{
     CREATE_PATH, DELETE_PATH, MAX_FEE_TINYBARS, MAX_INITIAL_TINYBARS, MAX_MEMO_BYTES,
-    TESTNET_NODE_ACCOUNT, TRANSFER_PATH, parse_account, submit,
+    TESTNET_NODE_ACCOUNT, TOKEN_ASSOCIATE_PATH, TOKEN_DISSOCIATE_PATH, TRANSFER_PATH,
+    parse_account, submit,
 };
 use crate::{
     CreateAccountParams, DeleteAccountParams, SignatureMap, SignaturePair, SignedTransaction,
-    Transaction, TransactionBody, TransferParams, create_account_body_bytes_valid_for,
-    delete_account_body_bytes_valid_for, signature_pair, transfer_body_bytes_valid_for,
+    TokenAssociationParams, TokenTransferParams, Transaction, TransactionBody, TransferParams,
+    create_account_body_bytes_valid_for, delete_account_body_bytes_valid_for, signature_pair,
+    token_association_body_bytes_valid_for, token_transfer_body_bytes_valid_for,
+    transfer_body_bytes_valid_for,
 };
 
 pub const REQUEST_PREFIX: &str = "HVTX1-REQ:";
@@ -48,6 +51,22 @@ pub enum Action {
         key_type: KeyType,
         key_hex: String,
         initial_tinybars: i64,
+    },
+    /// Sends `amount` (smallest unit) of a fungible token. `decimals` is the sender's
+    /// expectation, which the network checks.
+    TokenTransfer {
+        token: String,
+        receiver: String,
+        amount: i64,
+        decimals: u32,
+    },
+    /// Lets the payer's account hold `token`.
+    TokenAssociate {
+        token: String,
+    },
+    /// Stops the payer's account holding `token`.
+    TokenDissociate {
+        token: String,
     },
 }
 
@@ -80,6 +99,16 @@ impl RequestDescription {
                 initial_tinybars,
                 ..
             } => format!("create an account with key {key_hex} and {initial_tinybars} tinybars"),
+            Action::TokenTransfer {
+                token,
+                receiver,
+                amount,
+                decimals,
+            } => {
+                format!("send {amount} units of token {token} ({decimals} decimals) to {receiver}")
+            }
+            Action::TokenAssociate { token } => format!("associate token {token}"),
+            Action::TokenDissociate { token } => format!("dissociate token {token}"),
         }
     }
     pub fn transaction_id(&self) -> String {
@@ -194,6 +223,56 @@ pub fn build_create_request(
     finish(create_account_body_bytes_valid_for(&params, VALID_SECONDS)?)
 }
 
+/// Builds an unsigned token transfer. `amount` is in the token's smallest unit.
+pub fn build_token_transfer_request(
+    sender: &str,
+    receiver: &str,
+    token: &str,
+    amount: i64,
+    decimals: u32,
+    memo: &str,
+) -> Result<UnsignedRequest, String> {
+    if memo.len() > MAX_MEMO_BYTES {
+        return Err("The memo is too long (100 bytes at most).".to_string());
+    }
+    let (seconds, nanos) = start_time()?;
+    let params = TokenTransferParams {
+        sender: parse_account(sender)?,
+        receiver: parse_account(receiver)?,
+        token: parse_account(token)?,
+        amount,
+        decimals,
+        node: TESTNET_NODE_ACCOUNT,
+        valid_start_seconds: seconds,
+        valid_start_nanos: nanos,
+        max_fee_tinybars: MAX_FEE_TINYBARS,
+        memo: memo.to_string(),
+    };
+    finish(token_transfer_body_bytes_valid_for(&params, VALID_SECONDS)?)
+}
+
+/// Builds an unsigned association (or dissociation) of `token` with `payer`'s own account.
+pub fn build_token_association_request(
+    payer: &str,
+    token: &str,
+    associate: bool,
+) -> Result<UnsignedRequest, String> {
+    let (seconds, nanos) = start_time()?;
+    let params = TokenAssociationParams {
+        payer: parse_account(payer)?,
+        token: parse_account(token)?,
+        node: TESTNET_NODE_ACCOUNT,
+        valid_start_seconds: seconds,
+        valid_start_nanos: nanos,
+        max_fee_tinybars: MAX_FEE_TINYBARS,
+    };
+    finish(token_association_body_bytes_valid_for(
+        &params,
+        associate,
+        VALID_SECONDS,
+    )?)
+}
+
 fn start_time() -> Result<(i64, i32), String> {
     Ok((now_seconds()?.saturating_sub(BACKDATE_SECONDS) as i64, 0))
 }
@@ -229,7 +308,9 @@ pub fn describe_body(body_bytes: &[u8]) -> Result<RequestDescription, String> {
     let valid = body.valid_duration.as_ref().ok_or_else(bad)?.seconds;
     let actions = usize::from(body.crypto_transfer.is_some())
         + usize::from(body.crypto_create.is_some())
-        + usize::from(body.crypto_delete.is_some());
+        + usize::from(body.crypto_delete.is_some())
+        + usize::from(body.token_association.is_some())
+        + usize::from(body.token_dissociation.is_some());
     let on_main = |a: &crate::AccountId| a.shard == 0 && a.realm == 0 && a.num > 0;
     if !(1..=VALID_SECONDS).contains(&valid)
         || body.fee > MAX_FEE_TINYBARS
@@ -237,15 +318,69 @@ pub fn describe_body(body_bytes: &[u8]) -> Result<RequestDescription, String> {
         || body.crypto_update.is_some()
         || body.token_creation.is_some()
         || body.token_deletion.is_some()
-        || body.token_association.is_some()
-        || body.token_dissociation.is_some()
+        || body.token_mint.is_some()
+        || body.token_burn.is_some()
         || actions != 1
         || !on_main(payer)
         || !(0..1_000_000_000).contains(&start.nanos)
     {
         return Err(bad());
     }
-    let (action, memo) = if let Some(transfer) = &body.crypto_transfer {
+    let token_text = |t: &crate::TokenId| format!("{}.{}.{}", t.shard, t.realm, t.num);
+    let token_ok = |t: &crate::TokenId| t.shard == 0 && t.realm == 0 && t.num > 0;
+    let (action, memo) = if let Some(change) = body
+        .token_association
+        .as_ref()
+        .or(body.token_dissociation.as_ref())
+    {
+        let [token] = change.tokens.as_slice() else {
+            return Err(bad());
+        };
+        if change.account.as_ref() != Some(payer) || !token_ok(token) || !body.memo.is_empty() {
+            return Err(bad());
+        }
+        let token = token_text(token);
+        let action = if body.token_association.is_some() {
+            Action::TokenAssociate { token }
+        } else {
+            Action::TokenDissociate { token }
+        };
+        (action, String::new())
+    } else if let Some(transfer) = body
+        .crypto_transfer
+        .as_ref()
+        .filter(|t| !t.token_transfers.is_empty())
+    {
+        let [list] = transfer.token_transfers.as_slice() else {
+            return Err(bad());
+        };
+        let token = list.token.as_ref().ok_or_else(bad)?;
+        let decimals = list.expected_decimals.as_ref().ok_or_else(bad)?.value;
+        let [debit, credit] = list.transfers.as_slice() else {
+            return Err(bad());
+        };
+        let debit_account = debit.account.as_ref().ok_or_else(bad)?;
+        let credit_account = credit.account.as_ref().ok_or_else(bad)?;
+        if transfer.transfers.is_some()
+            || !token_ok(token)
+            || debit_account != payer
+            || credit_account == payer
+            || !on_main(credit_account)
+            || debit.amount >= 0
+            || debit.amount.checked_neg() != Some(credit.amount)
+        {
+            return Err(bad());
+        }
+        (
+            Action::TokenTransfer {
+                token: token_text(token),
+                receiver: account_text(credit_account),
+                amount: credit.amount,
+                decimals,
+            },
+            body.memo.clone(),
+        )
+    } else if let Some(transfer) = &body.crypto_transfer {
         let amounts = &transfer.transfers.as_ref().ok_or_else(bad)?.amounts;
         let [debit, credit] = amounts.as_slice() else {
             return Err(bad());
@@ -424,6 +559,9 @@ pub async fn submit_verified(verified: &VerifiedRequest) -> Result<String, Strin
         Action::Transfer { .. } => (TRANSFER_PATH, "transfer"),
         Action::DeleteAccount { .. } => (DELETE_PATH, "account deletion"),
         Action::CreateAccount { .. } => (CREATE_PATH, "account creation"),
+        Action::TokenTransfer { .. } => (TRANSFER_PATH, "token transfer"),
+        Action::TokenAssociate { .. } => (TOKEN_ASSOCIATE_PATH, "token association"),
+        Action::TokenDissociate { .. } => (TOKEN_DISSOCIATE_PATH, "token dissociation"),
     };
     let response = submit(verified.transaction.clone(), path).await?;
     if response.precheck_code != 0 {
@@ -602,6 +740,85 @@ mod tests {
             .unwrap()
             .num = 5;
         assert!(describe_body(&stranger.encode_to_vec()).is_err());
+    }
+
+    #[test]
+    fn token_requests_describe_and_sign() {
+        let r =
+            build_token_transfer_request("0.0.1001", "0.0.1002", "0.0.5005", 250, 2, "t").unwrap();
+        assert_eq!(r.description.payer, "0.0.1001");
+        assert_eq!(r.description.memo, "t");
+        assert_eq!(
+            r.description.action,
+            Action::TokenTransfer {
+                token: "0.0.5005".to_string(),
+                receiver: "0.0.1002".to_string(),
+                amount: 250,
+                decimals: 2
+            }
+        );
+        assert_eq!(
+            r.description.expires_at_seconds - r.description.valid_start_seconds,
+            VALID_SECONDS
+        );
+        let sig = sign_request(&r.payload, KeyType::Ed25519, &[7u8; 32]).unwrap();
+        assert!(assemble(&r.payload, &sig).is_ok());
+
+        let a = build_token_association_request("0.0.1001", "0.0.5005", true).unwrap();
+        assert_eq!(
+            a.description.action,
+            Action::TokenAssociate {
+                token: "0.0.5005".to_string()
+            }
+        );
+        let d = build_token_association_request("0.0.1001", "0.0.5005", false).unwrap();
+        assert_eq!(
+            d.description.action,
+            Action::TokenDissociate {
+                token: "0.0.5005".to_string()
+            }
+        );
+        assert!(build_token_transfer_request("0.0.1001", "0.0.1001", "0.0.5", 1, 0, "").is_err());
+        assert!(build_token_transfer_request("0.0.1001", "0.0.1002", "0.0.5", 0, 0, "").is_err());
+    }
+
+    #[test]
+    fn rejects_tampered_token_bodies() {
+        let r =
+            build_token_transfer_request("0.0.1001", "0.0.1002", "0.0.5005", 10, 0, "").unwrap();
+        let (body, _) = decode_request(&r.payload).unwrap();
+        // An HBAR transfer hidden alongside the token transfer.
+        let mut mixed = TransactionBody::decode(body.as_slice()).unwrap();
+        mixed.crypto_transfer.as_mut().unwrap().transfers =
+            request_body().crypto_transfer.unwrap().transfers;
+        assert!(describe_body(&mixed.encode_to_vec()).is_err());
+        // A second token list.
+        let mut two = TransactionBody::decode(body.as_slice()).unwrap();
+        let list = two.crypto_transfer.as_ref().unwrap().token_transfers[0].clone();
+        two.crypto_transfer
+            .as_mut()
+            .unwrap()
+            .token_transfers
+            .push(list);
+        assert!(describe_body(&two.encode_to_vec()).is_err());
+        // Association of another account.
+        let a = build_token_association_request("0.0.1001", "0.0.5005", true).unwrap();
+        let (abody, _) = decode_request(&a.payload).unwrap();
+        let mut other = TransactionBody::decode(abody.as_slice()).unwrap();
+        other
+            .token_association
+            .as_mut()
+            .unwrap()
+            .account
+            .as_mut()
+            .unwrap()
+            .num = 9;
+        assert!(describe_body(&other.encode_to_vec()).is_err());
+        // Two tokens at once.
+        let mut many = TransactionBody::decode(abody.as_slice()).unwrap();
+        let first = many.token_association.as_ref().unwrap().tokens[0].clone();
+        many.token_association.as_mut().unwrap().tokens.push(first);
+        assert!(describe_body(&many.encode_to_vec()).is_err());
     }
 
     fn request_body() -> TransactionBody {

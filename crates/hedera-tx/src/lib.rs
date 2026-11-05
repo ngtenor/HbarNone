@@ -346,6 +346,14 @@ pub struct TokenTransferParams {
 }
 
 pub fn token_transfer_body_bytes(p: &TokenTransferParams) -> Result<Vec<u8>, String> {
+    token_transfer_body_bytes_valid_for(p, 120)
+}
+
+/// Like [`token_transfer_body_bytes`], but valid for `valid_seconds` after its start time.
+pub fn token_transfer_body_bytes_valid_for(
+    p: &TokenTransferParams,
+    valid_seconds: i64,
+) -> Result<Vec<u8>, String> {
     if p.amount <= 0 {
         return Err("Amount must be greater than zero.".into());
     }
@@ -365,7 +373,9 @@ pub fn token_transfer_body_bytes(p: &TokenTransferParams) -> Result<Vec<u8>, Str
         }),
         node_account: Some(account(p.node)),
         fee: p.max_fee_tinybars,
-        valid_duration: Some(Duration { seconds: 120 }),
+        valid_duration: Some(Duration {
+            seconds: valid_seconds,
+        }),
         memo: p.memo.clone(),
         crypto_create: None,
         crypto_delete: None,
@@ -719,6 +729,15 @@ pub fn token_association_body_bytes(
     p: &TokenAssociationParams,
     associate: bool,
 ) -> Result<Vec<u8>, String> {
+    token_association_body_bytes_valid_for(p, associate, 120)
+}
+
+/// Like [`token_association_body_bytes`], but valid for `valid_seconds` after its start time.
+pub fn token_association_body_bytes_valid_for(
+    p: &TokenAssociationParams,
+    associate: bool,
+    valid_seconds: i64,
+) -> Result<Vec<u8>, String> {
     if p.token.0 != 0 || p.token.1 != 0 || p.token.2 <= 0 {
         return Err("Invalid token ID.".into());
     }
@@ -745,7 +764,9 @@ pub fn token_association_body_bytes(
         }),
         node_account: Some(account(p.node)),
         fee: p.max_fee_tinybars,
-        valid_duration: Some(Duration { seconds: 120 }),
+        valid_duration: Some(Duration {
+            seconds: valid_seconds,
+        }),
         memo: String::new(),
         crypto_create: None,
         crypto_delete: None,
