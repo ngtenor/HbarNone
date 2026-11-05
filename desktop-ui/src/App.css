@@ -421,8 +421,17 @@ h2.section-title,
   gap: 16px;
 }
 
-.testnet-assets li {
-  grid-template-columns: minmax(0, 1fr) auto;
+.testnet-transactions.testnet-assets li {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+}
+
+.testnet-assets .testnet-net {
+  text-align: right;
+}
+
+.testnet-token-id {
+  font-variant-numeric: tabular-nums;
+  text-align: left;
 }
 
 .account-heading-balance-group,
@@ -823,6 +832,10 @@ h2.section-title,
   min-height: 40px;
   padding: 0 14px;
   font-size: 12px;
+}
+
+.testnet-panel .error-message {
+  margin: 20px 0 0;
 }
 
 .testnet-panel {

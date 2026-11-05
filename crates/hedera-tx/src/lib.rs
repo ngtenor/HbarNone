@@ -62,6 +62,26 @@ pub struct TransferList {
 pub struct CryptoTransferBody {
     #[prost(message, optional, tag = "1")]
     pub transfers: Option<TransferList>,
+    #[prost(message, repeated, tag = "2")]
+    pub token_transfers: Vec<TokenTransferList>,
+}
+
+/// Fungible amounts of one token moving between accounts (debits negative).
+#[derive(Clone, PartialEq, Message)]
+pub struct TokenTransferList {
+    #[prost(message, optional, tag = "1")]
+    pub token: Option<TokenId>,
+    #[prost(message, repeated, tag = "2")]
+    pub transfers: Vec<AccountAmount>,
+    #[prost(message, optional, tag = "4")]
+    pub expected_decimals: Option<UInt32Value>,
+}
+
+/// `google.protobuf.UInt32Value`.
+#[derive(Clone, PartialEq, Message)]
+pub struct UInt32Value {
+    #[prost(uint32, tag = "1")]
+    pub value: u32,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -88,6 +108,19 @@ pub struct TransactionBody {
     pub token_creation: Option<TokenCreateBody>,
     #[prost(message, optional, tag = "35")]
     pub token_deletion: Option<TokenDeleteBody>,
+    #[prost(message, optional, tag = "40")]
+    pub token_association: Option<TokenAssociationBody>,
+    #[prost(message, optional, tag = "41")]
+    pub token_dissociation: Option<TokenAssociationBody>,
+}
+
+/// The body of both `TokenAssociate` and `TokenDissociate`.
+#[derive(Clone, PartialEq, Message)]
+pub struct TokenAssociationBody {
+    #[prost(message, optional, tag = "1")]
+    pub account: Option<AccountId>,
+    #[prost(message, repeated, tag = "2")]
+    pub tokens: Vec<TokenId>,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -259,6 +292,8 @@ pub fn transfer_body_bytes_valid_for(
         crypto_update: None,
         token_creation: None,
         token_deletion: None,
+        token_association: None,
+        token_dissociation: None,
         crypto_transfer: Some(CryptoTransferBody {
             transfers: Some(TransferList {
                 amounts: vec![
@@ -272,6 +307,77 @@ pub fn transfer_body_bytes_valid_for(
                     },
                 ],
             }),
+            token_transfers: Vec::new(),
+        }),
+    };
+    Ok(body.encode_to_vec())
+}
+
+/// Parameters of a fungible token transfer between two accounts.
+pub struct TokenTransferParams {
+    pub sender: (i64, i64, i64),
+    pub receiver: (i64, i64, i64),
+    pub token: (i64, i64, i64),
+    /// Amount in the token's smallest unit.
+    pub amount: i64,
+    /// The decimals the sender saw; the network rejects the transfer if they differ.
+    pub decimals: u32,
+    pub node: (i64, i64, i64),
+    pub valid_start_seconds: i64,
+    pub valid_start_nanos: i32,
+    pub max_fee_tinybars: u64,
+    pub memo: String,
+}
+
+pub fn token_transfer_body_bytes(p: &TokenTransferParams) -> Result<Vec<u8>, String> {
+    if p.amount <= 0 {
+        return Err("Amount must be greater than zero.".into());
+    }
+    if p.sender == p.receiver {
+        return Err("Sender and recipient must differ.".into());
+    }
+    if p.token.0 != 0 || p.token.1 != 0 || p.token.2 <= 0 {
+        return Err("Invalid token ID.".into());
+    }
+    let body = TransactionBody {
+        transaction_id: Some(TransactionId {
+            valid_start: Some(Timestamp {
+                seconds: p.valid_start_seconds,
+                nanos: p.valid_start_nanos,
+            }),
+            account: Some(account(p.sender)),
+        }),
+        node_account: Some(account(p.node)),
+        fee: p.max_fee_tinybars,
+        valid_duration: Some(Duration { seconds: 120 }),
+        memo: p.memo.clone(),
+        crypto_create: None,
+        crypto_delete: None,
+        crypto_update: None,
+        token_creation: None,
+        token_deletion: None,
+        token_association: None,
+        token_dissociation: None,
+        crypto_transfer: Some(CryptoTransferBody {
+            transfers: None,
+            token_transfers: vec![TokenTransferList {
+                token: Some(TokenId {
+                    shard: p.token.0,
+                    realm: p.token.1,
+                    num: p.token.2,
+                }),
+                transfers: vec![
+                    AccountAmount {
+                        account: Some(account(p.sender)),
+                        amount: -p.amount,
+                    },
+                    AccountAmount {
+                        account: Some(account(p.receiver)),
+                        amount: p.amount,
+                    },
+                ],
+                expected_decimals: Some(UInt32Value { value: p.decimals }),
+            }],
         }),
     };
     Ok(body.encode_to_vec())
@@ -332,6 +438,8 @@ pub fn create_account_body_bytes_valid_for(
         crypto_update: None,
         token_creation: None,
         token_deletion: None,
+        token_association: None,
+        token_dissociation: None,
     };
     Ok(body.encode_to_vec())
 }
@@ -384,6 +492,8 @@ pub fn delete_account_body_bytes_valid_for(
         crypto_update: None,
         token_creation: None,
         token_deletion: None,
+        token_association: None,
+        token_dissociation: None,
         crypto_delete: Some(CryptoDeleteBody {
             transfer_account: Some(account(p.transfer_account)),
             delete_account: Some(account(p.delete_account)),
@@ -438,6 +548,8 @@ pub fn change_key_body_bytes(p: &ChangeKeyParams) -> Result<Vec<u8>, String> {
         crypto_transfer: None,
         token_creation: None,
         token_deletion: None,
+        token_association: None,
+        token_dissociation: None,
         crypto_update: Some(CryptoUpdateBody {
             account_to_update: Some(account(p.account)),
             key: Some(key_message(p.new_key_type, &p.new_public_key)?),
@@ -505,6 +617,8 @@ pub fn create_token_body_bytes(p: &CreateTokenParams) -> Result<Vec<u8>, String>
         crypto_transfer: None,
         crypto_update: None,
         token_deletion: None,
+        token_association: None,
+        token_dissociation: None,
         token_creation: Some(TokenCreateBody {
             name: p.name.clone(),
             symbol: p.symbol.clone(),
@@ -550,6 +664,8 @@ pub fn delete_token_body_bytes(p: &DeleteTokenParams) -> Result<Vec<u8>, String>
         crypto_transfer: None,
         crypto_update: None,
         token_creation: None,
+        token_association: None,
+        token_dissociation: None,
         token_deletion: Some(TokenDeleteBody {
             token: Some(TokenId {
                 shard: p.token.0,
@@ -557,6 +673,60 @@ pub fn delete_token_body_bytes(p: &DeleteTokenParams) -> Result<Vec<u8>, String>
                 num: p.token.2,
             }),
         }),
+    };
+    Ok(body.encode_to_vec())
+}
+
+/// Parameters of a `TokenAssociate` or `TokenDissociate` for the payer's own account.
+pub struct TokenAssociationParams {
+    pub payer: (i64, i64, i64),
+    pub token: (i64, i64, i64),
+    pub node: (i64, i64, i64),
+    pub valid_start_seconds: i64,
+    pub valid_start_nanos: i32,
+    pub max_fee_tinybars: u64,
+}
+
+pub fn token_association_body_bytes(
+    p: &TokenAssociationParams,
+    associate: bool,
+) -> Result<Vec<u8>, String> {
+    if p.token.0 != 0 || p.token.1 != 0 || p.token.2 <= 0 {
+        return Err("Invalid token ID.".into());
+    }
+    let change = TokenAssociationBody {
+        account: Some(account(p.payer)),
+        tokens: vec![TokenId {
+            shard: p.token.0,
+            realm: p.token.1,
+            num: p.token.2,
+        }],
+    };
+    let (association, dissociation) = if associate {
+        (Some(change), None)
+    } else {
+        (None, Some(change))
+    };
+    let body = TransactionBody {
+        transaction_id: Some(TransactionId {
+            valid_start: Some(Timestamp {
+                seconds: p.valid_start_seconds,
+                nanos: p.valid_start_nanos,
+            }),
+            account: Some(account(p.payer)),
+        }),
+        node_account: Some(account(p.node)),
+        fee: p.max_fee_tinybars,
+        valid_duration: Some(Duration { seconds: 120 }),
+        memo: String::new(),
+        crypto_create: None,
+        crypto_delete: None,
+        crypto_transfer: None,
+        crypto_update: None,
+        token_creation: None,
+        token_deletion: None,
+        token_association: association,
+        token_dissociation: dissociation,
     };
     Ok(body.encode_to_vec())
 }
@@ -772,6 +942,36 @@ mod tests {
     }
 
     #[test]
+    fn association_bodies_name_the_account_and_token() {
+        let p = TokenAssociationParams {
+            payer: (0, 0, 1001),
+            token: (0, 0, 4242),
+            node: (0, 0, 3),
+            valid_start_seconds: 1_700_000_000,
+            valid_start_nanos: 5,
+            max_fee_tinybars: 100_000_000,
+        };
+        let on =
+            TransactionBody::decode(token_association_body_bytes(&p, true).unwrap().as_slice())
+                .unwrap();
+        let change = on.token_association.unwrap();
+        assert_eq!(change.account.unwrap().num, 1001);
+        assert_eq!(change.tokens.len(), 1);
+        assert_eq!(change.tokens[0].num, 4242);
+        assert!(on.token_dissociation.is_none());
+        let off =
+            TransactionBody::decode(token_association_body_bytes(&p, false).unwrap().as_slice())
+                .unwrap();
+        assert!(off.token_association.is_none());
+        assert_eq!(off.token_dissociation.unwrap().tokens[0].num, 4242);
+        let bad = TokenAssociationParams {
+            token: (0, 0, 0),
+            ..p
+        };
+        assert!(token_association_body_bytes(&bad, true).is_err());
+    }
+
+    #[test]
     fn token_delete_body_names_the_token() {
         let p = DeleteTokenParams {
             payer: (0, 0, 1001),
@@ -809,10 +1009,42 @@ mod tests {
         assert_eq!(tx.encode_to_vec(), vec![0x2A, 0x01, 0xAA]);
         // cryptoTransfer is TransactionBody field 14 (tag 0x72).
         let body = TransactionBody {
-            crypto_transfer: Some(CryptoTransferBody { transfers: None }),
+            crypto_transfer: Some(CryptoTransferBody {
+                transfers: None,
+                token_transfers: Vec::new(),
+            }),
             ..Default::default()
         };
         assert_eq!(body.encode_to_vec(), vec![0x72, 0x00]);
+    }
+
+    #[test]
+    fn token_transfer_body_moves_units_and_pins_decimals() {
+        let p = TokenTransferParams {
+            sender: (0, 0, 1001),
+            receiver: (0, 0, 1002),
+            token: (0, 0, 5005),
+            amount: 1250,
+            decimals: 2,
+            node: (0, 0, 3),
+            valid_start_seconds: 1_700_000_000,
+            valid_start_nanos: 5,
+            max_fee_tinybars: 100_000_000,
+            memo: "hi".to_string(),
+        };
+        let body =
+            TransactionBody::decode(token_transfer_body_bytes(&p).unwrap().as_slice()).unwrap();
+        let transfer = body.crypto_transfer.unwrap();
+        assert!(transfer.transfers.is_none());
+        let list = &transfer.token_transfers[0];
+        assert_eq!(list.token.as_ref().unwrap().num, 5005);
+        assert_eq!(list.expected_decimals.as_ref().unwrap().value, 2);
+        assert_eq!(list.transfers[0].account.as_ref().unwrap().num, 1001);
+        assert_eq!(list.transfers[0].amount, -1250);
+        assert_eq!(list.transfers[1].account.as_ref().unwrap().num, 1002);
+        assert_eq!(list.transfers[1].amount, 1250);
+        let zero = TokenTransferParams { amount: 0, ..p };
+        assert!(token_transfer_body_bytes(&zero).is_err());
     }
 
     #[test]

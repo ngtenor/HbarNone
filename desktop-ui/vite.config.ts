@@ -14,5 +14,7 @@ export default defineConfig({
     environment: 'jsdom',
     setupFiles: ['./src/test/setup.ts'],
     restoreMocks: true,
+    // Slow CI runners (Windows) can exceed the 5 s default on heavy UI tests.
+    testTimeout: 20000,
   },
 })

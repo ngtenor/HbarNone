@@ -237,6 +237,8 @@ pub fn describe_body(body_bytes: &[u8]) -> Result<RequestDescription, String> {
         || body.crypto_update.is_some()
         || body.token_creation.is_some()
         || body.token_deletion.is_some()
+        || body.token_association.is_some()
+        || body.token_dissociation.is_some()
         || actions != 1
         || !on_main(payer)
         || !(0..1_000_000_000).contains(&start.nanos)

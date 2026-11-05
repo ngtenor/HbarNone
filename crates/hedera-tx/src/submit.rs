@@ -13,10 +13,11 @@ use wallet_core::wallet_service::validate_account_id;
 
 use crate::{
     ChangeKeyParams, CreateAccountParams, CreateTokenParams, DeleteAccountParams,
-    DeleteTokenParams, MAX_TOKEN_DECIMALS, Transaction, TransactionResponse, TransferParams,
-    change_key_body_bytes, create_account_body_bytes, create_token_body_bytes,
-    delete_account_body_bytes, delete_token_body_bytes, sign_body, sign_body_multi,
-    transfer_body_bytes,
+    DeleteTokenParams, MAX_TOKEN_DECIMALS, TokenAssociationParams, TokenTransferParams,
+    Transaction, TransactionResponse, TransferParams, change_key_body_bytes,
+    create_account_body_bytes, create_token_body_bytes, delete_account_body_bytes,
+    delete_token_body_bytes, sign_body, sign_body_multi, token_association_body_bytes,
+    token_transfer_body_bytes, transfer_body_bytes,
 };
 
 /// Testnet node account 0.0.3 and its plain-gRPC endpoint.
@@ -34,6 +35,8 @@ const UPDATE_PATH: &str = "/proto.CryptoService/updateAccount";
 pub(crate) const DELETE_PATH: &str = "/proto.CryptoService/cryptoDelete";
 const TOKEN_CREATE_PATH: &str = "/proto.TokenService/createToken";
 const TOKEN_DELETE_PATH: &str = "/proto.TokenService/deleteToken";
+const TOKEN_ASSOCIATE_PATH: &str = "/proto.TokenService/associateTokens";
+const TOKEN_DISSOCIATE_PATH: &str = "/proto.TokenService/dissociateTokens";
 /// Largest opening balance the app will fund a new account with.
 pub(crate) const MAX_INITIAL_TINYBARS: i64 = 10_000 * TINYBARS_PER_HBAR as i64;
 
@@ -399,6 +402,92 @@ pub async fn create_testnet_token(
     }
     Ok(SendReceipt {
         transaction_id: format!("0.0.{}-{}-{:09}", payer_id.2, seconds, nanos),
+    })
+}
+
+/// Associates (or dissociates) the payer's own account with a token. The
+/// account's key signs, and the account also pays the fee.
+pub async fn change_testnet_token_association(
+    account_id: &str,
+    key: (KeyType, &[u8; 32]),
+    token: &str,
+    associate: bool,
+) -> Result<SendReceipt, String> {
+    let payer_id = parse_account(account_id)?;
+    let token_id = parse_account(token)?;
+    let (seconds, nanos) = start_time()?;
+    let params = TokenAssociationParams {
+        payer: payer_id,
+        token: token_id,
+        node: TESTNET_NODE_ACCOUNT,
+        valid_start_seconds: seconds,
+        valid_start_nanos: nanos,
+        max_fee_tinybars: MAX_FEE_TINYBARS,
+    };
+    let body = token_association_body_bytes(&params, associate)?;
+    let encoded = sign_body(&body, key.0, key.1)?;
+    let transaction =
+        <Transaction as prost::Message>::decode(encoded.as_slice()).map_err(|e| e.to_string())?;
+    let path = if associate {
+        TOKEN_ASSOCIATE_PATH
+    } else {
+        TOKEN_DISSOCIATE_PATH
+    };
+    let response = submit(transaction, path).await?;
+    if response.precheck_code != 0 {
+        return Err(format!(
+            "The node rejected the request: {}",
+            precheck_message(response.precheck_code)
+        ));
+    }
+    Ok(SendReceipt {
+        transaction_id: format!("0.0.{}-{}-{:09}", payer_id.2, seconds, nanos),
+    })
+}
+
+/// Sends `amount` (in the token's smallest unit) of a fungible token from the
+/// sender's own account. The sender's key signs and pays the fee. `decimals`
+/// is pinned in the transaction so a wrong scale is rejected by the network.
+pub async fn send_testnet_token(
+    key: (KeyType, &[u8; 32]),
+    sender: &str,
+    receiver: &str,
+    token: &str,
+    amount: u64,
+    decimals: u32,
+    memo: &str,
+) -> Result<SendReceipt, String> {
+    if memo.len() > MAX_MEMO_BYTES {
+        return Err("The memo is too long (100 bytes at most).".to_string());
+    }
+    let amount = i64::try_from(amount).map_err(|_| "The amount is too large.".to_string())?;
+    let sender_id = parse_account(sender)?;
+    let (seconds, nanos) = start_time()?;
+    let params = TokenTransferParams {
+        sender: sender_id,
+        receiver: parse_account(receiver)?,
+        token: parse_account(token)?,
+        amount,
+        decimals,
+        node: TESTNET_NODE_ACCOUNT,
+        valid_start_seconds: seconds,
+        valid_start_nanos: nanos,
+        max_fee_tinybars: MAX_FEE_TINYBARS,
+        memo: memo.to_string(),
+    };
+    let body = token_transfer_body_bytes(&params)?;
+    let encoded = sign_body(&body, key.0, key.1)?;
+    let transaction =
+        <Transaction as prost::Message>::decode(encoded.as_slice()).map_err(|e| e.to_string())?;
+    let response = submit(transaction, TRANSFER_PATH).await?;
+    if response.precheck_code != 0 {
+        return Err(format!(
+            "The node rejected the token transfer: {}",
+            precheck_message(response.precheck_code)
+        ));
+    }
+    Ok(SendReceipt {
+        transaction_id: format!("0.0.{}-{}-{:09}", sender_id.2, seconds, nanos),
     })
 }
 

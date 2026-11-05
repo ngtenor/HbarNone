@@ -61,6 +61,14 @@ type AccountOverview = {
   tokens?: AccountToken[]
 }
 
+type TokenSection =
+  | 'token-info'
+  | 'token-add'
+  | 'token-remove'
+  | 'token-hide'
+  | 'token-create'
+  | 'token-delete'
+
 const TINYBARS_PER_HBAR = 100_000_000
 
 function formatHbar(tinybars: number, maxDecimals = 8) {
@@ -189,9 +197,10 @@ export function TestnetPanel({
   const [deleteAcknowledged, setDeleteAcknowledged] = useState(false)
   const [pendingDelete, setPendingDelete] = useState(false)
   const [showAssets, setShowAssets] = useState(false)
-  const [section, setSection] = useState<
-    'send' | 'rename' | 'move' | 'delete' | 'token-info' | 'token-create' | 'token-delete' | null
-  >(null)
+  const [hiddenTokens, setHiddenTokens] = useState<string[]>([])
+  const [showHidden, setShowHidden] = useState(false)
+  const [tokenToRemove, setTokenToRemove] = useState('')
+  const [section, setSection] = useState<TokenSection | 'send' | 'rename' | 'move' | 'delete' | null>(null)
   const [tokenQuery, setTokenQuery] = useState('')
   const [tokenDetails, setTokenDetails] = useState<TokenInfo | null>(null)
   const [newTokenName, setNewTokenName] = useState('')
@@ -201,6 +210,7 @@ export function TestnetPanel({
   const [confirmingToken, setConfirmingToken] = useState(false)
   const [tokenToDelete, setTokenToDelete] = useState('')
   const [tokenDeleteAcknowledged, setTokenDeleteAcknowledged] = useState(false)
+  const [sendTokenId, setSendTokenId] = useState('')
   const isWatchOnly = wallet.secret_kind === 'watchonly'
   const [signing, setSigning] = useState<SigningRequest | null>(null)
   const [signatureText, setSignatureText] = useState('')
@@ -221,9 +231,7 @@ export function TestnetPanel({
     const timer = window.setInterval(tick, 1000)
     return () => window.clearInterval(timer)
   }, [signing])
-  const toggleSection = (
-    next: 'send' | 'rename' | 'move' | 'delete' | 'token-info' | 'token-create' | 'token-delete',
-  ) => {
+  const toggleSection = (next: TokenSection | 'send' | 'rename' | 'move' | 'delete') => {
     setSection((current) => (current === next ? null : next))
     // Leaving a section discards anything typed into it and any pending review.
     setRecipient('')
@@ -248,13 +256,60 @@ export function TestnetPanel({
     setNewTokenSupply('')
     setConfirmingToken(false)
     setTokenToDelete('')
+    setTokenToRemove('')
     setTokenDeleteAcknowledged(false)
+    setSendTokenId('')
     setError('')
     setNotice('')
   }
-  const sendableTokens = [...(overview?.tokens ?? [])].sort((a, b) =>
+  const allTokens = [...(overview?.tokens ?? [])].sort((a, b) =>
     tokenLabel(a).localeCompare(tokenLabel(b)),
   )
+  const sendableTokens = allTokens.filter((token) => !hiddenTokens.includes(token.token_id))
+  const hiddenHere = allTokens.length - sendableTokens.length
+  const assetTokens = showHidden ? allTokens : sendableTokens
+  const handleAddToken = () =>
+    run(async () => {
+      if (!tokenDetails) return
+      const result = await invoke<{ transactionId: string }>('associate_token', {
+        walletId: wallet.id,
+        accountId: account,
+        tokenId: tokenDetails.token_id,
+      })
+      toggleSection('token-add')
+      void watchTransaction(result.transactionId, 'Adding token', async () => {
+        await retry(loadOverview, 2)
+      })
+    })
+  const handleRemoveToken = () =>
+    run(async () => {
+      const result = await invoke<{ transactionId: string }>('dissociate_token', {
+        walletId: wallet.id,
+        accountId: account,
+        tokenId: tokenToRemove,
+      })
+      toggleSection('token-remove')
+      void watchTransaction(result.transactionId, 'Removing token', async () => {
+        await retry(loadOverview, 2)
+      })
+    })
+  const handleSetHidden = (tokenId: string, hidden: boolean) =>
+    run(async () => {
+      setHiddenTokens(
+        await invoke<string[]>('set_token_hidden', { walletId: wallet.id, tokenId, hidden }),
+      )
+    })
+  useEffect(() => {
+    let current = true
+    invoke<string[]>('get_hidden_tokens', { walletId: wallet.id })
+      .then((ids) => {
+        if (current) setHiddenTokens(ids ?? [])
+      })
+      .catch(() => {})
+    return () => {
+      current = false
+    }
+  }, [wallet.id])
   const decimalsValid = /^\d{1,2}$/.test(newTokenDecimals) && Number(newTokenDecimals) <= 18
   const handleReviewToken = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -515,6 +570,7 @@ export function TestnetPanel({
     setConfirming(false)
     setSigning(null)
     setSignatureText('')
+    setSendTokenId('')
   }
 
   const handlePrepare = () => run(async () => {
@@ -687,7 +743,24 @@ export function TestnetPanel({
     })
   }
 
+  const sendToken = allTokens.find((token) => token.token_id === sendTokenId)
+
   const handleSend = () => run(async () => {
+    if (sendToken) {
+      const result = await invoke<{ transactionId: string }>('send_token', {
+        walletId: wallet.id,
+        fromAccount: account,
+        recipient: recipient.trim(),
+        tokenId: sendToken.token_id,
+        amount: amount.trim(),
+        memo,
+      })
+      resetSend()
+      void watchTransaction(result.transactionId, `Sending ${tokenLabel(sendToken)}`, async () => {
+        await retry(loadOverview, 2)
+      })
+      return
+    }
     const result = await invoke<{ transactionId: string }>('send_hbar', {
       walletId: wallet.id,
       fromAccount: account,
@@ -803,9 +876,13 @@ export function TestnetPanel({
               onSelect={(id) => {
                 if (id === 'hbar') {
                   toggleSection('send')
-                } else {
+                } else if (isWatchOnly) {
                   setSection(null)
-                  setNotice('Sending tokens is not available yet.')
+                  setNotice('Sending tokens from a watch-only wallet is not available yet.')
+                } else {
+                  toggleSection('send')
+                  setSection('send')
+                  setSendTokenId(id.slice('token:'.length))
                 }
               }}
             />
@@ -821,6 +898,19 @@ export function TestnetPanel({
               entries={[
                 { kind: 'heading', label: 'Holding' },
                 { id: 'token-info', label: 'Token info' },
+                {
+                  id: 'token-add',
+                  label: 'Associate token',
+                  detail: isWatchOnly ? 'needs a signer' : undefined,
+                  disabled: isWatchOnly,
+                },
+                {
+                  id: 'token-remove',
+                  label: 'Remove token',
+                  detail: isWatchOnly ? 'needs a signer' : undefined,
+                  disabled: isWatchOnly,
+                },
+                { id: 'token-hide', label: 'Hide or show tokens' },
                 { kind: 'heading', label: 'Issuing' },
                 {
                   id: 'token-create',
@@ -836,9 +926,7 @@ export function TestnetPanel({
                   danger: true,
                 },
               ]}
-              onSelect={(id) =>
-                toggleSection(id as 'token-info' | 'token-create' | 'token-delete')
-              }
+              onSelect={(id) => toggleSection(id as TokenSection)}
             />
             <DropdownMenu
               label="Account management"
@@ -939,6 +1027,147 @@ export function TestnetPanel({
               )}
             </dl>
           )}
+        </div>
+      )}
+
+      {account && !isWatchOnly && section === 'token-add' && (
+        <div className="testnet-send">
+          <h3 className="section-title">Associate token</h3>
+          <form className="testnet-link-form" onSubmit={handleLookupToken} noValidate>
+            <label htmlFor={`token-add-id-${wallet.id}`}>Token ID</label>
+            <input
+              id={`token-add-id-${wallet.id}`}
+              autoComplete="off"
+              placeholder="0.0.12345"
+              maxLength={32}
+              value={tokenQuery}
+              onChange={(event) => setTokenQuery(event.target.value)}
+            />
+            <div className="button-pair">
+              <button className="secondary-button" type="submit" disabled={isBusy}>
+                Look up token
+              </button>
+              <button className="secondary-button" type="button" disabled={isBusy} onClick={() => toggleSection('token-add')}>
+                Cancel
+              </button>
+            </div>
+          </form>
+          {tokenDetails && (
+            <div className="testnet-confirm" role="group" aria-label="Confirm adding token">
+              <p>Please check that this is the token you expect. Anyone can create a token with any name.</p>
+              <dl>
+                <dt>Name</dt>
+                <dd>{tokenDetails.name || '(none)'}</dd>
+                <dt>Symbol</dt>
+                <dd>{tokenDetails.symbol || '(none)'}</dd>
+                <dt>Token ID</dt>
+                <dd>{tokenDetails.token_id}</dd>
+                <dt>Decimals</dt>
+                <dd>{tokenDetails.decimals}</dd>
+                <dt>Total supply</dt>
+                <dd>{formatTokenAmount(tokenDetails.total_supply, tokenDetails.decimals)}</dd>
+                <dt>Treasury</dt>
+                <dd>{tokenDetails.treasury}</dd>
+                <dt>Account</dt>
+                <dd>{accountLabel}</dd>
+                <dt>Fee</dt>
+                <dd>A small network fee, about 0.05 USD in HBAR</dd>
+              </dl>
+              {tokenDetails.deleted && <p className="error-message">This token has been deleted.</p>}
+              <button
+                className="primary-button"
+                type="button"
+                disabled={isBusy || tokenDetails.deleted}
+                onClick={handleAddToken}
+              >
+                Sign and add token
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {account && !isWatchOnly && section === 'token-remove' && (
+        <div className="testnet-send">
+          <h3 className="section-title">Remove token</h3>
+          <div className="testnet-link-form">
+            <label htmlFor={`token-remove-${wallet.id}`}>Token to remove</label>
+            <select
+              id={`token-remove-${wallet.id}`}
+              value={tokenToRemove}
+              onChange={(event) => setTokenToRemove(event.target.value)}
+            >
+              <option value="">Choose a token</option>
+              {allTokens.map((token) => (
+                <option key={token.token_id} value={token.token_id} disabled={token.balance !== '0'}>
+                  {tokenLabel(token)} ({token.token_id})
+                  {token.balance !== '0'
+                    ? ` - balance ${formatTokenAmount(token.balance, token.decimals)}, must be 0`
+                    : ''}
+                </option>
+              ))}
+            </select>
+            <p className="field-hint">
+              Removing a token stops this account from holding it. The balance must be zero, and the token's
+              treasury account cannot remove its own token. A small network fee is paid in HBAR.
+            </p>
+            <div className="button-pair">
+              <button
+                className="primary-button"
+                type="button"
+                disabled={isBusy || !tokenToRemove}
+                onClick={handleRemoveToken}
+              >
+                Sign and remove token
+              </button>
+              <button className="secondary-button" type="button" disabled={isBusy} onClick={() => toggleSection('token-remove')}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {account && section === 'token-hide' && (
+        <div className="testnet-send">
+          <h3 className="section-title">Hide or show tokens</h3>
+          <p className="field-hint">
+            Hidden tokens stay in the account but are left out of Account assets and the Send menu. This applies to
+            every account of this wallet and changes nothing on the network.
+          </p>
+          {allTokens.length === 0 ? (
+            <p className="field-hint">This account holds no tokens.</p>
+          ) : (
+            <ul className="testnet-transactions testnet-assets" aria-label="Tokens">
+              {allTokens.map((token) => {
+                const hidden = hiddenTokens.includes(token.token_id)
+                return (
+                  <li key={token.token_id}>
+                    <span className="testnet-kind">
+                      {tokenLabel(token)}
+                      {token.name && token.symbol ? (
+                        <span className="testnet-token-name"> {token.name}</span>
+                      ) : null}
+                    </span>
+                    <button
+                      className="secondary-button"
+                      type="button"
+                      disabled={isBusy}
+                      aria-label={`${hidden ? 'Show' : 'Hide'} ${tokenLabel(token)}`}
+                      onClick={() => void handleSetHidden(token.token_id, !hidden)}
+                    >
+                      {hidden ? 'Show' : 'Hide'}
+                    </button>
+                  </li>
+                )
+              })}
+            </ul>
+          )}
+          <div className="button-pair">
+            <button className="secondary-button" type="button" onClick={() => toggleSection('token-hide')}>
+              Close
+            </button>
+          </div>
         </div>
       )}
 
@@ -1081,7 +1310,7 @@ export function TestnetPanel({
 
       {account && section === 'send' && (
         <div className="testnet-send">
-          <h3 className="section-title">Send HBAR</h3>
+          <h3 className="section-title">{sendToken ? `Send ${tokenLabel(sendToken)}` : 'Send HBAR'}</h3>
           {signing ? renderSigning('Submit signed transfer', resetSend) : confirming ? (
             <div className="testnet-confirm" role="group" aria-label="Confirm transfer">
               <p>Please check the details. A transfer cannot be undone.</p>
@@ -1093,7 +1322,7 @@ export function TestnetPanel({
                 <dt>To</dt>
                 <dd>{recipient.trim()}</dd>
                 <dt>Amount</dt>
-                <dd>{amount.trim()} ℏ</dd>
+                <dd>{amount.trim()} {sendToken ? tokenLabel(sendToken) : 'ℏ'}</dd>
                 {memo && (
                   <>
                     <dt>Memo</dt>
@@ -1117,6 +1346,11 @@ export function TestnetPanel({
                 <button className="secondary-button" type="button" disabled={isBusy} onClick={() => setConfirming(false)}>
                   Back
                 </button>
+                {error && (
+                  <button className="secondary-button" type="button" disabled={isBusy} onClick={() => toggleSection('send')}>
+                    Close
+                  </button>
+                )}
               </div>
             </div>
           ) : (
@@ -1176,10 +1410,10 @@ export function TestnetPanel({
               )}
               <input
                 id={`send-amount-${wallet.id}`}
-                aria-label="Amount (ℏ)"
+                aria-label={sendToken ? 'Amount' : 'Amount (ℏ)'}
                 autoComplete="off"
                 inputMode="decimal"
-                placeholder="Enter send amount here (ℏ)"
+                placeholder={sendToken ? 'Enter send amount here' : 'Enter send amount here (ℏ)'}
                 maxLength={20}
                 required
                 value={amount}
@@ -1199,7 +1433,7 @@ export function TestnetPanel({
                   Review transfer
                 </button>
                 <button className="secondary-button" type="button" disabled={isBusy} onClick={() => toggleSection('send')}>
-                  Cancel
+                  Close
                 </button>
               </div>
             </form>
@@ -1570,20 +1804,34 @@ export function TestnetPanel({
             {refreshButton('Refresh transactions')}
             <h3>{showAssets ? 'Account assets' : 'Recent transactions'}</h3>
           </div>
+          {showAssets && hiddenHere > 0 && (
+            <button
+              className="link-button"
+              type="button"
+              onClick={() => setShowHidden((current) => !current)}
+            >
+              {showHidden ? 'Hide hidden tokens' : `Show hidden tokens (${hiddenHere})`}
+            </button>
+          )}
           {showAssets ? (
             <ul className="testnet-transactions testnet-assets" aria-label="Account assets">
               <li>
                 <span className="testnet-kind">HBAR</span>
-                <span className="testnet-net">{formatHbar(overview.balance_tinybars)} ℏ</span>
+                <span className="testnet-token-id" />
+                <span className="testnet-net">{formatHbar(overview.balance_tinybars, 2)} ℏ</span>
               </li>
-              {sendableTokens.map((token) => (
+              {assetTokens.map((token) => (
                 <li key={token.token_id}>
                   <span className="testnet-kind">
                     {tokenLabel(token)}
                     {token.name && token.symbol ? (
                       <span className="testnet-token-name"> {token.name}</span>
                     ) : null}
+                    {hiddenTokens.includes(token.token_id) ? (
+                      <span className="testnet-token-name"> (hidden)</span>
+                    ) : null}
                   </span>
+                  <span className="testnet-token-id">{token.token_id}</span>
                   <span className="testnet-net">{formatTokenAmount(token.balance, token.decimals)}</span>
                 </li>
               ))}
