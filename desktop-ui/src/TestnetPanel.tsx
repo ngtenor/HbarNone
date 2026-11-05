@@ -876,6 +876,8 @@ export function TestnetPanel({
               onSelect={(id) => {
                 if (id === 'hbar') {
                   toggleSection('send')
+                  // Switching from a token send to HBAR must keep the section open.
+                  if (sendTokenId) setSection('send')
                 } else if (isWatchOnly) {
                   setSection(null)
                   setNotice('Sending tokens from a watch-only wallet is not available yet.')
@@ -906,7 +908,7 @@ export function TestnetPanel({
                 },
                 {
                   id: 'token-remove',
-                  label: 'Remove token',
+                  label: 'Disassociate token',
                   detail: isWatchOnly ? 'needs a signer' : undefined,
                   disabled: isWatchOnly,
                 },
@@ -1089,7 +1091,7 @@ export function TestnetPanel({
 
       {account && !isWatchOnly && section === 'token-remove' && (
         <div className="testnet-send">
-          <h3 className="section-title">Remove token</h3>
+          <h3 className="section-title">Disassociate token</h3>
           <div className="testnet-link-form">
             <label htmlFor={`token-remove-${wallet.id}`}>Token to remove</label>
             <select
