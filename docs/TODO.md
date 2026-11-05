@@ -242,7 +242,7 @@ HTS tokens. Use it to pick up cold.
    aligned, midway between asset and balance; balances are at the far right;
    the HBAR row leaves it empty).
 4. **Menu names:** in Token management, "Associate token" (was "Add token") is association and
-   "Remove token" is dissociation.
+   "Disassociate token" (was "Remove token") is dissociation.
 5. **Linux check script** `scripts/linux-token-check.sh`: fetches and checks
    out `feature/token-associate-hide`, sets aside local lockfile changes with
    `git stash` (npm rewrites them on that machine), then runs the Rust tests,

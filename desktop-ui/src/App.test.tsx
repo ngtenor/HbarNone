@@ -1412,6 +1412,28 @@ describe('watch-only wallet', () => {
     expect(screen.queryByRole('heading', { name: 'Send HBAR' })).not.toBeInTheDocument()
   })
 
+  it('switches straight from a token send to an HBAR send with one click', async () => {
+    const user = userEvent.setup()
+    installBackend({
+      wallets: [wallet('w1', 'Savings', '0.0.1001')],
+      overview: {
+        account_id: 'x',
+        balance_tinybars: 150_000_000,
+        transactions: [],
+        tokens: [{ token_id: '0.0.8', symbol: 'ALP', name: 'Alpha', balance: '12345', decimals: 2 }],
+      },
+    })
+    render(<App />)
+    await unlock(user)
+    await openAccount(user, 'Savings')
+    await screen.findByRole('button', { name: 'Refresh transactions' })
+    await user.click(screen.getByRole('button', { name: 'Send' }))
+    await user.click(screen.getByRole('menuitem', { name: /ALP/ }))
+    expect(screen.getByRole('heading', { name: 'Send ALP' })).toBeInTheDocument()
+    await chooseMenu(user, 'Send', 'HBAR')
+    expect(screen.getByRole('heading', { name: 'Send HBAR' })).toBeInTheDocument()
+  })
+
   it('sends a token with the chosen amount after review', async () => {
     const user = userEvent.setup()
     installBackend({
@@ -1562,7 +1584,7 @@ describe('watch-only wallet', () => {
       tokenId: '0.0.8',
     })
 
-    await chooseMenu(user, 'Token management', 'Remove token')
+    await chooseMenu(user, 'Token management', 'Disassociate token')
     const submit = screen.getByRole('button', { name: 'Sign and remove token' })
     expect(submit).toBeDisabled()
     expect(screen.getByRole('option', { name: /ZED.*must be 0/ })).toBeDisabled()
@@ -1630,7 +1652,7 @@ describe('watch-only wallet', () => {
     await openAccount(user, 'Watcher')
     await user.click(screen.getByRole('button', { name: 'Token management' }))
     expect(screen.getByRole('menuitem', { name: /Associate token/ })).toBeDisabled()
-    expect(screen.getByRole('menuitem', { name: /Remove token/ })).toBeDisabled()
+    expect(screen.getByRole('menuitem', { name: /Disassociate token/ })).toBeDisabled()
     expect(screen.getByRole('menuitem', { name: /Hide or show tokens/ })).toBeEnabled()
   })
 
