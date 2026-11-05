@@ -31,6 +31,7 @@ type Backend = {
   sendError: string | null
   transactionResult?: string
   hidden: string[]
+  supplyTokens?: string[]
   detection: { keyType: string | null; accounts: string[] }
   allowExternalSends: boolean
   allowExternalDeletes: boolean
@@ -200,6 +201,8 @@ function installBackend(overrides: Partial<Backend> = {}) {
         }
       case 'get_hidden_tokens':
         return [...backend.hidden]
+      case 'get_supply_tokens':
+        return backend.supplyTokens ?? args?.tokenIds ?? []
       case 'set_token_hidden':
         backend.hidden = args?.hidden
           ? [...backend.hidden.filter((id) => id !== args.tokenId), String(args.tokenId)]
@@ -215,6 +218,7 @@ function installBackend(overrides: Partial<Backend> = {}) {
         if (backend.sendError) throw new Error(backend.sendError)
         return { transactionId: '0.0.1001-1700000000-000000009' }
       case 'delete_token':
+      case 'change_token_supply':
         if (backend.sendError) throw new Error(backend.sendError)
         return { transactionId: '0.0.1001-1700000000-000000010' }
       case 'get_account_overview':
@@ -1552,6 +1556,70 @@ describe('watch-only wallet', () => {
     })
   })
 
+  it('greys out Mint and Burn when the account holds no supply-key token', async () => {
+    const user = userEvent.setup()
+    installBackend({
+      wallets: [wallet('w1', 'Savings', '0.0.1001')],
+      supplyTokens: [],
+      overview: {
+        account_id: 'x',
+        balance_tinybars: 150_000_000,
+        transactions: [],
+        tokens: [{ token_id: '0.0.8', symbol: 'ALP', name: 'Alpha', balance: '12345', decimals: 2 }],
+      },
+    })
+    render(<App />)
+    await unlock(user)
+    await openAccount(user, 'Savings')
+    await screen.findByRole('button', { name: 'Refresh transactions' })
+    await user.click(screen.getByRole('button', { name: 'Token management' }))
+    expect(screen.getByRole('menuitem', { name: /Mint token/ })).toBeDisabled()
+    expect(screen.getByRole('menuitem', { name: /Burn token/ })).toBeDisabled()
+  })
+
+  it('mints and burns a chosen token only with a valid amount', async () => {
+    const user = userEvent.setup()
+    installBackend({
+      wallets: [wallet('w1', 'Savings', '0.0.1001')],
+      overview: {
+        account_id: 'x',
+        balance_tinybars: 150_000_000,
+        transactions: [],
+        tokens: [{ token_id: '0.0.8', symbol: 'ALP', name: 'Alpha', balance: '12345', decimals: 2 }],
+      },
+    })
+    render(<App />)
+    await unlock(user)
+    await openAccount(user, 'Savings')
+    await screen.findByRole('button', { name: 'Refresh transactions' })
+    await chooseMenu(user, 'Token management', 'Mint token')
+    await user.click(screen.getByRole('button', { name: 'Sign and mint' }))
+    expect(await screen.findByText('Choose a token.')).toBeInTheDocument()
+    expect(commandsCalled('change_token_supply')).toHaveLength(0)
+    await user.selectOptions(screen.getByLabelText('Token'), '0.0.8')
+    await user.type(screen.getByLabelText('Amount to mint (whole tokens)'), '0')
+    await user.click(screen.getByRole('button', { name: 'Sign and mint' }))
+    expect(await screen.findByText(/greater than zero/)).toBeInTheDocument()
+    await user.clear(screen.getByLabelText('Amount to mint (whole tokens)'))
+    await user.type(screen.getByLabelText('Amount to mint (whole tokens)'), '12.5')
+    await user.click(screen.getByRole('button', { name: 'Sign and mint' }))
+    await waitFor(() => expect(commandsCalled('change_token_supply')).toHaveLength(1))
+    expect(commandsCalled('change_token_supply')[0].args).toEqual({
+      walletId: 'w1',
+      accountId: '0.0.1001',
+      tokenId: '0.0.8',
+      amount: '12.5',
+      mint: true,
+    })
+
+    await chooseMenu(user, 'Token management', 'Burn token')
+    await user.selectOptions(screen.getByLabelText('Token'), '0.0.8')
+    await user.type(screen.getByLabelText('Amount to burn (whole tokens)'), '3')
+    await user.click(screen.getByRole('button', { name: 'Sign and burn' }))
+    await waitFor(() => expect(commandsCalled('change_token_supply')).toHaveLength(2))
+    expect(commandsCalled('change_token_supply')[1].args).toMatchObject({ amount: '3', mint: false })
+  })
+
   it('adds a token only after a lookup and review, and removes one with a zero balance', async () => {
     const user = userEvent.setup()
     installBackend({
@@ -1667,6 +1735,8 @@ describe('watch-only wallet', () => {
     await user.click(screen.getByRole('button', { name: 'Token management' }))
     expect(screen.getByRole('menuitem', { name: /Create token/ })).toBeDisabled()
     expect(screen.getByRole('menuitem', { name: /Delete token/ })).toBeDisabled()
+    expect(screen.getByRole('menuitem', { name: /Mint token/ })).toBeDisabled()
+    expect(screen.getByRole('menuitem', { name: /Burn token/ })).toBeDisabled()
   })
 
   it('closes the Send, Move and Delete sections with Cancel', async () => {

@@ -567,6 +567,114 @@ async fn delete_token(
     })
 }
 
+/// Lists which of `token_ids` this account can mint and burn: fungible, not
+/// deleted, this wallet's key is the supply key and this account is the treasury.
+#[tauri::command]
+async fn get_supply_tokens(
+    wallet_id: String,
+    account_id: String,
+    token_ids: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<Vec<String>, String> {
+    let account = testnet_account_of(&state, &wallet_id, &account_id)?;
+    let wallet_key = lock_service(&state)?
+        .wallet_public_key(&wallet_id)?
+        .to_ascii_lowercase();
+    let mirror = MirrorClient::testnet()?;
+    let mut found = Vec::new();
+    for token_id in token_ids.iter().take(50) {
+        let Ok(token_id) = validate_account_id(token_id) else {
+            continue;
+        };
+        let Ok(Some(info)) = mirror.token_info(&token_id).await else {
+            continue;
+        };
+        if !info.deleted
+            && info.token_type == "FUNGIBLE_COMMON"
+            && info.treasury == account
+            && info.supply_key.as_deref() == Some(wallet_key.as_str())
+        {
+            found.push(token_id);
+        }
+    }
+    Ok(found)
+}
+
+/// Mints or burns a token's supply after checking on the mirror node that this
+/// wallet's key is the supply key and this account is the treasury, so a doomed
+/// transaction never costs a fee. `amount` is in whole tokens, such as `12.5`.
+#[tauri::command]
+async fn change_token_supply(
+    wallet_id: String,
+    account_id: String,
+    token_id: String,
+    amount: String,
+    mint: bool,
+    state: State<'_, AppState>,
+) -> Result<SendResult, String> {
+    let payer = testnet_account_of(&state, &wallet_id, &account_id)?;
+    let token_id = validate_account_id(&token_id)?;
+    let mirror = MirrorClient::testnet()?;
+    let info = mirror
+        .token_info(&token_id)
+        .await?
+        .ok_or_else(|| "The mirror node does not know this token.".to_string())?;
+    if info.deleted {
+        return Err("This token has been deleted.".to_string());
+    }
+    if info.token_type != "FUNGIBLE_COMMON" {
+        return Err("Only fungible tokens are supported for now.".to_string());
+    }
+    let wallet_key = lock_service(&state)?
+        .wallet_public_key(&wallet_id)?
+        .to_ascii_lowercase();
+    match info.supply_key.as_deref() {
+        Some(key) if key == wallet_key => {}
+        Some(_) => return Err("This wallet's key is not the token's supply key.".to_string()),
+        None if info.has_supply_key => {
+            return Err(
+                "This token's supply key is not one this wallet can sign with.".to_string(),
+            );
+        }
+        None => {
+            return Err("This token has no supply key, so its supply cannot change.".to_string());
+        }
+    }
+    if info.treasury != payer {
+        return Err("Only the token's treasury account can mint or burn it here.".to_string());
+    }
+    let units = hedera_tx::submit::parse_token_amount(&amount, info.decimals)?;
+    if units == 0 {
+        return Err("Amount must be greater than zero.".to_string());
+    }
+    if !mint {
+        let held: u64 = mirror
+            .account_overview(&payer)
+            .await?
+            .and_then(|o| o.tokens.into_iter().find(|t| t.token_id == token_id))
+            .map(|t| t.balance.parse().unwrap_or(0))
+            .unwrap_or(0);
+        if units > held {
+            return Err("The treasury balance is too low to burn that amount.".to_string());
+        }
+    }
+    let (key_type, secret) = lock_service(&state)?
+        .with_wallet_key(&wallet_id, |key_type, secret| {
+            Ok((key_type, Zeroizing::new(*secret)))
+        })?;
+    let receipt = hedera_tx::submit::change_testnet_token_supply(
+        &payer,
+        (key_type, &secret),
+        &token_id,
+        units,
+        mint,
+    )
+    .await?;
+    Ok(SendResult {
+        transaction_id: receipt.transaction_id,
+    })
+}
+
 /// Signs in the backend with the wallet's own key and submits to Testnet only.
 #[tauri::command]
 async fn send_hbar(
@@ -1440,6 +1548,8 @@ fn main() {
             get_token_info,
             create_token,
             delete_token,
+            change_token_supply,
+            get_supply_tokens,
             associate_token,
             send_token,
             dissociate_token,

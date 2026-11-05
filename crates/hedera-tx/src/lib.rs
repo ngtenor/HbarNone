@@ -108,10 +108,24 @@ pub struct TransactionBody {
     pub token_creation: Option<TokenCreateBody>,
     #[prost(message, optional, tag = "35")]
     pub token_deletion: Option<TokenDeleteBody>,
+    #[prost(message, optional, tag = "37")]
+    pub token_mint: Option<TokenSupplyBody>,
+    #[prost(message, optional, tag = "38")]
+    pub token_burn: Option<TokenSupplyBody>,
     #[prost(message, optional, tag = "40")]
     pub token_association: Option<TokenAssociationBody>,
     #[prost(message, optional, tag = "41")]
     pub token_dissociation: Option<TokenAssociationBody>,
+}
+
+/// The body of both `TokenMint` and `TokenBurn` for a fungible token. The
+/// amount is in the token's smallest unit.
+#[derive(Clone, PartialEq, Message)]
+pub struct TokenSupplyBody {
+    #[prost(message, optional, tag = "1")]
+    pub token: Option<TokenId>,
+    #[prost(uint64, tag = "2")]
+    pub amount: u64,
 }
 
 /// The body of both `TokenAssociate` and `TokenDissociate`.
@@ -294,6 +308,8 @@ pub fn transfer_body_bytes_valid_for(
         token_deletion: None,
         token_association: None,
         token_dissociation: None,
+        token_mint: None,
+        token_burn: None,
         crypto_transfer: Some(CryptoTransferBody {
             transfers: Some(TransferList {
                 amounts: vec![
@@ -358,6 +374,8 @@ pub fn token_transfer_body_bytes(p: &TokenTransferParams) -> Result<Vec<u8>, Str
         token_deletion: None,
         token_association: None,
         token_dissociation: None,
+        token_mint: None,
+        token_burn: None,
         crypto_transfer: Some(CryptoTransferBody {
             transfers: None,
             token_transfers: vec![TokenTransferList {
@@ -440,6 +458,8 @@ pub fn create_account_body_bytes_valid_for(
         token_deletion: None,
         token_association: None,
         token_dissociation: None,
+        token_mint: None,
+        token_burn: None,
     };
     Ok(body.encode_to_vec())
 }
@@ -494,6 +514,8 @@ pub fn delete_account_body_bytes_valid_for(
         token_deletion: None,
         token_association: None,
         token_dissociation: None,
+        token_mint: None,
+        token_burn: None,
         crypto_delete: Some(CryptoDeleteBody {
             transfer_account: Some(account(p.transfer_account)),
             delete_account: Some(account(p.delete_account)),
@@ -550,6 +572,8 @@ pub fn change_key_body_bytes(p: &ChangeKeyParams) -> Result<Vec<u8>, String> {
         token_deletion: None,
         token_association: None,
         token_dissociation: None,
+        token_mint: None,
+        token_burn: None,
         crypto_update: Some(CryptoUpdateBody {
             account_to_update: Some(account(p.account)),
             key: Some(key_message(p.new_key_type, &p.new_public_key)?),
@@ -619,6 +643,8 @@ pub fn create_token_body_bytes(p: &CreateTokenParams) -> Result<Vec<u8>, String>
         token_deletion: None,
         token_association: None,
         token_dissociation: None,
+        token_mint: None,
+        token_burn: None,
         token_creation: Some(TokenCreateBody {
             name: p.name.clone(),
             symbol: p.symbol.clone(),
@@ -666,6 +692,8 @@ pub fn delete_token_body_bytes(p: &DeleteTokenParams) -> Result<Vec<u8>, String>
         token_creation: None,
         token_association: None,
         token_dissociation: None,
+        token_mint: None,
+        token_burn: None,
         token_deletion: Some(TokenDeleteBody {
             token: Some(TokenId {
                 shard: p.token.0,
@@ -727,6 +755,67 @@ pub fn token_association_body_bytes(
         token_deletion: None,
         token_association: association,
         token_dissociation: dissociation,
+        token_mint: None,
+        token_burn: None,
+    };
+    Ok(body.encode_to_vec())
+}
+
+/// Parameters of a `TokenMint` or `TokenBurn` of a fungible token. The payer
+/// signs along with the token's supply key; the treasury account gains or loses
+/// the amount (in the token's smallest unit).
+pub struct TokenSupplyParams {
+    pub payer: (i64, i64, i64),
+    pub token: (i64, i64, i64),
+    pub amount: u64,
+    pub node: (i64, i64, i64),
+    pub valid_start_seconds: i64,
+    pub valid_start_nanos: i32,
+    pub max_fee_tinybars: u64,
+}
+
+pub fn token_supply_body_bytes(p: &TokenSupplyParams, mint: bool) -> Result<Vec<u8>, String> {
+    if p.token.0 != 0 || p.token.1 != 0 || p.token.2 <= 0 {
+        return Err("Invalid token ID.".into());
+    }
+    if p.amount == 0 || p.amount > i64::MAX as u64 {
+        return Err("Enter an amount greater than zero.".into());
+    }
+    let change = TokenSupplyBody {
+        token: Some(TokenId {
+            shard: p.token.0,
+            realm: p.token.1,
+            num: p.token.2,
+        }),
+        amount: p.amount,
+    };
+    let (token_mint, token_burn) = if mint {
+        (Some(change), None)
+    } else {
+        (None, Some(change))
+    };
+    let body = TransactionBody {
+        transaction_id: Some(TransactionId {
+            valid_start: Some(Timestamp {
+                seconds: p.valid_start_seconds,
+                nanos: p.valid_start_nanos,
+            }),
+            account: Some(account(p.payer)),
+        }),
+        node_account: Some(account(p.node)),
+        fee: p.max_fee_tinybars,
+        valid_duration: Some(Duration { seconds: 120 }),
+        memo: String::new(),
+        crypto_create: None,
+        crypto_delete: None,
+        crypto_transfer: None,
+        crypto_update: None,
+        token_creation: None,
+        token_deletion: None,
+        token_association: None,
+        token_dissociation: None,
+        token_mint,
+        token_burn,
     };
     Ok(body.encode_to_vec())
 }
@@ -969,6 +1058,31 @@ mod tests {
             ..p
         };
         assert!(token_association_body_bytes(&bad, true).is_err());
+    }
+
+    #[test]
+    fn token_mint_and_burn_bodies_carry_token_and_amount() {
+        let p = TokenSupplyParams {
+            payer: (0, 0, 1001),
+            token: (0, 0, 4242),
+            amount: 2500,
+            node: (0, 0, 3),
+            valid_start_seconds: 1_700_000_000,
+            valid_start_nanos: 5,
+            max_fee_tinybars: 100_000_000,
+        };
+        let mint =
+            TransactionBody::decode(token_supply_body_bytes(&p, true).unwrap().as_slice()).unwrap();
+        let minted = mint.token_mint.unwrap();
+        assert_eq!(minted.token.unwrap().num, 4242);
+        assert_eq!(minted.amount, 2500);
+        assert!(mint.token_burn.is_none());
+        let burn = TransactionBody::decode(token_supply_body_bytes(&p, false).unwrap().as_slice())
+            .unwrap();
+        assert_eq!(burn.token_burn.unwrap().amount, 2500);
+        assert!(burn.token_mint.is_none());
+        let zero = TokenSupplyParams { amount: 0, ..p };
+        assert!(token_supply_body_bytes(&zero, true).is_err());
     }
 
     #[test]

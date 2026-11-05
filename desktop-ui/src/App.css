@@ -751,6 +751,11 @@ h2.section-title,
   padding: 0;
 }
 
+.home-wallets .wallet-open-button {
+  align-items: flex-start;
+  align-self: start;
+}
+
 .home-columns {
   box-sizing: border-box;
   padding: 0 0 4px;
