@@ -68,7 +68,8 @@ type TokenSection =
   | 'token-hide'
   | 'token-create'
   | 'token-delete'
-
+  | 'token-mint'
+  | 'token-burn'
 const TINYBARS_PER_HBAR = 100_000_000
 
 function formatHbar(tinybars: number, maxDecimals = 8) {
@@ -209,9 +210,13 @@ export function TestnetPanel({
   const [newTokenSupply, setNewTokenSupply] = useState('')
   const [confirmingToken, setConfirmingToken] = useState(false)
   const [tokenToDelete, setTokenToDelete] = useState('')
+  const [supplyToken, setSupplyToken] = useState('')
+  const [supplyTokenIds, setSupplyTokenIds] = useState<string[]>([])
+  const [supplyAmount, setSupplyAmount] = useState('')
   const [tokenDeleteAcknowledged, setTokenDeleteAcknowledged] = useState(false)
   const [sendTokenId, setSendTokenId] = useState('')
   const isWatchOnly = wallet.secret_kind === 'watchonly'
+  const noSupplyTokens = supplyTokenIds.length === 0
   const [signing, setSigning] = useState<SigningRequest | null>(null)
   const [signatureText, setSignatureText] = useState('')
   const [scanning, setScanning] = useState(false)
@@ -256,6 +261,8 @@ export function TestnetPanel({
     setNewTokenSupply('')
     setConfirmingToken(false)
     setTokenToDelete('')
+    setSupplyToken('')
+    setSupplyAmount('')
     setTokenToRemove('')
     setTokenDeleteAcknowledged(false)
     setSendTokenId('')
@@ -351,6 +358,30 @@ export function TestnetPanel({
         await retry(loadOverview, 2)
       })
     })
+  const handleChangeSupply = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    const mint = section === 'token-mint'
+    setError('')
+    if (!supplyToken) {
+      setError('Choose a token.')
+    } else if (!/^(\d+\.?\d*|\.\d+)$/.test(supplyAmount.trim()) || Number(supplyAmount) === 0) {
+      setError('Enter an amount greater than zero, such as 100 or 12.5.')
+    } else {
+      void run(async () => {
+        const result = await invoke<{ transactionId: string }>('change_token_supply', {
+          walletId: wallet.id,
+          accountId: account,
+          tokenId: supplyToken,
+          amount: supplyAmount.trim(),
+          mint,
+        })
+        toggleSection(mint ? 'token-mint' : 'token-burn')
+        void watchTransaction(result.transactionId, mint ? 'Minting token' : 'Burning token', async () => {
+          await retry(loadOverview, 2)
+        })
+      })
+    }
+  }
   const handleLookupToken = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     setTokenDetails(null)
@@ -388,6 +419,30 @@ export function TestnetPanel({
 
   // Every refresh control reloads everything shown for the account.
   const handleRefresh = () => run(loadOverview)
+
+  // Mint and burn are only offered for tokens this account is the supply-key treasury of.
+  const heldTokenKey = (overview?.tokens ?? []).map((token) => token.token_id).join(',')
+  useEffect(() => {
+    let current = true
+    if (isWatchOnly || !account || !heldTokenKey) {
+      setSupplyTokenIds([])
+      return
+    }
+    invoke<string[]>('get_supply_tokens', {
+      walletId: wallet.id,
+      accountId: account,
+      tokenIds: heldTokenKey.split(','),
+    })
+      .then((ids) => {
+        if (current) setSupplyTokenIds(ids ?? [])
+      })
+      .catch(() => {
+        if (current) setSupplyTokenIds([])
+      })
+    return () => {
+      current = false
+    }
+  }, [wallet.id, account, heldTokenKey, isWatchOnly])
 
   const refreshButton = (label: string) => (
     <button
@@ -921,6 +976,18 @@ export function TestnetPanel({
                   disabled: isWatchOnly,
                 },
                 {
+                  id: 'token-mint',
+                  label: 'Mint token',
+                  detail: isWatchOnly ? 'needs a signer' : noSupplyTokens ? 'no supply key' : undefined,
+                  disabled: isWatchOnly || noSupplyTokens,
+                },
+                {
+                  id: 'token-burn',
+                  label: 'Burn token',
+                  detail: isWatchOnly ? 'needs a signer' : noSupplyTokens ? 'no supply key' : undefined,
+                  disabled: isWatchOnly || noSupplyTokens,
+                },
+                {
                   id: 'token-delete',
                   label: 'Delete token',
                   detail: isWatchOnly ? 'needs a signer' : undefined,
@@ -1307,6 +1374,59 @@ export function TestnetPanel({
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {account && !isWatchOnly && (section === 'token-mint' || section === 'token-burn') && (
+        <div className="testnet-send">
+          <h3 className="section-title">{section === 'token-mint' ? 'Mint token' : 'Burn token'}</h3>
+          <form className="testnet-link-form" onSubmit={handleChangeSupply} noValidate>
+            <label htmlFor={`token-supply-token-${wallet.id}`}>Token</label>
+            <select
+              id={`token-supply-token-${wallet.id}`}
+              value={supplyToken}
+              onChange={(event) => setSupplyToken(event.target.value)}
+            >
+              <option value="">Choose a token</option>
+              {sendableTokens
+                .filter((token) => supplyTokenIds.includes(token.token_id))
+                .map((token) => (
+                  <option key={token.token_id} value={token.token_id}>
+                    {tokenLabel(token)} ({token.token_id})
+                  </option>
+                ))}
+            </select>
+            <label htmlFor={`token-supply-amount-${wallet.id}`}>
+              {section === 'token-mint' ? 'Amount to mint (whole tokens)' : 'Amount to burn (whole tokens)'}
+            </label>
+            <input
+              id={`token-supply-amount-${wallet.id}`}
+              inputMode="decimal"
+              autoComplete="off"
+              value={supplyAmount}
+              onChange={(event) => setSupplyAmount(event.target.value)}
+            />
+            <p className="field-hint">
+              {section === 'token-mint'
+                ? 'New tokens are added to the treasury account. '
+                : 'Burned tokens are taken from the treasury account and cannot be recovered. '}
+              Only the token's supply key can do this, and the app checks that this wallet holds it and that this
+              account is the treasury before it signs. The fee is paid in HBAR.
+            </p>
+            <div className="button-pair">
+              <button className="primary-button" type="submit" disabled={isBusy}>
+                {section === 'token-mint' ? 'Sign and mint' : 'Sign and burn'}
+              </button>
+              <button
+                className="secondary-button"
+                type="button"
+                disabled={isBusy}
+                onClick={() => toggleSection(section === 'token-mint' ? 'token-mint' : 'token-burn')}
+              >
+                Cancel
+              </button>
+            </div>
+          </form>
         </div>
       )}
 

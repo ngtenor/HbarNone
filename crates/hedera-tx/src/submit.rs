@@ -13,11 +13,11 @@ use wallet_core::wallet_service::validate_account_id;
 
 use crate::{
     ChangeKeyParams, CreateAccountParams, CreateTokenParams, DeleteAccountParams,
-    DeleteTokenParams, MAX_TOKEN_DECIMALS, TokenAssociationParams, TokenTransferParams,
-    Transaction, TransactionResponse, TransferParams, change_key_body_bytes,
+    DeleteTokenParams, MAX_TOKEN_DECIMALS, TokenAssociationParams, TokenSupplyParams,
+    TokenTransferParams, Transaction, TransactionResponse, TransferParams, change_key_body_bytes,
     create_account_body_bytes, create_token_body_bytes, delete_account_body_bytes,
     delete_token_body_bytes, sign_body, sign_body_multi, token_association_body_bytes,
-    token_transfer_body_bytes, transfer_body_bytes,
+    token_supply_body_bytes, token_transfer_body_bytes, transfer_body_bytes,
 };
 
 /// Testnet node account 0.0.3 and its plain-gRPC endpoint.
@@ -35,6 +35,8 @@ const UPDATE_PATH: &str = "/proto.CryptoService/updateAccount";
 pub(crate) const DELETE_PATH: &str = "/proto.CryptoService/cryptoDelete";
 const TOKEN_CREATE_PATH: &str = "/proto.TokenService/createToken";
 const TOKEN_DELETE_PATH: &str = "/proto.TokenService/deleteToken";
+const TOKEN_MINT_PATH: &str = "/proto.TokenService/mintToken";
+const TOKEN_BURN_PATH: &str = "/proto.TokenService/burnToken";
 const TOKEN_ASSOCIATE_PATH: &str = "/proto.TokenService/associateTokens";
 const TOKEN_DISSOCIATE_PATH: &str = "/proto.TokenService/dissociateTokens";
 /// Largest opening balance the app will fund a new account with.
@@ -516,6 +518,47 @@ pub async fn delete_testnet_token(
     if response.precheck_code != 0 {
         return Err(format!(
             "The node rejected the token deletion: {}",
+            precheck_message(response.precheck_code)
+        ));
+    }
+    Ok(SendReceipt {
+        transaction_id: format!("0.0.{}-{}-{:09}", payer_id.2, seconds, nanos),
+    })
+}
+
+/// Mints (`mint`) or burns `amount` (in the token's smallest unit) of a token.
+/// `payer` pays the fee; the key must be the token's supply key.
+pub async fn change_testnet_token_supply(
+    payer: &str,
+    key: (KeyType, &[u8; 32]),
+    token: &str,
+    amount: u64,
+    mint: bool,
+) -> Result<SendReceipt, String> {
+    let payer_id = parse_account(payer)?;
+    let (seconds, nanos) = start_time()?;
+    let params = TokenSupplyParams {
+        payer: payer_id,
+        token: parse_account(token)?,
+        amount,
+        node: TESTNET_NODE_ACCOUNT,
+        valid_start_seconds: seconds,
+        valid_start_nanos: nanos,
+        max_fee_tinybars: MAX_FEE_TINYBARS,
+    };
+    let body = token_supply_body_bytes(&params, mint)?;
+    let encoded = sign_body(&body, key.0, key.1)?;
+    let transaction =
+        <Transaction as prost::Message>::decode(encoded.as_slice()).map_err(|e| e.to_string())?;
+    let (path, action) = if mint {
+        (TOKEN_MINT_PATH, "mint")
+    } else {
+        (TOKEN_BURN_PATH, "burn")
+    };
+    let response = submit(transaction, path).await?;
+    if response.precheck_code != 0 {
+        return Err(format!(
+            "The node rejected the token {action}: {}",
             precheck_message(response.precheck_code)
         ));
     }

@@ -112,7 +112,7 @@ Password change and encrypted backup export/restore are tracked under
    - Stage 2 (built, awaiting Testnet test): create and delete a fungible token. The wallet key is the treasury, admin and supply key; the fee cap for creation is 20 HBAR.
    - Stage 3 (built, awaiting Testnet test): associate, dissociate and hide tokens.
    - Stage 4 (built, awaiting Rust compile and Testnet test): send a token, with a receiver-association check.
-   - Stage 5: mint and burn.
+   - Stage 5: mint and burn (built and tested on Testnet). Token management -> Issuing has Mint token and Burn token; the backend checks the supply key and treasury first.
    - Stage 6: signer support for watch-only wallets (association, token send, create, delete, mint and burn).
    - Later: NFTs, key change and hardware work.
 5. Defer Mainnet until the implementation has been reviewed and tested.
@@ -314,7 +314,7 @@ HTS tokens. Use it to pick up cold.
   show persists after restart. (4) send to associated account, to an unassociated
   account (readable error, no fee), more than balance, decimals, watch-only notice.
   Regression: HBAR send and Close button, Account assets layout.
-- Stage 5 (mint and burn) is next after testing.
+- Stage 5 (mint and burn) is done and tested. Mint and Burn are greyed out unless the account is the treasury of a token whose supply key is this wallet's key.
 - Tool approvals: the chat asks for permission often. This is an app setting
   (the approvals picker or `chat.tools.global.autoApprove`), not something the
   assistant can change.

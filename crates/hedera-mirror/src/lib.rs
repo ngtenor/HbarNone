@@ -57,6 +57,9 @@ pub struct TokenInfo {
     pub has_admin_key: bool,
     /// Lowercase hex of the admin key when it is a single ED25519 or ECDSA key.
     pub admin_key: Option<String>,
+    pub has_supply_key: bool,
+    /// Lowercase hex of the supply key when it is a single ED25519 or ECDSA key.
+    pub supply_key: Option<String>,
     pub memo: String,
 }
 
@@ -110,6 +113,7 @@ struct TokenInfoEntry {
     treasury_account_id: Option<String>,
     deleted: Option<bool>,
     admin_key: Option<serde_json::Value>,
+    supply_key: Option<serde_json::Value>,
     memo: Option<String>,
 }
 
@@ -269,6 +273,8 @@ pub fn parse_token_info(body: &[u8], expected_token: &str) -> Result<TokenInfo, 
         deleted: entry.deleted == Some(true),
         has_admin_key: entry.admin_key.as_ref().is_some_and(|key| !key.is_null()),
         admin_key: entry.admin_key.as_ref().and_then(single_key_hex),
+        has_supply_key: entry.supply_key.as_ref().is_some_and(|key| !key.is_null()),
+        supply_key: entry.supply_key.as_ref().and_then(single_key_hex),
         memo: clean_text(entry.memo.as_deref().unwrap_or_default()),
     })
 }
@@ -543,9 +549,12 @@ mod tests {
     fn parses_token_info_with_text_numbers_and_checks_the_token() {
         let body = br#"{"token_id":"0.0.8","name":"Alpha\u0007","symbol":"ALP","decimals":"2",
             "type":"FUNGIBLE_COMMON","total_supply":"1000000","treasury_account_id":"0.0.5",
-            "deleted":false,"admin_key":{"_type":"ED25519","key":"AB"},"memo":"hi"}"#;
+            "deleted":false,"admin_key":{"_type":"ED25519","key":"AB"},
+                        "supply_key":{"_type":"ED25519","key":"CD"},"memo":"hi"}"#;
         let info = parse_token_info(body, "0.0.8").unwrap();
         assert_eq!(info.admin_key.as_deref(), Some("ab"));
+        assert_eq!(info.supply_key.as_deref(), Some("cd"));
+        assert!(info.has_supply_key);
         assert_eq!(info.name, "Alpha");
         assert_eq!(info.decimals, 2);
         assert_eq!(info.total_supply, "1000000");
@@ -558,6 +567,7 @@ mod tests {
         )
         .unwrap();
         assert!(!bare.has_admin_key && bare.admin_key.is_none());
+        assert!(!bare.has_supply_key && bare.supply_key.is_none());
         let listed = parse_token_info(
             br#"{"token_id":"0.0.8","admin_key":{"_type":"ProtobufEncoded","key":"zz"}}"#,
             "0.0.8",
