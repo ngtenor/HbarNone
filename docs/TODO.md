@@ -319,6 +319,12 @@ HTS tokens. Use it to pick up cold.
   account (readable error, no fee), more than balance, decimals, watch-only notice.
   Regression: HBAR send and Close button, Account assets layout.
 - Stage 5 (mint and burn) is done and tested. Mint and Burn are greyed out unless the account is the treasury of a token whose supply key is this wallet's key.
+- Offline signers (Windows, x64 build), both in `target\x86_64-pc-windows-msvc\release\`:
+  `hedera-offline-signer.exe` is the proper test signer: shows every field, hides the key as typed, refuses to read it if the window cannot hide input. Use this for testing.
+  `examples\sign_request.exe` is the older bare example (source `crates/hedera-tx/examples/sign_request.rs`); it echoes the private key as you type.
+  Rebuild BOTH after any signer or hedera-tx change (the app build does not rebuild them):
+  `cargo build --release -p offline-signer --target x86_64-pc-windows-msvc` and `cargo build --release -p hedera-tx --example sign_request --target x86_64-pc-windows-msvc`.
+  Close any running copy first or the link fails (LNK1104).
 - Tool approvals: the chat asks for permission often. This is an app setting
   (the approvals picker or `chat.tools.global.autoApprove`), not something the
   assistant can change.

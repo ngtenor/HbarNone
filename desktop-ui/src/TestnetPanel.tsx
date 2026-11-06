@@ -200,7 +200,7 @@ export function TestnetPanel({
   const [confirmingDelete, setConfirmingDelete] = useState(false)
   const [deleteAcknowledged, setDeleteAcknowledged] = useState(false)
   const [pendingDelete, setPendingDelete] = useState(false)
-  const [showAssets, setShowAssets] = useState(false)
+  const [showAssets, setShowAssets] = useState(true)
   const [hiddenTokens, setHiddenTokens] = useState<string[]>([])
   const [showHidden, setShowHidden] = useState(false)
   const [tokenToRemove, setTokenToRemove] = useState('')

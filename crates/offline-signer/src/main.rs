@@ -35,20 +35,26 @@ fn ask(label: &str) -> Result<String, String> {
     Ok(line.trim().to_string())
 }
 
-/// Hidden input on a terminal; plain input when stdin is piped.
+/// Hidden input on a terminal; plain input only when stdin is piped. If a
+/// terminal's echo cannot be turned off, it refuses rather than show the secret.
 fn ask_secret(label: &str) -> Result<Zeroizing<String>, String> {
+    use std::io::IsTerminal;
     print!("{label}");
     io::stdout().flush().map_err(|e| e.to_string())?;
-    match rpassword::read_password() {
-        Ok(text) => Ok(Zeroizing::new(text.trim().to_string())),
-        Err(_) => {
-            let mut line = Zeroizing::new(String::new());
-            io::stdin()
-                .read_line(&mut line)
-                .map_err(|e| e.to_string())?;
-            Ok(Zeroizing::new(line.trim().to_string()))
-        }
+    if io::stdin().is_terminal() {
+        return rpassword::read_password()
+            .map(|text| Zeroizing::new(text.trim().to_string()))
+            .map_err(|_| {
+                "This window cannot hide what you type, so the secret was not read. \
+                 Run the signer in a normal Windows Terminal, PowerShell or Command Prompt window."
+                    .to_string()
+            });
     }
+    let mut line = Zeroizing::new(String::new());
+    io::stdin()
+        .read_line(&mut line)
+        .map_err(|e| e.to_string())?;
+    Ok(Zeroizing::new(line.trim().to_string()))
 }
 
 fn show(summary: &Summary) {
