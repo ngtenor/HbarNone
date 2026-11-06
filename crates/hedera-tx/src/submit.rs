@@ -37,8 +37,8 @@ const TOKEN_CREATE_PATH: &str = "/proto.TokenService/createToken";
 const TOKEN_DELETE_PATH: &str = "/proto.TokenService/deleteToken";
 const TOKEN_MINT_PATH: &str = "/proto.TokenService/mintToken";
 const TOKEN_BURN_PATH: &str = "/proto.TokenService/burnToken";
-const TOKEN_ASSOCIATE_PATH: &str = "/proto.TokenService/associateTokens";
-const TOKEN_DISSOCIATE_PATH: &str = "/proto.TokenService/dissociateTokens";
+pub(crate) const TOKEN_ASSOCIATE_PATH: &str = "/proto.TokenService/associateTokens";
+pub(crate) const TOKEN_DISSOCIATE_PATH: &str = "/proto.TokenService/dissociateTokens";
 /// Largest opening balance the app will fund a new account with.
 pub(crate) const MAX_INITIAL_TINYBARS: i64 = 10_000 * TINYBARS_PER_HBAR as i64;
 

@@ -35,20 +35,26 @@ fn ask(label: &str) -> Result<String, String> {
     Ok(line.trim().to_string())
 }
 
-/// Hidden input on a terminal; plain input when stdin is piped.
+/// Hidden input on a terminal; plain input only when stdin is piped. If a
+/// terminal's echo cannot be turned off, it refuses rather than show the secret.
 fn ask_secret(label: &str) -> Result<Zeroizing<String>, String> {
+    use std::io::IsTerminal;
     print!("{label}");
     io::stdout().flush().map_err(|e| e.to_string())?;
-    match rpassword::read_password() {
-        Ok(text) => Ok(Zeroizing::new(text.trim().to_string())),
-        Err(_) => {
-            let mut line = Zeroizing::new(String::new());
-            io::stdin()
-                .read_line(&mut line)
-                .map_err(|e| e.to_string())?;
-            Ok(Zeroizing::new(line.trim().to_string()))
-        }
+    if io::stdin().is_terminal() {
+        return rpassword::read_password()
+            .map(|text| Zeroizing::new(text.trim().to_string()))
+            .map_err(|_| {
+                "This window cannot hide what you type, so the secret was not read. \
+                 Run the signer in a normal Windows Terminal, PowerShell or Command Prompt window."
+                    .to_string()
+            });
     }
+    let mut line = Zeroizing::new(String::new());
+    io::stdin()
+        .read_line(&mut line)
+        .map_err(|e| e.to_string())?;
+    Ok(Zeroizing::new(line.trim().to_string()))
 }
 
 fn show(summary: &Summary) {
@@ -97,6 +103,38 @@ fn show(summary: &Summary) {
             );
             println!("  Account memo  {:?}", summary.memo);
             println!("  Whoever holds that key controls the new account and its HBAR.");
+        }
+        Action::TokenTransfer {
+            token,
+            recipient,
+            amount,
+            decimals,
+        } => {
+            println!("  Action        SEND A TOKEN");
+            println!("  Network       Hedera Testnet (no real value)");
+            println!("  From          {}", with_checksum(&summary.payer));
+            println!("  To            {}", with_checksum(recipient));
+            println!("  Token ID      {}", with_checksum(token));
+            println!("  Raw amount    {amount} (smallest unit of the token)");
+            println!(
+                "  Decimals      {decimals} (the app's claim; the network rejects a mismatch)"
+            );
+            println!(
+                "  The token's name cannot be checked here. Compare the token ID with the app."
+            );
+            println!("  Memo          {:?}", summary.memo);
+        }
+        Action::TokenAssociate { token } => {
+            println!("  Action        ASSOCIATE A TOKEN (lets the account hold it)");
+            println!("  Network       Hedera Testnet (no real value)");
+            println!("  Account       {}", with_checksum(&summary.payer));
+            println!("  Token ID      {}", with_checksum(token));
+        }
+        Action::TokenDissociate { token } => {
+            println!("  Action        DISASSOCIATE A TOKEN (the account stops holding it)");
+            println!("  Network       Hedera Testnet (no real value)");
+            println!("  Account       {}", with_checksum(&summary.payer));
+            println!("  Token ID      {}", with_checksum(token));
         }
     }
     println!(
@@ -179,7 +217,10 @@ fn run() -> Result<(), String> {
         Action::DeleteAccount { .. } => {
             println!("A deletion needs this key to control both accounts shown above.");
         }
-        Action::Transfer { .. } => {}
+        Action::Transfer { .. }
+        | Action::TokenTransfer { .. }
+        | Action::TokenAssociate { .. }
+        | Action::TokenDissociate { .. } => {}
     }
     if ask("Type yes to sign, anything else to cancel: ")? != "yes" {
         return Err("Cancelled. Nothing was signed.".to_string());

@@ -87,6 +87,45 @@ mod tests {
         std::env::temp_dir().join(format!("hv-signer-{}-{name}", std::process::id()))
     }
 
+    /// The app draws its code in a fixed-size square, so modules are rarely a whole number of pixels.
+    fn render_fit(text: &str, side: u32) -> GrayImage {
+        let code = QrCode::with_error_correction_level(text.as_bytes(), EcLevel::L).unwrap();
+        let modules = code.width() as u32;
+        let span = (modules + 8) as f32;
+        let mut picture = GrayImage::from_pixel(side, side, Luma([255]));
+        for py in 0..side {
+            for px in 0..side {
+                let x = (px as f32 / side as f32 * span) as i64 - 4;
+                let y = (py as f32 / side as f32 * span) as i64 - 4;
+                if (0..modules as i64).contains(&x)
+                    && (0..modules as i64).contains(&y)
+                    && code.to_colors()[(y as u32 * modules + x as u32) as usize] == Color::Dark
+                {
+                    picture.put_pixel(px, py, Luma([0]));
+                }
+            }
+        }
+        picture
+    }
+
+    #[test]
+    fn reads_short_and_long_requests_drawn_at_the_apps_size() {
+        for len in [60, 100, 116, 120, 130, 160, 220, 300, 400] {
+            let request = format!(
+                "HVTX1-REQ:{}",
+                "0A0F0A0608B5B4A8D7061205".repeat(len / 24 + 1)
+            );
+            let request = &request[..10 + len];
+            for side in [260, 325, 390, 520] {
+                let path = temp(&format!("fit{len}-{side}.png"));
+                render_fit(request, side).save(&path).unwrap();
+                let got = read_qr_text(&path);
+                let _ = std::fs::remove_file(path);
+                assert_eq!(got.as_deref(), Ok(request), "len {len} side {side}");
+            }
+        }
+    }
+
     #[test]
     fn reads_a_request_from_png_screenshots_at_several_sizes() {
         let request = format!("HVTX1-REQ:{}", "0A0F0A0608B5B4A8D7061205".repeat(14));
