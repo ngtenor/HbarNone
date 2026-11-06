@@ -111,7 +111,10 @@ mod tests {
     #[test]
     fn reads_short_and_long_requests_drawn_at_the_apps_size() {
         for len in [60, 100, 116, 120, 130, 160, 220, 300, 400] {
-            let request = format!("HVTX1-REQ:{}", "0A0F0A0608B5B4A8D7061205".repeat(len / 24 + 1));
+            let request = format!(
+                "HVTX1-REQ:{}",
+                "0A0F0A0608B5B4A8D7061205".repeat(len / 24 + 1)
+            );
             let request = &request[..10 + len];
             for side in [260, 325, 390, 520] {
                 let path = temp(&format!("fit{len}-{side}.png"));
