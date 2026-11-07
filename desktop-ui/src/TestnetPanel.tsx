@@ -163,6 +163,7 @@ type Props = {
   onAccountDeleted: (updated: WalletSummary, accountId: string) => void
   onBalance?: (walletId: string, accountId: string, tinybars: number) => void
   onProgress: (progress: TxProgress | null) => void
+  onCloseCreate: () => void
 }
 
 export function TestnetPanel({
@@ -175,6 +176,7 @@ export function TestnetPanel({
   onAccountDeleted,
   onBalance,
   onProgress,
+  onCloseCreate,
 }: Props) {
   const [overview, setOverview] = useState<AccountOverview | null>(null)
   const [error, setError] = useState('')
@@ -953,7 +955,7 @@ export function TestnetPanel({
         if (found.accounts.length <= accountsBefore) throw new Error('not listed yet')
         return found
       }, 4).catch(() => null)
-      if (!updated) return 'The new account is not listed yet. Use Find accounts in a moment.'
+      if (!updated) return 'The new account is not listed yet. Use the Accounts refresh button in a moment.'
       const created = updated.accounts.find((item) => !idsBefore.has(item.id))
       if (chosenName && created) {
         try {
@@ -1740,9 +1742,14 @@ export function TestnetPanel({
                 value={openingBalance}
                 onChange={(event) => setOpeningBalance(event.target.value)}
               />
-              <button className="primary-button review-create-button" type="submit" disabled={isBusy}>
-                Review new account
-              </button>
+              <div className="button-pair">
+                <button className="primary-button review-create-button" type="submit" disabled={isBusy}>
+                  Review new account
+                </button>
+                <button className="secondary-button" type="button" disabled={isBusy} onClick={onCloseCreate}>
+                  Close
+                </button>
+              </div>
             </form>
           )}
         </div>

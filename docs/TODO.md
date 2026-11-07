@@ -103,6 +103,57 @@ Password change and encrypted backup export/restore are tracked under
 - [x] Implement Settings "Back up and erase this device"; manually verified on Linux.
 - [x] First-run, unlock and Settings layout polish (two-button start screen, in-box eye toggle, centred fixed-size boxes, adaptive logo/padlock)
 
+## Timetable: 7–15 November 2026
+
+The target is a feature-complete Testnet desktop prototype for the agreed NFT
+and multisig scope by 15 November, when the signer parts are expected. This is
+an ambitious target, not a commitment to production readiness or a finished
+hardware signer. Complete each stage's documentation, automated tests, manual
+Testnet verification and CI before moving to the next stage.
+
+### 7 November: baseline
+- [ ] Update stale roadmap and handover notes, including completed Stage 6
+  testing and the merged pull request; identify any outstanding verification.
+- [ ] Confirm the current release and agree the precise NFT and multisig scope.
+- [ ] Update the hardware bill of materials with purchased parts and the
+  requirement that the signer never be connected to a computer.
+
+### 8–10 November: NFT support
+- [ ] Display owned NFTs by token ID and serial number; treat metadata as
+  untrusted.
+- [ ] Associate and dissociate NFT tokens and transfer NFTs by serial number.
+- [ ] Support hot-wallet and watch-only transfers; show token ID, serial number,
+  sender and recipient on the offline signer.
+- [ ] Explicitly handle unsupported or risky cases, including custom fees and
+  invalid ownership or association.
+- [ ] Test successful and failure paths with disposable Testnet accounts,
+  document the workflow and pass CI.
+
+### 11–13 November: multisig
+- [ ] Start with the planned 2-of-3 threshold account: display the key structure
+  and collect, validate and combine signatures for the same transaction body.
+- [ ] Support the agreed account setup/key-change flow and a basic transfer
+  through the desktop coordinator and software signer.
+- [ ] Reject duplicate, unrelated, invalid or mismatched signatures and explain
+  the transaction signing time limit.
+- [ ] Test successful and insufficient-signature cases on Testnet, document
+  recovery and limitations, and pass CI. Defer broader threshold structures
+  and scheduled transactions unless time permits.
+
+### 14 November: hardware readiness and consolidation
+- [ ] Prepare a wiring plan for the Pico 2, display, Arducam SPI camera and
+  microSD reader; check pin, power and physical compatibility.
+- [ ] Specify first-use provisioning and signed SD-card updates without
+  connecting the signer to a computer.
+- [ ] Prepare software-side QR transport tests and a non-secret sample CNC
+  toolpath; document the risks of exporting secret toolpaths.
+- [ ] Run regression checks and prepare a hardware test handover checklist.
+
+If time runs short, finish and verify NFTs first, then narrow multisig to the
+smallest safe end-to-end flow. Hardware integration can begin after the parts
+arrive. Mainnet, smart-contract support and production use remain out of scope
+until separately reviewed and tested.
+
 ## Next steps
 1. All Linux manual verification is complete.
 2. (Done) Watch-only wallets and unsigned-transaction export.
@@ -325,6 +376,17 @@ HTS tokens. Use it to pick up cold.
   Rebuild BOTH after any signer or hedera-tx change (the app build does not rebuild them):
   `cargo build --release -p offline-signer --target x86_64-pc-windows-msvc` and `cargo build --release -p hedera-tx --example sign_request --target x86_64-pc-windows-msvc`.
   Close any running copy first or the link fails (LNK1104).
+- Air-gapped signer prototype hardware (6 Nov 2026): purchased Raspberry Pi Pico 2
+  with headers (non-W, no Wi-Fi), Pimoroni Pico Display Pack 2.8 and Adafruit 4682
+  microSD SPI breakout. A seller for an Arducam OV2640 camera has been found;
+  confirm the exact model has an SPI interface before purchase. The user believes
+  they have the other required parts.
+  The signer must never be connected to a computer: use microSD for firmware
+  updates and CNC toolpath exports. Initial provisioning and a trusted,
+  verified SD-update mechanism still need designing. Use separate cards for
+  updates and exports; secret SeedQR toolpaths and any card or CNC system
+  handling them must be treated as secret. Camera, display and SD wiring,
+  power, drivers and QR scanning have not yet been validated together.
 - Tool approvals: the chat asks for permission often. This is an app setting
   (the approvals picker or `chat.tools.global.autoApprove`), not something the
   assistant can change.

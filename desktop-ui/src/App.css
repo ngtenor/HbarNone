@@ -131,6 +131,17 @@
   white-space: nowrap;
 }
 
+.vault-tab.vault-tab-icon {
+  display: grid;
+  place-items: center;
+  padding: 0 8px;
+}
+
+.vault-tab-icon svg {
+  width: 20px;
+  height: 20px;
+}
+
 .vault-tab:hover,
 .vault-tab:focus-visible {
   color: var(--ink);
@@ -171,6 +182,22 @@
   text-overflow: ellipsis;
 }
 
+.vault-tab-wrap .wallet-tab-named {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.wallet-tab-badge .wallet-badge {
+  width: 18px;
+  height: 18px;
+}
+
+.wallet-tab-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .vault-tab-close {
   display: grid;
   width: 20px;
@@ -193,23 +220,6 @@
 
 .vault-tab-panel {
   min-height: 340px;
-}
-
-.wallet-tab-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 24px;
-}
-
-.wallet-tab-heading .eyebrow {
-  margin-bottom: 9px;
-}
-
-.wallet-tab-heading h1 {
-  margin: 0;
-  font-size: clamp(36px, 5vw, 52px);
-  letter-spacing: -2.7px;
 }
 
 .home-wallets {
@@ -271,7 +281,7 @@
   font-weight: 600;
 }
 
-.account-columns span:nth-child(n + 2),
+.account-columns > span:nth-child(n + 2),
 .account-balance {
   text-align: right;
   font-variant-numeric: tabular-nums;
@@ -347,7 +357,6 @@
 .section-title,
 h1.section-title,
 h2.section-title,
-.wallet-tab-heading h1.section-title,
 .testnet-send h3.section-title {
   display: flex;
   align-items: center;
@@ -369,10 +378,6 @@ h2.section-title,
   font-size: 26px;
 }
 
-.wallet-tab-heading {
-  padding-bottom: 16px;
-}
-
 .testnet-panel.create-panel {
   margin-top: 20px;
   padding-top: 14px;
@@ -386,23 +391,37 @@ h2.section-title,
   gap: 8px;
 }
 
-.wallet-button-row {
+.wallet-details-header {
   display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-start;
-  gap: 10px;
-  padding-top: 16px;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
 }
 
-.wallet-button-row .reveal-button,
-.wallet-button-row .refresh-all-button {
-  min-height: 40px;
-  padding: 0 14px;
-  font-size: 10px;
+.wallet-details-header .wallet-key-details {
+  min-width: 0;
+  flex: 1 1 auto;
 }
 
-.wallet-button-row .refresh-all-button {
-  font-weight: 400;
+.wallet-management {
+  flex: 0 0 auto;
+}
+
+.wallet-management .dropdown-list {
+  right: 0;
+  left: auto;
+}
+
+.account-column-label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.account-column-label .icon-button {
+  width: 24px;
+  height: 24px;
+  min-width: 24px;
 }
 
 .wallet-tab-panel .wallet-accounts {
@@ -638,9 +657,12 @@ h2.section-title,
   margin: 0 auto;
 }
 
-.wallet-tab-heading {
-  padding-bottom: 28px;
-  border-bottom: 1px solid var(--line);
+.wallet-tab-panel.account-open {
+  padding-top: 12px;
+}
+
+.wallet-tab-panel.account-open .wallet-accounts {
+  padding-top: 0;
 }
 
 .wallet-date {
@@ -703,23 +725,9 @@ h2.section-title,
   color: #b8860b;
 }
 
-.title-wallet {
-  display: inline-flex;
-}
-
-.wallet-name-link {
-  padding: 0;
-  border: 0;
-  color: inherit;
-  background: none;
-  cursor: pointer;
-  font: inherit;
-  letter-spacing: inherit;
-}
-
-.wallet-name-link:hover,
-.wallet-name-link:focus-visible {
-  color: #000;
+.wallet-back-link {
+  display: flex;
+  margin-bottom: 8px;
 }
 
 .account-badge {
@@ -928,6 +936,14 @@ h2.section-title,
 .rename-form label {
   display: block;
   margin-bottom: 10px;
+}
+
+.rename-form input {
+  font-weight: 400;
+}
+
+.rename-form input {
+  max-width: min(420px, calc(100% - 58px));
 }
 
 .rename-form .wallet-tab-actions {
@@ -1503,6 +1519,7 @@ h2 {
   font-weight: 600;
 }
 
+.rename-form input,
 .create-panel input,
 .create-panel select,
 .create-panel textarea {
@@ -1518,6 +1535,7 @@ h2 {
   font-size: 13px;
 }
 
+.rename-form input,
 .create-panel input,
 .create-panel select {
   height: 42px;
@@ -2236,6 +2254,10 @@ h2 {
     padding: 22px;
   }
 
+  .rename-form input {
+    max-width: min(420px, calc(100% - 46px));
+  }
+
   .recovery-dialog {
     padding: 20px;
   }
@@ -2246,13 +2268,16 @@ h2 {
 }
 
 @media (max-width: 430px) {
-  .wallet-item {
+  .wallet-details-header {
     flex-wrap: wrap;
   }
 
-  .wallet-tab-heading h1 {
-    overflow-wrap: anywhere;
-    font-size: 34px;
+  .wallet-management {
+    margin-left: auto;
+  }
+
+  .wallet-item {
+    flex-wrap: wrap;
   }
 
   .wallet-tab-actions {
