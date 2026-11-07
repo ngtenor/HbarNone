@@ -8,11 +8,14 @@ import { AccountLabel } from './AccountLabel'
 import { TransactionProgress } from './TransactionProgress'
 import type { TxProgress } from './TransactionProgress'
 import { HelpPanel } from './HelpPanel'
+import { DropdownMenu } from './DropdownMenu'
+import type { MenuEntry } from './DropdownMenu'
 import { AccountBadge, WalletBadge } from './WalletBadge'
 import type { AddressBookView, KeyDetection, WalletKeys, WalletSummary } from './types'
 import './App.css'
 
 type VaultView = 'loading' | 'uninitialized' | 'legacy' | 'locked' | 'unlocked'
+type UtilityTab = 'create' | 'settings' | 'help' | 'addressbook'
 
 type VaultState = {
   status: Exclude<VaultView, 'loading'>
@@ -116,16 +119,6 @@ function CogIcon() {
   )
 }
 
-function WalletsIcon() {
-  return (
-    <svg {...iconProps}>
-      <path d="M4 7a2 2 0 0 1 2-2h11v3" />
-      <rect x="4" y="7" width="16" height="13" rx="2" />
-      <path d="M16 13.5h4v3h-4a1.5 1.5 0 0 1 0-3z" />
-    </svg>
-  )
-}
-
 function HelpIcon() {
   return (
     <svg {...iconProps}>
@@ -147,10 +140,7 @@ function PadlockIcon({ locked }: { locked: boolean }) {
 function App() {
   const [wallets, setWallets] = useState<WalletSummary[]>([])
   const [activeTab, setActiveTab] = useState('home')
-  const [isCreateTabOpen, setIsCreateTabOpen] = useState(false)
-  const [isSettingsTabOpen, setIsSettingsTabOpen] = useState(false)
-  const [isHelpTabOpen, setIsHelpTabOpen] = useState(false)
-  const [isAddressBookTabOpen, setIsAddressBookTabOpen] = useState(false)
+  const [utilityTab, setUtilityTab] = useState<UtilityTab>('create')
   const [addressBook, setAddressBook] = useState<AddressBookView>({ rows: [], allowExternalSends: false, allowExternalDeletes: false })
   const [openWalletTabs, setOpenWalletTabs] = useState<string[]>([])
   const [legacyWallets, setLegacyWallets] = useState<WalletSummary[]>([])
@@ -182,6 +172,7 @@ function App() {
   const [isErasing, setIsErasing] = useState(false)
   const [walletMode, setWalletMode] = useState<'create' | 'import'>('create')
   const [renamingWalletId, setRenamingWalletId] = useState<string | null>(null)
+  const [creatingAccountWalletId, setCreatingAccountWalletId] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
   const [renameError, setRenameError] = useState('')
   const [isRenaming, setIsRenaming] = useState(false)
@@ -300,6 +291,7 @@ function App() {
     setHasConfirmedErase(false)
     setEraseError('')
     setRenamingWalletId(null)
+    setCreatingAccountWalletId(null)
     setName('')
     setImportMnemonic('')
     setImportKind('phrase')
@@ -313,10 +305,7 @@ function App() {
     setVaultPasswordConfirmation('')
     setWallets([])
     setActiveTab('home')
-    setIsCreateTabOpen(false)
-    setIsSettingsTabOpen(false)
-    setIsHelpTabOpen(false)
-    setIsAddressBookTabOpen(false)
+    setUtilityTab('create')
     setAddressBook({ rows: [], allowExternalSends: false, allowExternalDeletes: false })
     setOpenWalletTabs([])
     setTxProgress(null)
@@ -618,44 +607,81 @@ function App() {
     return chosen && wallet.accounts.some((account) => account.id === chosen) ? chosen : null
   }
 
-  async function handleRefreshAll(wallet: WalletSummary) {
+  async function handleRefreshWallet(wallet: WalletSummary) {
     setError('')
+    setFindNotice('')
     setIsRefreshingAll(true)
+    const errors: string[] = []
+    let updated = wallet
     try {
-      await Promise.all(wallet.accounts
+      try {
+        updated = await invoke<WalletSummary>('find_wallet_accounts', { walletId: wallet.id })
+        setWallets((existing) => existing.map((item) => (item.id === updated.id ? updated : item)))
+        setFindNotice(
+          updated.accounts.length === 0
+            ? 'No Testnet account uses this wallet’s key yet.'
+            : `This wallet has ${updated.accounts.length} account(s).`,
+        )
+      } catch (failure) {
+        errors.push(`Account discovery failed: ${errorMessage(failure)}`)
+      }
+      await Promise.all(updated.accounts
         .filter((account) => account.network === 'testnet')
         .map(async (account) => {
-          const result = await invoke<{ balance_tinybars: number } | null>('get_account_overview', {
-            walletId: wallet.id,
-            accountId: account.id,
-          })
-          if (!result) return
-          const key = balanceKey(wallet.id, account.id)
-          fetchedBalances.current.add(key)
-          setBalances((existing) => ({ ...existing, [key]: result.balance_tinybars }))
+          try {
+            const result = await invoke<{ balance_tinybars: number } | null>('get_account_overview', {
+              walletId: wallet.id,
+              accountId: account.id,
+            })
+            if (!result) throw new Error('Account not found on Testnet')
+            const key = balanceKey(wallet.id, account.id)
+            fetchedBalances.current.add(key)
+            setBalances((existing) => ({ ...existing, [key]: result.balance_tinybars }))
+          } catch (failure) {
+            errors.push(`Balance refresh for ${account.id} failed: ${errorMessage(failure)}`)
+          }
         }))
-    } catch (failure) {
-      setError(errorMessage(failure))
+      if (errors.length > 0) setError(errors.join(' '))
     } finally {
       setIsRefreshingAll(false)
     }
   }
 
-  async function handleFindAccounts(wallet: WalletSummary) {
-    setError('')
-    setIsRefreshingAll(true)
-    try {
-      const updated = await invoke<WalletSummary>('find_wallet_accounts', { walletId: wallet.id })
-      setWallets((existing) => existing.map((item) => (item.id === updated.id ? updated : item)))
-      setFindNotice(
-        updated.accounts.length === 0
-          ? 'No Testnet account uses this wallet’s key yet.'
-          : `This wallet has ${updated.accounts.length} account(s).`,
-      )
-    } catch (failure) {
-      setError(errorMessage(failure))
-    } finally {
-      setIsRefreshingAll(false)
+  function walletManagementEntries(wallet: WalletSummary): MenuEntry[] {
+    const entries: MenuEntry[] = [
+      { id: 'rename', label: 'Rename wallet' },
+      { id: 'create-account', label: 'Create account' },
+    ]
+    if (wallet.secret_kind === 'mnemonic') {
+      entries.push({ id: 'reveal-phrase', label: 'Reveal recovery phrase', danger: true })
+    }
+    if (wallet.secret_kind !== 'watchonly') {
+      entries.push({ id: 'reveal-key', label: 'Reveal private key', danger: true })
+    }
+    entries.push({ id: 'delete', label: 'Delete wallet', danger: true })
+    return entries
+  }
+
+  function handleWalletManagement(wallet: WalletSummary, action: string) {
+    if (action === 'rename') {
+      setCreatingAccountWalletId(null)
+      setRenameValue(wallet.name)
+      setRenameError('')
+      setRenamingWalletId(wallet.id)
+    } else if (action === 'create-account') {
+      setRenamingWalletId(null)
+      setRenameError('')
+      setCreatingAccountWalletId(wallet.id)
+    } else if (action === 'reveal-phrase' || action === 'reveal-key') {
+      closeReveal()
+      setWalletToDelete(null)
+      setRevealKey(action === 'reveal-key')
+      setWalletToReveal(wallet)
+    } else if (action === 'delete') {
+      closeReveal()
+      setError('')
+      setDeleteError('')
+      setWalletToDelete(wallet)
     }
   }
 
@@ -800,6 +826,7 @@ function App() {
       clearPasswordChange()
       setHasConfirmedErase(false)
       setRenamingWalletId(null)
+      setCreatingAccountWalletId(null)
       setName('')
       setImportMnemonic('')
       setImportKind('phrase')
@@ -812,10 +839,7 @@ function App() {
       setVaultPasswordConfirmation('')
       setWallets([])
       setActiveTab('home')
-      setIsCreateTabOpen(false)
-      setIsSettingsTabOpen(false)
-      setIsHelpTabOpen(false)
-      setIsAddressBookTabOpen(false)
+      setUtilityTab('create')
       setAddressBook({ rows: [], allowExternalSends: false, allowExternalDeletes: false })
       setOpenWalletTabs([])
       setAutoLockSeconds(state.autoLockSeconds)
@@ -989,25 +1013,22 @@ function App() {
   }
 
   function openCreateTab() {
-    setIsCreateTabOpen(true)
-    setActiveTab('create')
-    setError('')
+    openUtilityTab('create')
   }
 
-  function openHelpTab() {
-    setIsHelpTabOpen(true)
-    setActiveTab('help')
-    setError('')
-  }
-
-  function closeHelpTab() {
-    setIsHelpTabOpen(false)
-    if (activeTab === 'help') setActiveTab('home')
-  }
-
-  function openSettingsTab() {
-    setIsSettingsTabOpen(true)
-    setActiveTab('settings')
+  function openUtilityTab(tab: UtilityTab) {
+    if (utilityTab === 'settings' && tab !== 'settings') {
+      clearPasswordChange()
+      setHasConfirmedErase(false)
+      setEraseError('')
+    }
+    if (utilityTab === 'create' && tab !== 'create') {
+      setName('')
+      setImportMnemonic('')
+      setImportKeyType('auto')
+    }
+    setUtilityTab(tab)
+    setActiveTab(tab)
     setError('')
   }
 
@@ -1057,6 +1078,7 @@ function App() {
   }
 
   function openWalletTab(walletId: string) {
+    setCreatingAccountWalletId(null)
     setOpenWalletTabs((existing) => (
       existing.includes(walletId) ? existing : [...existing, walletId]
     ))
@@ -1085,24 +1107,13 @@ function App() {
     tabs[nextIndex].click()
   }
 
-  function closeCreateTab() {
+  function cancelCreate() {
     if (isSavingWallet) return
-    setIsCreateTabOpen(false)
     if (activeTab === 'create') setActiveTab('home')
     setName('')
     setImportMnemonic('')
     setImportKeyType('auto')
     setError('')
-  }
-
-  function openAddressBookTab() {
-    setIsAddressBookTabOpen(true)
-    setActiveTab('addressbook')
-  }
-
-  function closeAddressBookTab() {
-    setIsAddressBookTabOpen(false)
-    if (activeTab === 'addressbook') setActiveTab('home')
   }
 
   async function handleAllowExternalSends(allowed: boolean) {
@@ -1121,14 +1132,9 @@ function App() {
     }
   }
 
-  function closeSettingsTab() {
-    setIsSettingsTabOpen(false)
-    clearPasswordChange()
-    if (activeTab === 'settings') setActiveTab('home')
-  }
-
   function closeWalletTab(walletId: string) {
     setOpenWalletTabs((existing) => existing.filter((id) => id !== walletId))
+    if (creatingAccountWalletId === walletId) setCreatingAccountWalletId(null)
     if (activeTab === walletId) setActiveTab('home')
     if (walletToReveal?.id === walletId) closeReveal()
     if (walletToDelete?.id === walletId) closeDelete()
@@ -1165,7 +1171,7 @@ function App() {
                 type="button"
                 aria-label="Address book"
                 title="Address book"
-                onClick={openAddressBookTab}
+                onClick={() => openUtilityTab('addressbook')}
               >
                 <AddressBookIcon />
               </button>
@@ -1183,7 +1189,7 @@ function App() {
                 type="button"
                 aria-label="Settings"
                 title="Settings"
-                onClick={openSettingsTab}
+                onClick={() => openUtilityTab('settings')}
               >
                 <CogIcon />
               </button>
@@ -1192,7 +1198,7 @@ function App() {
                 type="button"
                 aria-label="Help"
                 title="Help"
-                onClick={openHelpTab}
+                onClick={() => openUtilityTab('help')}
               >
                 <HelpIcon />
               </button>
@@ -1403,6 +1409,21 @@ function App() {
         <>
           <nav className="vault-tabs" role="tablist" aria-label="Vault tabs">
             <button
+              className={`vault-tab vault-tab-icon${activeTab === utilityTab ? ' active' : ''}`}
+              id={`tab-${utilityTab}`}
+              type="button"
+              role="tab"
+              aria-label={utilityTab === 'create' ? 'Create / import' : utilityTab === 'settings' ? 'Settings' : utilityTab === 'help' ? 'Help' : 'Address book'}
+              title={utilityTab === 'create' ? 'Create / import wallet' : utilityTab === 'settings' ? 'Settings' : utilityTab === 'help' ? 'Help' : 'Address book'}
+              aria-selected={activeTab === utilityTab}
+              aria-controls={activeTab === utilityTab ? `panel-${utilityTab}` : undefined}
+              tabIndex={activeTab === utilityTab ? 0 : -1}
+              onKeyDown={handleTabKeyDown}
+              onClick={() => setActiveTab(utilityTab)}
+            >
+              {utilityTab === 'create' ? <PlusIcon /> : utilityTab === 'settings' ? <CogIcon /> : utilityTab === 'help' ? <HelpIcon /> : <AddressBookIcon />}
+            </button>
+            <button
               className={`vault-tab${activeTab === 'home' ? ' active' : ''}`}
               id="tab-home"
               type="button"
@@ -1413,109 +1434,8 @@ function App() {
               onKeyDown={handleTabKeyDown}
               onClick={() => setActiveTab('home')}
             >
-              HOME
+              Wallets
             </button>
-            {isSettingsTabOpen && (
-              <div className={`vault-tab-wrap${activeTab === 'settings' ? ' active' : ''}`} role="presentation">
-                <button
-                  className="vault-tab"
-                  id="tab-settings"
-                  type="button"
-                  role="tab"
-                  aria-selected={activeTab === 'settings'}
-                  aria-controls={activeTab === 'settings' ? 'panel-settings' : undefined}
-                  tabIndex={activeTab === 'settings' ? 0 : -1}
-                  onKeyDown={handleTabKeyDown}
-                  onClick={() => setActiveTab('settings')}
-                >
-                  Settings
-                </button>
-                <button
-                  className="vault-tab-close"
-                  type="button"
-                  aria-label="Close settings tab"
-                  onClick={closeSettingsTab}
-                >
-                  ×
-                </button>
-              </div>
-            )}
-            {isHelpTabOpen && (
-              <div className={`vault-tab-wrap${activeTab === 'help' ? ' active' : ''}`} role="presentation">
-                <button
-                  className="vault-tab"
-                  id="tab-help"
-                  type="button"
-                  role="tab"
-                  aria-selected={activeTab === 'help'}
-                  aria-controls={activeTab === 'help' ? 'panel-help' : undefined}
-                  tabIndex={activeTab === 'help' ? 0 : -1}
-                  onKeyDown={handleTabKeyDown}
-                  onClick={() => setActiveTab('help')}
-                >
-                  Help
-                </button>
-                <button
-                  className="vault-tab-close"
-                  type="button"
-                  aria-label="Close help tab"
-                  onClick={closeHelpTab}
-                >
-                  ×
-                </button>
-              </div>
-            )}
-            {isAddressBookTabOpen && (
-              <div className={`vault-tab-wrap${activeTab === 'addressbook' ? ' active' : ''}`} role="presentation">
-                <button
-                  className="vault-tab"
-                  id="tab-addressbook"
-                  type="button"
-                  role="tab"
-                  aria-selected={activeTab === 'addressbook'}
-                  aria-controls={activeTab === 'addressbook' ? 'panel-addressbook' : undefined}
-                  tabIndex={activeTab === 'addressbook' ? 0 : -1}
-                  onKeyDown={handleTabKeyDown}
-                  onClick={() => setActiveTab('addressbook')}
-                >
-                  Address book
-                </button>
-                <button
-                  className="vault-tab-close"
-                  type="button"
-                  aria-label="Close address book tab"
-                  onClick={closeAddressBookTab}
-                >
-                  ×
-                </button>
-              </div>
-            )}
-            {isCreateTabOpen && (
-              <div className={`vault-tab-wrap${activeTab === 'create' ? ' active' : ''}`} role="presentation">
-                <button
-                  className="vault-tab"
-                  id="tab-create"
-                  type="button"
-                  role="tab"
-                  aria-selected={activeTab === 'create'}
-                  aria-controls={activeTab === 'create' ? 'panel-create' : undefined}
-                  tabIndex={activeTab === 'create' ? 0 : -1}
-                  onKeyDown={handleTabKeyDown}
-                  onClick={() => setActiveTab('create')}
-                >
-                  Create / import
-                </button>
-                <button
-                  className="vault-tab-close"
-                  type="button"
-                  aria-label="Close create or import tab"
-                  disabled={isSavingWallet}
-                  onClick={closeCreateTab}
-                >
-                  ×
-                </button>
-              </div>
-            )}
             {openWalletTabs.map((walletId) => {
               const wallet = wallets.find((item) => item.id === walletId)
               if (!wallet) return null
@@ -1526,7 +1446,7 @@ function App() {
                   key={walletId}
                 >
                   <button
-                    className="vault-tab"
+                    className="vault-tab wallet-tab-named"
                     id={`tab-${walletId}`}
                     type="button"
                     role="tab"
@@ -1536,7 +1456,10 @@ function App() {
                     onKeyDown={handleTabKeyDown}
                     onClick={() => setActiveTab(walletId)}
                   >
-                    {wallet.name}
+                    <span className="wallet-tab-badge" aria-hidden="true">
+                      <WalletBadge wallet={wallet} />
+                    </span>
+                    <span className="wallet-tab-name">{wallet.name}</span>
                   </button>
                   <button
                     className="vault-tab-close"
@@ -1637,7 +1560,7 @@ function App() {
             </section>
           )}
 
-          {activeTab === 'addressbook' && isAddressBookTabOpen && (
+          {activeTab === 'addressbook' && utilityTab === 'addressbook' && (
             <AddressBook
               view={addressBook}
               onChange={setAddressBook}
@@ -1650,9 +1573,9 @@ function App() {
             />
           )}
 
-          {activeTab === 'help' && isHelpTabOpen && <HelpPanel />}
+          {activeTab === 'help' && utilityTab === 'help' && <HelpPanel />}
 
-          {activeTab === 'settings' && isSettingsTabOpen && (
+          {activeTab === 'settings' && utilityTab === 'settings' && (
             <section
               className="vault-tab-panel settings-tab-panel"
               id="panel-settings"
@@ -1873,7 +1796,7 @@ function App() {
             </section>
           )}
 
-          {activeTab === 'create' && isCreateTabOpen && (
+          {activeTab === 'create' && (
             <section
               className="vault-tab-panel settings-tab-panel"
               id="panel-create"
@@ -2061,7 +1984,7 @@ function App() {
                     className="secondary-button"
                     type="button"
                     disabled={isSavingWallet}
-                    onClick={closeCreateTab}
+                    onClick={cancelCreate}
                   >
                     Cancel
                   </button>
@@ -2074,62 +1997,57 @@ function App() {
             const wallet = wallets.find((item) => item.id === activeTab)
             if (!wallet) return null
             const openAccount = selectedAccountOf(wallet)
+            const testnetPanel = (
+              <TestnetPanel
+                key={`${wallet.id}/${openAccount ?? ''}`}
+                wallet={wallet}
+                account={openAccount}
+                otherWallets={wallets.filter((item) => item.id !== wallet.id)}
+                onAccountMoved={handleAccountMoved}
+                onAccountDeleted={handleAccountDeleted}
+                addressBook={addressBook}
+                onProgress={updateProgress}
+                onCloseCreate={() => setCreatingAccountWalletId(null)}
+                onBalance={(walletId, account, tinybars) => {
+                  const key = balanceKey(walletId, account)
+                  fetchedBalances.current.add(key)
+                  setBalances((existing) => ({ ...existing, [key]: tinybars }))
+                }}
+                onWalletUpdated={(updated) => setWallets((existing) => existing.map((item) => (
+                  item.id === updated.id ? updated : item
+                )))}
+              />
+            )
             return (
               <section
-                className="vault-tab-panel wallet-tab-panel"
+                className={`vault-tab-panel wallet-tab-panel${openAccount ? ' account-open' : ''}`}
                 id={`panel-${wallet.id}`}
                 role="tabpanel"
                 aria-labelledby={`tab-${wallet.id}`}
               >
-                <div className={`wallet-tab-heading${openAccount ? ' compact' : ''}`}>
-                  <div>
-                    <h1 className="section-title">
-                      <span
-                        className={`title-wallet ${wallet.secret_kind === 'watchonly'
-                          ? 'wallet-watch-only'
-                          : wallet.custody === 'cold' ? 'wallet-cold' : 'wallet-hot'}`}
-                        title={wallet.secret_kind === 'watchonly'
-                          ? 'Watch-only wallet'
-                          : wallet.custody === 'cold' ? 'Cold wallet' : 'Hot wallet'}
-                      >
-                        <WalletsIcon />
-                      </span>
-                      {openAccount ? (
-                        <button
-                          className="wallet-name-link"
-                          type="button"
-                          title="Back to wallet"
-                          onClick={() => setSelectedAccounts((existing) => {
-                            const next = { ...existing }
-                            delete next[wallet.id]
-                            return next
-                          })}
-                        >
-                          {wallet.name}
-                        </button>
-                      ) : (
-                        <button
-                          className="wallet-name-link"
-                          type="button"
-                          title="Click to rename this wallet"
-                          onClick={() => {
-                            setRenameValue(wallet.name)
-                            setRenameError('')
-                            setRenamingWalletId(wallet.id)
-                          }}
-                        >
-                          {wallet.name}
-                        </button>
-                      )}
-                    </h1>
-                    {!openAccount && (
-                      <p className="wallet-date">Added {new Date(wallet.created_at).toLocaleDateString()}</p>
-                    )}
-                  </div>
-                </div>
+                {openAccount && (
+                  <button
+                    className="icon-button wallet-back-link"
+                    type="button"
+                    aria-label="Back to wallet"
+                    title="Back to wallet"
+                    onClick={() => setSelectedAccounts((existing) => {
+                      const next = { ...existing }
+                      delete next[wallet.id]
+                      return next
+                    })}
+                  >
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <path d="M19 12H5M12 19l-7-7 7-7" />
+                    </svg>
+                  </button>
+                )}
                 {error && <p className="error-message" role="alert">{error}</p>}
                 {!openAccount && (
+                <div className="wallet-details-header">
                 <dl className="wallet-key-details">
+                  <dt>Added</dt>
+                  <dd>{new Date(wallet.created_at).toLocaleDateString()}</dd>
                   <dt>Key type</dt>
                   <dd>
                     {wallet.key_type === 'ecdsa' ? 'ECDSA (secp256k1)' : 'Ed25519'}
@@ -2150,63 +2068,14 @@ function App() {
                     </>
                   )}
                 </dl>
-                )}
-                {!openAccount && (
-                  <div className="wallet-button-row">
-                    <button
-                      className="reveal-button"
-                      type="button"
-                      disabled={isRefreshingAll}
-                      onClick={() => void handleFindAccounts(wallet)}
-                    >
-                      {wallet.secret_kind === 'watchonly'
-                        ? 'Find accounts for public key'
-                        : 'Find accounts from this wallet’s key'}
-                    </button>
-                    <button
-                      className="secondary-button refresh-all-button"
-                      type="button"
-                      disabled={isRefreshingAll}
-                      onClick={() => void handleRefreshAll(wallet)}
-                    >
-                      {isRefreshingAll ? 'Contacting Testnet...' : 'Refresh balances'}
-                    </button>
-                    {wallet.secret_kind !== 'watchonly' && <button
-                      className="reveal-button risky-button"
-                      type="button"
-                      onClick={() => {
-                        closeReveal()
-                        setWalletToDelete(null)
-                        setWalletToReveal(wallet)
-                      }}
-                    >
-                      Reveal {wallet.secret_kind === 'privatekey' ? 'private key' : 'recovery phrase'}
-                    </button>}
-                    {wallet.secret_kind === 'mnemonic' && <button
-                      className="reveal-button risky-button"
-                      type="button"
-                      onClick={() => {
-                        closeReveal()
-                        setWalletToDelete(null)
-                        setRevealKey(true)
-                        setWalletToReveal(wallet)
-                      }}
-                    >
-                      Reveal private key
-                    </button>}
-                    <button
-                      className="reveal-button delete-wallet-button"
-                      type="button"
-                      onClick={() => {
-                        closeReveal()
-                        setError('')
-                        setDeleteError('')
-                        setWalletToDelete(wallet)
-                      }}
-                    >
-                      Delete wallet
-                    </button>
-                  </div>
+                <div className="wallet-management">
+                  <DropdownMenu
+                    label="Wallet management"
+                    entries={walletManagementEntries(wallet)}
+                    onSelect={(action) => handleWalletManagement(wallet, action)}
+                  />
+                </div>
+                </div>
                 )}
                 {!openAccount && findNotice && <p className="field-hint" role="status">{findNotice}</p>}
                 {!openAccount && renamingWalletId === wallet.id && (
@@ -2243,15 +2112,30 @@ function App() {
                     </div>
                   </form>
                 )}
+                {!openAccount && creatingAccountWalletId === wallet.id && testnetPanel}
                 <div className="wallet-tab-summary">
                   <div className={`wallet-accounts${openAccount ? '' : ' account-links'}`} role="group" aria-label="Accounts">
                     <div className="account-columns">
-                      <span>Account no.</span>
+                      <div className="account-column-label">
+                        {!openAccount && (
+                          <button
+                            className={`icon-button${isRefreshingAll ? ' refreshing' : ''}`}
+                            type="button"
+                            aria-label="Refresh accounts and balances"
+                            title={isRefreshingAll ? 'Contacting Testnet...' : 'Find accounts and refresh balances'}
+                            disabled={isRefreshingAll}
+                            onClick={() => void handleRefreshWallet(wallet)}
+                          >
+                            <span aria-hidden="true">↻</span>
+                          </button>
+                        )}
+                        Accounts
+                      </div>
                       <span>Testnet</span>
                       <span>Mainnet</span>
                     </div>
                     {wallet.accounts.length === 0 ? (
-                      <p className="field-hint">No accounts yet. Use Find accounts or create one below.</p>
+                      <p className="field-hint">No accounts yet. Use refresh to find accounts or Wallet management to create one.</p>
                     ) : (
                       <ul className="account-rows">
                         {wallet.accounts.map((account) => (
@@ -2260,10 +2144,14 @@ function App() {
                               className="account-row account-row-button"
                               type="button"
                               aria-pressed={selectedAccountOf(wallet) === account.id}
-                              onClick={() => setSelectedAccounts((existing) => ({
-                                ...existing,
-                                [wallet.id]: account.id,
-                              }))}
+                              onClick={() => {
+                                setCreatingAccountWalletId(null)
+                                setRenamingWalletId(null)
+                                setSelectedAccounts((existing) => ({
+                                  ...existing,
+                                  [wallet.id]: account.id,
+                                }))
+                              }}
                             >
                               <span className="account-id">
                                 <AccountBadge account={account} />
@@ -2291,24 +2179,7 @@ function App() {
                     </p>
                   </>
                 )}
-                <TestnetPanel
-                  key={`${wallet.id}/${selectedAccountOf(wallet) ?? ''}`}
-                  wallet={wallet}
-                  account={selectedAccountOf(wallet)}
-                  otherWallets={wallets.filter((item) => item.id !== wallet.id)}
-                  onAccountMoved={handleAccountMoved}
-                  onAccountDeleted={handleAccountDeleted}
-                  addressBook={addressBook}
-                  onProgress={updateProgress}
-                  onBalance={(walletId, account, tinybars) => {
-                    const key = balanceKey(walletId, account)
-                    fetchedBalances.current.add(key)
-                    setBalances((existing) => ({ ...existing, [key]: tinybars }))
-                  }}
-                  onWalletUpdated={(updated) => setWallets((existing) => existing.map((item) => (
-                    item.id === updated.id ? updated : item
-                  )))}
-                />
+                {openAccount && testnetPanel}
               </section>
             )
           })()}
