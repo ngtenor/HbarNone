@@ -1,4 +1,4 @@
-# HederaVault Desktop UI
+# HBarNone Desktop UI
 
 This React + TypeScript frontend is served by Vite and embedded in the Tauri 2
 desktop application.

@@ -1,4 +1,4 @@
-# HederaVault TODO
+# HBarNone TODO
 
 ## Implemented
 - [x] Encrypt wallet mnemonics with Argon2id and AES-256-GCM
