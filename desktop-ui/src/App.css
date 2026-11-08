@@ -78,7 +78,7 @@
 .auto-lock-setting input[type="range"] {
   width: 100%;
   margin: 0;
-  accent-color: var(--purple);
+  accent-color: var(--brand-medium);
 }
 
 .auto-lock-range {
@@ -211,7 +211,7 @@
 
 .vault-tab-close:hover:not(:disabled) {
   color: var(--ink);
-  background: #ddd7e6;
+  background: var(--brand-light);
 }
 
 .vault-tab-close:disabled {
@@ -554,7 +554,7 @@ h2.section-title,
 
 .dropdown-item:hover:not(:disabled),
 .dropdown-item:focus-visible {
-  background: rgb(127 127 127 / 18%);
+  background: var(--brand-light);
 }
 
 .dropdown-item:disabled {
@@ -1230,14 +1230,14 @@ h2.section-title,
   padding: 0;
   border: 0;
   border-radius: 10px;
-  color: var(--ink);
+  color: var(--brand-medium);
   background: transparent;
   cursor: pointer;
 }
 
 button.topbar-icon:hover {
-  color: var(--purple);
-  background: var(--purple-soft);
+  color: var(--brand-medium);
+  background: var(--brand-very-light);
 }
 
 .locked-indicator {
@@ -1353,7 +1353,7 @@ button.topbar-icon:hover {
 }
 
 .eye-toggle:hover {
-  color: var(--purple);
+  color: var(--brand-medium);
 }
 
 .primary-button.gate-button,
@@ -1584,7 +1584,8 @@ h2 {
 }
 
 .password-toggle:hover {
-  border-color: var(--purple);
+  border-color: var(--brand-medium);
+  background: var(--brand-light);
 }
 
 .create-panel .generate-passphrase {
@@ -1649,6 +1650,13 @@ h2 {
   margin: 7px 0 19px;
   color: var(--muted);
   font-size: 11px;
+}
+
+/* Reserved one-line slot so the refresh notice does not shift the layout. */
+.find-notice {
+  min-height: 15px;
+  margin: 7px 0;
+  line-height: 15px;
 }
 
 .primary-button {
@@ -1798,7 +1806,8 @@ h2 {
 .reveal-button:hover,
 .secondary-button:hover,
 .close-button:hover {
-  border-color: var(--purple);
+  border-color: var(--brand-medium);
+  background: var(--brand-light);
 }
 
 .delete-wallet-button {
@@ -2223,26 +2232,7 @@ h2 {
   font-size: 12px;
 }
 
-.security-note {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  padding: 22px 0 28px;
-  color: var(--muted);
-  font-size: 11px;
-}
 
-.security-note > span {
-  display: grid;
-  width: 17px;
-  height: 17px;
-  place-items: center;
-  border-radius: 50%;
-  color: #986700;
-  background: #fff1c8;
-  font-size: 10px;
-  font-weight: 700;
-}
 
 @media (max-width: 760px) {
   .app-shell {
@@ -2338,8 +2328,8 @@ button.delete-wallet-button {
 button.primary-button:hover:not(:disabled),
 button.secondary-button:hover:not(:disabled),
 button.reveal-button:hover:not(:disabled) {
-  border-color: var(--purple);
-  background: var(--purple-soft);
+  border-color: var(--brand-medium);
+  background: var(--brand-light);
 }
 
 button.risky-button,

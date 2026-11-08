@@ -2038,7 +2038,7 @@ function App() {
                     })}
                   >
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                      <path d="M19 12H5M12 19l-7-7 7-7" />
+                      <path d="M19 17h-8a4 4 0 0 1-4-4V5M3.5 8.5 7 5l3.5 3.5" />
                     </svg>
                   </button>
                 )}
@@ -2077,7 +2077,7 @@ function App() {
                 </div>
                 </div>
                 )}
-                {!openAccount && findNotice && <p className="field-hint" role="status">{findNotice}</p>}
+                {!openAccount && <p className="field-hint find-notice" role="status">{findNotice}</p>}
                 {!openAccount && renamingWalletId === wallet.id && (
                   <form className="rename-form" onSubmit={handleRenameWallet}>
                     <label htmlFor="rename-wallet-name">New wallet name</label>
@@ -2183,11 +2183,6 @@ function App() {
               </section>
             )
           })()}
-
-          <footer className="security-note">
-            <span aria-hidden="true">!</span>
-            A displayed phrase may be captured by malware or screenshots. Development only; do not use real funds.
-          </footer>
         </>
       )}
 
