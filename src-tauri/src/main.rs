@@ -834,7 +834,9 @@ async fn check_dissociate(
         .iter()
         .find(|t| t.token_id == token_id)
         .ok_or_else(|| "This account is not associated with that token.".to_string())?;
-    if held.balance != "0" {
+    // A deleted token can be dissociated whatever its balance; the stuck
+    // balance is discarded by the network.
+    if held.balance != "0" && !held.deleted {
         return Err(
             "The balance must be zero before a token can be removed. Send the rest away first."
                 .to_string(),

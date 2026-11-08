@@ -43,6 +43,10 @@ pub struct AccountToken {
     /// Smallest units, as text because a balance can exceed what JavaScript holds exactly.
     pub balance: String,
     pub decimals: u32,
+    /// Whether the token has been deleted on the network. A deleted token can
+    /// no longer move, but its association (and any stuck balance) remains
+    /// until the account dissociates it.
+    pub deleted: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -490,7 +494,8 @@ impl MirrorClient {
     }
 
     /// Fungible tokens the account holds, with their details. A token whose
-    /// details cannot be read is still listed, by ID.
+    /// details cannot be read is still listed, by ID. Deleted tokens are
+    /// included and flagged, so they can be shown and dissociated.
     async fn account_tokens(&self, account_id: &str) -> Result<Vec<AccountToken>, String> {
         let path = format!("/api/v1/accounts/{account_id}/tokens?limit={MAX_TOKENS}");
         let held = match self.get(&path).await? {
@@ -501,13 +506,14 @@ impl MirrorClient {
         for (token_id, balance) in held {
             let info = self.token_info(&token_id).await.ok().flatten();
             match info {
-                Some(info) if info.token_type == "NON_FUNGIBLE_UNIQUE" || info.deleted => {}
+                Some(info) if info.token_type == "NON_FUNGIBLE_UNIQUE" => {}
                 Some(info) => tokens.push(AccountToken {
                     token_id,
                     symbol: info.symbol,
                     name: info.name,
                     balance,
                     decimals: info.decimals,
+                    deleted: info.deleted,
                 }),
                 None => tokens.push(AccountToken {
                     token_id,
@@ -515,6 +521,7 @@ impl MirrorClient {
                     name: String::new(),
                     balance,
                     decimals: 0,
+                    deleted: false,
                 }),
             }
         }

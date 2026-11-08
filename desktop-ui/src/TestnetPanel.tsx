@@ -38,6 +38,7 @@ type AccountToken = {
   name: string
   balance: string
   decimals: number
+  deleted?: boolean
 }
 
 type TokenInfo = {
@@ -279,9 +280,15 @@ export function TestnetPanel({
   const allTokens = [...(overview?.tokens ?? [])].sort((a, b) =>
     tokenLabel(a).localeCompare(tokenLabel(b)),
   )
-  const sendableTokens = allTokens.filter((token) => !hiddenTokens.includes(token.token_id))
-  const hiddenHere = allTokens.length - sendableTokens.length
-  const assetTokens = showHidden ? allTokens : sendableTokens
+  // Deleted tokens cannot move again: they are shown (marked) and can be
+  // dissociated, but are excluded from Send, Delete token and Mint/Burn.
+  const sendableTokens = allTokens.filter(
+    (token) => !hiddenTokens.includes(token.token_id) && !token.deleted,
+  )
+  const hiddenHere = allTokens.filter((token) => hiddenTokens.includes(token.token_id)).length
+  const assetTokens = showHidden
+    ? allTokens
+    : allTokens.filter((token) => !hiddenTokens.includes(token.token_id))
   const handleAddToken = () =>
     run(async () => {
       if (!tokenDetails) return
@@ -450,7 +457,10 @@ export function TestnetPanel({
   const handleRefresh = () => run(loadOverview)
 
   // Mint and burn are only offered for tokens this account is the supply-key treasury of.
-  const heldTokenKey = (overview?.tokens ?? []).map((token) => token.token_id).join(',')
+  const heldTokenKey = (overview?.tokens ?? [])
+    .filter((token) => !token.deleted)
+    .map((token) => token.token_id)
+    .join(',')
   useEffect(() => {
     let current = true
     if (isWatchOnly || !account || !heldTokenKey) {
@@ -1256,17 +1266,22 @@ export function TestnetPanel({
             >
               <option value="">Choose a token</option>
               {allTokens.map((token) => (
-                <option key={token.token_id} value={token.token_id} disabled={token.balance !== '0'}>
+                <option key={token.token_id} value={token.token_id} disabled={token.balance !== '0' && !token.deleted}>
                   {tokenLabel(token)} ({token.token_id})
-                  {token.balance !== '0'
-                    ? ` - balance ${formatTokenAmount(token.balance, token.decimals)}, must be 0`
-                    : ''}
+                  {token.deleted
+                    ? token.balance !== '0'
+                      ? ' - deleted token; its stuck balance is discarded'
+                      : ' - deleted token'
+                    : token.balance !== '0'
+                      ? ` - balance ${formatTokenAmount(token.balance, token.decimals)}, must be 0`
+                      : ''}
                 </option>
               ))}
             </select>
             <p className="field-hint">
               Removing a token stops this account from holding it. The balance must be zero, and the token's
-              treasury account cannot remove its own token. A small network fee is paid in HBAR.
+              treasury account cannot remove its own token. A deleted token can be removed whatever its balance;
+              the network discards the leftover amount. A small network fee is paid in HBAR.
             </p>
             <div className="button-pair">
               <button
@@ -1305,6 +1320,9 @@ export function TestnetPanel({
                       {tokenLabel(token)}
                       {token.name && token.symbol ? (
                         <span className="testnet-token-name"> {token.name}</span>
+                      ) : null}
+                      {token.deleted ? (
+                        <span className="testnet-token-name"> (deleted)</span>
                       ) : null}
                     </span>
                     <button
@@ -2042,6 +2060,9 @@ export function TestnetPanel({
                     {tokenLabel(token)}
                     {token.name && token.symbol ? (
                       <span className="testnet-token-name"> {token.name}</span>
+                    ) : null}
+                    {token.deleted ? (
+                      <span className="testnet-token-name"> (deleted)</span>
                     ) : null}
                     {hiddenTokens.includes(token.token_id) ? (
                       <span className="testnet-token-name"> (hidden)</span>

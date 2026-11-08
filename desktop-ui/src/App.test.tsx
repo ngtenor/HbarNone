@@ -2540,3 +2540,43 @@ describe('network separation', () => {
     expect(screen.queryByRole('menuitem', { name: 'Move account' })).not.toBeInTheDocument()
   })
 })
+
+describe('deleted tokens', () => {
+  beforeEach(() => installBackend({
+    status: 'unlocked',
+    wallets: [wallet('w1', 'Savings', '0.0.1001')],
+    overview: {
+      account_id: 'x',
+      balance_tinybars: 150_000_000,
+      transactions: [],
+      tokens: [
+        { token_id: '0.0.8', symbol: 'ALP', name: 'Alpha', balance: '12345', decimals: 2 },
+        { token_id: '0.0.9', symbol: 'TGBP', name: 'Sterling', balance: '74851', decimals: 0, deleted: true },
+      ],
+    },
+  }))
+
+  it('shows deleted tokens in assets but keeps them out of the Send menu', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+    await openAccount(user, 'Savings')
+    const assets = await screen.findByRole('list', { name: 'Account assets' })
+    expect(within(assets).getByText('(deleted)')).toBeInTheDocument()
+    expect(within(assets).getByText('74,851')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Send' }))
+    expect(await screen.findByRole('menuitem', { name: /ALP/ })).toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: /TGBP/ })).not.toBeInTheDocument()
+  })
+
+  it('lets a deleted token be dissociated whatever its balance', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+    await openAccount(user, 'Savings')
+    await screen.findByRole('list', { name: 'Account assets' })
+    await chooseMenu(user, 'Token management', 'Disassociate token')
+    const select = await screen.findByLabelText('Token to remove')
+    expect(within(select).getByRole('option', { name: /TGBP.*deleted token/ })).toBeEnabled()
+    expect(within(select).getByRole('option', { name: /ALP.*must be 0/ })).toBeDisabled()
+  })
+})
