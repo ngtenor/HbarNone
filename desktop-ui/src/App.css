@@ -211,7 +211,7 @@
 
 .vault-tab-close:hover:not(:disabled) {
   color: var(--ink);
-  background: var(--brand-light);
+  background: var(--brand-very-light);
 }
 
 .vault-tab-close:disabled {
@@ -554,7 +554,7 @@ h2.section-title,
 
 .dropdown-item:hover:not(:disabled),
 .dropdown-item:focus-visible {
-  background: var(--brand-light);
+  background: var(--brand-very-light);
 }
 
 .dropdown-item:disabled {
@@ -1585,7 +1585,7 @@ h2 {
 
 .password-toggle:hover {
   border-color: var(--brand-medium);
-  background: var(--brand-light);
+  background: var(--brand-very-light);
 }
 
 .create-panel .generate-passphrase {
@@ -1807,7 +1807,7 @@ h2 {
 .secondary-button:hover,
 .close-button:hover {
   border-color: var(--brand-medium);
-  background: var(--brand-light);
+  background: var(--brand-very-light);
 }
 
 .delete-wallet-button {
@@ -2329,7 +2329,7 @@ button.primary-button:hover:not(:disabled),
 button.secondary-button:hover:not(:disabled),
 button.reveal-button:hover:not(:disabled) {
   border-color: var(--brand-medium);
-  background: var(--brand-light);
+  background: var(--brand-very-light);
 }
 
 button.risky-button,
