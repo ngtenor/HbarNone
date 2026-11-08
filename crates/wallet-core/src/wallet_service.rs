@@ -554,6 +554,36 @@ impl WalletService {
         Ok(())
     }
 
+    /// Archives the vault file and returns the service to its first-run
+    /// state, for when the vault password has been lost. No password is
+    /// needed: the encrypted file is renamed, never deleted, so the old
+    /// vault stays recoverable if its password is found later.
+    pub fn start_over(&mut self, path: &str) -> Result<(), String> {
+        if std::path::Path::new(path).exists() {
+            let archive = format!(
+                "{path}.before-reset-{}",
+                chrono::Utc::now().format("%Y%m%d-%H%M%S")
+            );
+            std::fs::rename(path, &archive)
+                .map_err(|error| format!("could not archive the vault file: {error}"))?;
+        }
+        *self = Self::new();
+        Ok(())
+    }
+
+    /// The third-party (outside) address-book entries, as network and ID.
+    pub fn outside_entries(&mut self) -> Result<Vec<(Network, String)>, String> {
+        self.ensure_unlocked()?;
+        Ok(self
+            .payload
+            .as_ref()
+            .expect("checked unlocked")
+            .address_book
+            .iter()
+            .map(|entry| (entry.network, entry.id.clone()))
+            .collect())
+    }
+
     pub fn lock(&mut self) {
         self.master_key = None;
         self.payload = None;
@@ -2065,6 +2095,41 @@ mod tests {
         assert_eq!(wallets[0].secret_kind, SecretKind::WatchOnly);
         assert_eq!(restored.wallet_public_key(&wallet.id).unwrap(), public_key);
         assert!(restored.with_wallet_key(&wallet.id, |_, _| Ok(())).is_err());
+    }
+
+    #[test]
+    fn start_over_archives_the_vault_for_a_lost_password() {
+        let (directory, path) = temp_path();
+        let path_str = path.to_str().unwrap();
+        let mut service = WalletService::new();
+        service.create_vault("vault password", path_str).unwrap();
+        service.create_and_save_wallet("Wallet", path_str).unwrap();
+        service.lock();
+
+        // Start over works on a locked vault, with no password.
+        let mut locked = WalletService::load_store(path_str).unwrap();
+        assert_eq!(locked.vault_status(), "locked");
+        locked.start_over(path_str).unwrap();
+        assert_eq!(locked.vault_status(), "uninitialized");
+        assert!(!path.exists());
+
+        // The encrypted vault was archived next to the original, not deleted.
+        let archives = std::fs::read_dir(directory.path())
+            .unwrap()
+            .filter(|entry| {
+                entry
+                    .as_ref()
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .contains("before-reset")
+            })
+            .count();
+        assert_eq!(archives, 1);
+
+        // A fresh vault can be created immediately afterwards.
+        locked.create_vault("new password", path_str).unwrap();
+        assert_eq!(locked.vault_status(), "unlocked");
     }
 
     #[test]

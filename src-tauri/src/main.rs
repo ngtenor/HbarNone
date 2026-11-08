@@ -102,6 +102,23 @@ fn unlock_vault(vault_password: String, state: State<'_, AppState>) -> Result<Va
     unlocked_state(&mut service)
 }
 
+/// Archives the vault file and returns to the first-run screen, for when the
+/// vault password has been lost. The encrypted file is renamed with a
+/// `before-reset` suffix, never deleted, so it stays recoverable if the
+/// password is found later. No password is needed; anyone with access to the
+/// machine could already delete the file, and its contents stay encrypted.
+#[tauri::command]
+fn start_over_vault(state: State<'_, AppState>) -> Result<VaultState, String> {
+    let mut service = lock_service(&state)?;
+    service.start_over(&state.store_path.to_string_lossy())?;
+    Ok(VaultState {
+        status: service.vault_status().to_string(),
+        wallets: Vec::new(),
+        legacy_wallets: Vec::new(),
+        auto_lock_seconds: service.auto_lock_seconds(),
+    })
+}
+
 #[tauri::command]
 fn migrate_legacy_vault(
     vault_password: String,
@@ -1420,6 +1437,30 @@ fn get_address_book(state: State<'_, AppState>) -> Result<AddressBookView, Strin
     address_book_view(&state)
 }
 
+/// Removes outside address-book entries whose accounts are deleted on their
+/// network. Wallet accounts are listed live and need no pruning. A mirror
+/// error keeps the entry, so a network problem never empties the book.
+#[tauri::command]
+async fn prune_address_book(state: State<'_, AppState>) -> Result<AddressBookView, String> {
+    let entries = lock_service(&state)?.outside_entries()?;
+    let mut dead = Vec::new();
+    for (network, id) in entries {
+        if let Ok(true) = MirrorClient::for_network(network)?
+            .account_is_deleted(&id)
+            .await
+        {
+            dead.push((network, id));
+        }
+    }
+    if !dead.is_empty() {
+        let mut service = lock_service(&state)?;
+        for (network, id) in &dead {
+            service.remove_address_book_entry(*network, id, &state.store_path.to_string_lossy())?;
+        }
+    }
+    address_book_view(&state)
+}
+
 #[tauri::command]
 fn set_allow_external_deletes(
     allowed: bool,
@@ -1698,6 +1739,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             create_vault,
             unlock_vault,
+            start_over_vault,
             migrate_legacy_vault,
             set_auto_lock_seconds,
             change_vault_password,
@@ -1739,6 +1781,7 @@ fn main() {
             check_recipient,
             rename_account,
             get_address_book,
+            prune_address_book,
             set_allow_external_sends,
             set_allow_external_deletes,
             add_address_book_entry,

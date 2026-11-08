@@ -191,6 +191,8 @@ function App() {
     () => (localStorage.getItem('networkView') === 'mainnet' ? 'mainnet' : 'testnet'),
   )
   const [confirmingMainnet, setConfirmingMainnet] = useState(false)
+  const [startingOver, setStartingOver] = useState(false)
+  const [startOverAcknowledged, setStartOverAcknowledged] = useState(false)
   const fetchedBalances = useRef(new Set<string>())
   const [error, setError] = useState('')
   const [isSavingWallet, setIsSavingWallet] = useState(false)
@@ -572,6 +574,26 @@ function App() {
       setLegacyPasswords({})
       setVaultPassword('')
       setVaultPasswordConfirmation('')
+    } finally {
+      setIsSubmittingVault(false)
+    }
+  }
+
+  async function handleStartOver() {
+    setError('')
+    setIsSubmittingVault(true)
+    try {
+      const state = await invoke<VaultState>('start_over_vault')
+      setStartingOver(false)
+      setStartOverAcknowledged(false)
+      setVaultPassword('')
+      setVaultPasswordConfirmation('')
+      setWallets([])
+      setAutoLockSeconds(state.autoLockSeconds)
+      setGateMode('choose')
+      setVaultView('uninitialized')
+    } catch (startOverError) {
+      setError(errorMessage(startOverError))
     } finally {
       setIsSubmittingVault(false)
     }
@@ -1369,6 +1391,16 @@ function App() {
               {isSubmittingVault ? 'Unlocking...' : 'Unlock vault'}
             </button>
           </form>
+          <button
+            className="gate-back"
+            type="button"
+            onClick={() => {
+              setStartOverAcknowledged(false)
+              setStartingOver(true)
+            }}
+          >
+            Forgotten the vault password? Start over
+          </button>
         </section>
       )}
 
@@ -2247,6 +2279,48 @@ function App() {
             )
           })()}
         </>
+      )}
+
+      {startingOver && (
+        <div
+          className="modal-backdrop"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setStartingOver(false)
+          }}
+        >
+          <div className="recovery-dialog" role="dialog" aria-modal="true" aria-label="Start over">
+            <h2>Start over with a new vault?</h2>
+            <p className="delete-warning">
+              Without the vault password, the wallets in this vault cannot be
+              opened or recovered by this app. Starting over archives the
+              encrypted vault file next to itself (it is never deleted) and
+              returns to the first-run screen. The old wallets can come back
+              only if the old password is found later, or from recovery
+              phrases backed up elsewhere.
+            </p>
+            <label className="testnet-acknowledge">
+              <input
+                type="checkbox"
+                checked={startOverAcknowledged}
+                onChange={(event) => setStartOverAcknowledged(event.target.checked)}
+              />
+              I understand the current vault stays locked without its password
+            </label>
+            <div className="dialog-actions">
+              <button className="secondary-button" type="button" onClick={() => setStartingOver(false)}>
+                Cancel
+              </button>
+              <button
+                className="danger-button"
+                type="button"
+                disabled={!startOverAcknowledged || isSubmittingVault}
+                onClick={() => void handleStartOver()}
+              >
+                Archive vault and start over
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {confirmingMainnet && (

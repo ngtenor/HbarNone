@@ -39,6 +39,7 @@ type Backend = {
   allowExternalSends: boolean
   allowExternalDeletes: boolean
   outside: { id: string; name: string }[]
+  deletedOnNetwork?: string[]
   calls: { cmd: string; args?: Record<string, unknown> }[]
 }
 
@@ -140,6 +141,15 @@ function installBackend(overrides: Partial<Backend> = {}) {
         if (args?.vaultPassword !== 'correct password') throw new Error('incorrect vault password')
         backend.status = 'unlocked'
         return vaultState()
+      case 'start_over_vault':
+        backend.status = 'uninitialized'
+        backend.wallets = []
+        return { status: 'uninitialized', wallets: [], legacyWallets: [], autoLockSeconds: backend.autoLockSeconds }
+      case 'prune_address_book':
+        backend.outside = backend.outside.filter(
+          (item) => !(backend.deletedOnNetwork ?? []).includes(item.id),
+        )
+        return addressBookView()
       case 'lock_vault':
         backend.status = 'locked'
         return undefined
@@ -1056,7 +1066,14 @@ describe('hedera testnet panel', () => {
       const list = await screen.findByRole('list', { name: 'Unnamed accounts' })
       expect(within(list).getByText('Savings')).toBeInTheDocument()
 
-      await user.click(screen.getByRole('button', { name: 'Add to address book' }))
+      // The add form is hidden until opened, and Close hides it again.
+      expect(screen.queryByLabelText('Name')).not.toBeInTheDocument()
+      await user.click(screen.getByRole('button', { name: 'Add outside account' }))
+      await user.click(await screen.findByRole('button', { name: 'Close' }))
+      expect(screen.queryByLabelText('Name')).not.toBeInTheDocument()
+
+      await user.click(screen.getByRole('button', { name: 'Add outside account' }))
+      await user.click(await screen.findByRole('button', { name: 'Add to address book' }))
       expect(await screen.findByRole('alert')).toHaveTextContent('name is required')
 
       await user.type(screen.getByLabelText('Name'), 'Landlord')
@@ -2578,5 +2595,54 @@ describe('deleted tokens', () => {
     const select = await screen.findByLabelText('Token to remove')
     expect(within(select).getByRole('option', { name: /TGBP.*deleted token/ })).toBeEnabled()
     expect(within(select).getByRole('option', { name: /ALP.*must be 0/ })).toBeDisabled()
+  })
+})
+
+describe('start over from the unlock screen', () => {
+  beforeEach(() => installBackend())
+
+  it('archives the vault after acknowledgment and returns to first run', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+    await screen.findByLabelText('Vault password')
+    await user.click(screen.getByRole('button', { name: 'Forgotten the vault password? Start over' }))
+
+    const confirm = await screen.findByRole('button', { name: 'Archive vault and start over' })
+    expect(confirm).toBeDisabled()
+    await user.click(screen.getByLabelText(/I understand the current vault/))
+    await user.click(confirm)
+
+    expect(await screen.findByRole('button', { name: 'Create vault' })).toBeInTheDocument()
+    expect(commandsCalled('start_over_vault')).toHaveLength(1)
+  })
+
+  it('does nothing when cancelled', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+    await screen.findByLabelText('Vault password')
+    await user.click(screen.getByRole('button', { name: 'Forgotten the vault password? Start over' }))
+    await user.click(await screen.findByRole('button', { name: 'Cancel' }))
+    expect(screen.getByLabelText('Vault password')).toBeInTheDocument()
+    expect(commandsCalled('start_over_vault')).toHaveLength(0)
+  })
+})
+
+describe('address book pruning', () => {
+  it('removes outside entries whose accounts were deleted on the network', async () => {
+    const user = userEvent.setup()
+    installBackend({
+      status: 'unlocked',
+      outside: [
+        { id: '0.0.7777', name: 'Gone' },
+        { id: '0.0.8888', name: 'Alive' },
+      ],
+      deletedOnNetwork: ['0.0.7777'],
+    })
+    render(<App />)
+    await user.click(await screen.findByRole('button', { name: 'Address book' }))
+
+    expect(await screen.findByText('Removed 1 account deleted on the network.')).toBeInTheDocument()
+    expect(screen.queryByText('Gone')).not.toBeInTheDocument()
+    expect(screen.getByText('Alive')).toBeInTheDocument()
   })
 })

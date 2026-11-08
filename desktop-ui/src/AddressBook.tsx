@@ -33,7 +33,34 @@ export function AddressBook({ view, onChange, onRenamed }: Props) {
   const [error, setError] = useState('')
   const [isBusy, setIsBusy] = useState(false)
   const [balances, setBalances] = useState<Record<string, number | null>>({})
+  const [pruneNotice, setPruneNotice] = useState('')
+  const [adding, setAdding] = useState(false)
   const idsKey = view.rows.map((row) => row.id).join(',')
+
+  // Outside entries whose accounts were deleted on the network are removed
+  // when the address book opens; wallet accounts are always listed live.
+  useEffect(() => {
+    let cancelled = false
+    const outsideBefore = view.rows.filter((row) => row.wallet_id === null).length
+    void invoke<AddressBookView>('prune_address_book')
+      .then((updated) => {
+        if (cancelled) return
+        const outsideAfter = updated.rows.filter((row) => row.wallet_id === null).length
+        const removed = outsideBefore - outsideAfter
+        if (removed > 0) {
+          setPruneNotice(
+            `Removed ${removed} ${removed === 1 ? 'account' : 'accounts'} deleted on the network.`,
+          )
+        }
+        onChange(updated)
+      })
+      .catch(() => undefined)
+    return () => {
+      cancelled = true
+    }
+    // The prune runs once, when the address book opens.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // Balances come from the public mirror node, one account at a time.
   useEffect(() => {
@@ -167,10 +194,22 @@ export function AddressBook({ view, onChange, onRenamed }: Props) {
       role="tabpanel"
       aria-labelledby="tab-addressbook"
     >
-      <div className="settings-heading">
+      <div className="settings-heading address-book-heading">
         <h1>Address book</h1>
+        <button
+          className="secondary-button"
+          type="button"
+          onClick={() => {
+            setAdding((current) => !current)
+            setError('')
+          }}
+        >
+          Add outside account
+        </button>
       </div>
+      {pruneNotice && <p className="field-hint" role="status">{pruneNotice}</p>}
 
+      {adding && (
       <section className="panel settings-panel" aria-labelledby="address-book-add-heading">
         <h2 id="address-book-add-heading">Add an outside account</h2>
         <p className="dialog-copy">
@@ -197,11 +236,25 @@ export function AddressBook({ view, onChange, onRenamed }: Props) {
             onChange={(event) => setAddress(event.target.value)}
           />
           {error && <p className="error-message" role="alert">{error}</p>}
-          <button className="secondary-button" type="submit" disabled={isBusy}>
-            {isBusy ? 'Checking...' : 'Add to address book'}
-          </button>
+          <div className="button-pair">
+            <button className="secondary-button" type="submit" disabled={isBusy}>
+              {isBusy ? 'Checking...' : 'Add to address book'}
+            </button>
+            <button
+              className="secondary-button"
+              type="button"
+              disabled={isBusy}
+              onClick={() => {
+                setAdding(false)
+                setError('')
+              }}
+            >
+              Close
+            </button>
+          </div>
         </form>
       </section>
+      )}
 
       <section className="panel settings-panel" aria-label="Address book entries">
         <div className="address-columns" aria-hidden="true">
