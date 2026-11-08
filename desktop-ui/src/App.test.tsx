@@ -1468,7 +1468,7 @@ describe('watch-only wallet', () => {
     await user.click(await screen.findByRole('button', { name: 'Import' }))
     await user.click(screen.getByRole('button', { name: 'Watch-only public key' }))
     const publicKey = 'd75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a'
-    await user.type(screen.getByLabelText('Public key (hex)'), publicKey)
+    await user.type(screen.getByLabelText('Public key (hex or DER)'), publicKey)
     await user.type(screen.getByLabelText('Wallet name'), 'Monitor')
     await user.click(screen.getByRole('button', { name: 'Add watch-only wallet' }))
 
@@ -2514,7 +2514,7 @@ describe('network separation', () => {
     expect(screen.queryByRole('button', { name: 'Recovery phrase' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Private key' })).not.toBeInTheDocument()
 
-    await user.type(screen.getByLabelText('Public key (hex)'), 'ab'.repeat(32))
+    await user.type(screen.getByLabelText('Public key (hex or DER)'), 'ab'.repeat(32))
     await user.type(screen.getByLabelText('Wallet name'), 'New watcher')
     await user.click(screen.getByRole('button', { name: 'Add watch-only wallet' }))
     await waitFor(() => {

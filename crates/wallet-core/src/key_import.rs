@@ -107,16 +107,32 @@ pub fn public_key_hex(key_type: KeyType, secret: &[u8; 32]) -> Result<String, St
     public_key_bytes(key_type, secret).map(hex::encode)
 }
 
+/// Accepts a raw hex public key or a DER-encoded (SPKI) hex public key, as
+/// exported by most Hedera tools, and returns the normalized raw hex form.
 pub fn normalize_public_key(input: &str, key_type: KeyType) -> Result<String, String> {
     let cleaned: String = input.split_whitespace().collect();
     let hex_text = cleaned
         .strip_prefix("0x")
         .or_else(|| cleaned.strip_prefix("0X"))
         .unwrap_or(&cleaned);
-    if hex_text.is_empty() || hex_text.len() > 130 {
+    if hex_text.is_empty() || hex_text.len() > 200 {
         return Err("enter a valid hexadecimal public key".to_string());
     }
-    let bytes = hex::decode(hex_text).map_err(|_| "public key must be hexadecimal".to_string())?;
+    let lowered = hex_text.to_ascii_lowercase();
+    // Known DER (SubjectPublicKeyInfo) prefixes: Ed25519, secp256k1 in the
+    // short Hedera form (compressed) and in the X9.62 form (compressed and
+    // uncompressed). The raw key follows the prefix.
+    const DER_PREFIXES: [&str; 4] = [
+        "302a300506032b6570032100",
+        "302d300706052b8104000a032200",
+        "3036301006072a8648ce3d020106052b8104000a032200",
+        "3056301006072a8648ce3d020106052b8104000a034200",
+    ];
+    let raw_hex = DER_PREFIXES
+        .iter()
+        .find_map(|prefix| lowered.strip_prefix(prefix))
+        .unwrap_or(&lowered);
+    let bytes = hex::decode(raw_hex).map_err(|_| "public key must be hexadecimal".to_string())?;
     match key_type {
         KeyType::Ed25519 => {
             let bytes: [u8; 32] = bytes
@@ -199,6 +215,37 @@ mod tests {
             )
             .unwrap(),
             "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+        );
+    }
+
+    #[test]
+    fn strips_der_prefixes_from_watch_only_public_keys() {
+        let raw_ed25519 = "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a";
+        let der_ed25519 = format!("302a300506032b6570032100{raw_ed25519}");
+        assert_eq!(
+            normalize_public_key(&der_ed25519, KeyType::Ed25519).unwrap(),
+            raw_ed25519
+        );
+        // The DER form with the wrong key type selected is refused.
+        assert!(normalize_public_key(&der_ed25519, KeyType::Ecdsa).is_err());
+
+        let raw_ecdsa = "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
+        for prefix in [
+            "302d300706052b8104000a032200",
+            "3036301006072a8648ce3d020106052b8104000a032200",
+        ] {
+            assert_eq!(
+                normalize_public_key(&format!("{prefix}{raw_ecdsa}"), KeyType::Ecdsa).unwrap(),
+                raw_ecdsa
+            );
+        }
+        // The X9.62 uncompressed DER form normalizes to the compressed key.
+        let uncompressed = "0479be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8";
+        let der_uncompressed =
+            format!("3056301006072a8648ce3d020106052b8104000a034200{uncompressed}");
+        assert_eq!(
+            normalize_public_key(&der_uncompressed, KeyType::Ecdsa).unwrap(),
+            raw_ecdsa
         );
     }
 

@@ -1626,8 +1626,8 @@ fn import_watch_only_wallet(
     network: Network,
     state: State<'_, AppState>,
 ) -> Result<WalletSummary, String> {
-    if public_key.len() > 130 {
-        return Err("public key cannot exceed 130 characters".to_string());
+    if public_key.len() > 200 {
+        return Err("public key cannot exceed 200 characters".to_string());
     }
     lock_service(&state)?.import_watch_only_and_save(
         &name,

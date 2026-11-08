@@ -1994,12 +1994,12 @@ function App() {
 
                 {(networkView === 'mainnet' || (walletMode === 'import' && importKind === 'watchonly')) && (
                   <>
-                    <label htmlFor="import-watch-public-key">Public key (hex)</label>
+                    <label htmlFor="import-watch-public-key">Public key (hex or DER)</label>
                     <input
                       id="import-watch-public-key"
                       autoComplete="off"
                       autoCapitalize="none"
-                      maxLength={130}
+                      maxLength={200}
                       spellCheck={false}
                       required
                       value={importMnemonic}
@@ -2015,7 +2015,8 @@ function App() {
                       <option value="ecdsa">ECDSA (secp256k1)</option>
                     </select>
                     <p className="field-hint">
-                      Stores only this public key. It can monitor matching
+                      Stores only this public key (raw hex or the DER form exported by most Hedera tools).
+                      It can monitor matching
                       {networkView === 'mainnet' ? ' Mainnet' : ' Testnet'} accounts but cannot sign or spend.
                     </p>
                   </>
