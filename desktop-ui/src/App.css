@@ -50,8 +50,8 @@
 }
 
 .vault-gate input:not([type="range"]):focus {
-  border-color: var(--purple);
-  box-shadow: 0 0 0 3px var(--purple-soft);
+  border-color: var(--brand-medium);
+  box-shadow: 0 0 0 3px var(--brand-very-light);
 }
 
 .vault-gate .password-input-row input {
@@ -1241,7 +1241,7 @@ button.topbar-icon:hover {
 }
 
 .locked-indicator {
-  color: var(--purple);
+  color: var(--brand-medium);
   cursor: default;
 }
 
@@ -1426,6 +1426,12 @@ button.topbar-icon:hover {
   text-decoration: none;
 }
 
+.brand-lockup {
+  display: block;
+  width: auto;
+  height: 48px;
+}
+
 .brand-mark,
 .wallet-icon {
   display: grid;
@@ -1599,8 +1605,8 @@ h2 {
 
 .create-panel input:focus,
 .create-panel textarea:focus {
-  border-color: var(--purple);
-  box-shadow: 0 0 0 3px var(--purple-soft);
+  border-color: var(--brand-medium);
+  box-shadow: 0 0 0 3px var(--brand-very-light);
 }
 
 .mode-switch {
@@ -1989,8 +1995,8 @@ h2 {
 }
 
 .recovery-dialog input:focus {
-  border-color: var(--purple);
-  box-shadow: 0 0 0 3px var(--purple-soft);
+  border-color: var(--brand-medium);
+  box-shadow: 0 0 0 3px var(--brand-very-light);
 }
 
 .recovery-dialog .testnet-acknowledge {

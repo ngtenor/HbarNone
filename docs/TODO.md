@@ -396,11 +396,12 @@ HTS tokens. Use it to pick up cold.
 ### Colours
 The three primary brand colours:
 
-| Name   | Hex       | Usage                                                        |
-| ------ | --------- | ------------------------------------------------------------ |
-| Dark   | `#2d3742` | All text (words not included in graphics)                    |
-| Medium | `#7087a5` | Borders of text boxes and buttons                            |
-| Light  | `#a9b8ca` | Outer edges (borders) of large boxes that contain information (panels, dialogs); the boxes themselves are not shaded |
+| Name       | Hex       | Usage                                                        |
+| ---------- | --------- | ------------------------------------------------------------ |
+| Dark       | `#2d3742` | All text (words not included in graphics)                    |
+| Medium     | `#7087a5` | Borders of text boxes and buttons                            |
+| Light      | `#a9b8ca` | Outer edges (borders) of large boxes that contain information (panels, dialogs); the boxes themselves are not shaded |
+| Very light | `#e8f0fa` | Soft shading and accents (e.g., focus glow around text boxes) |
 
 Exception: 'Danger' buttons and messages keep their own (red/warning)
 colours and are not restyled with the brand palette.

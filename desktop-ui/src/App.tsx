@@ -12,6 +12,7 @@ import { DropdownMenu } from './DropdownMenu'
 import type { MenuEntry } from './DropdownMenu'
 import { AccountBadge, WalletBadge } from './WalletBadge'
 import type { AddressBookView, KeyDetection, WalletKeys, WalletSummary } from './types'
+import brandLockup from './assets/brand-lockup.png'
 import './App.css'
 
 type VaultView = 'loading' | 'uninitialized' | 'legacy' | 'locked' | 'unlocked'
@@ -220,7 +221,7 @@ function App() {
     const shell = shellRef.current
     const box = shell?.querySelector('.vault-gate')
     const logo = shell?.querySelector('.brand')
-    const mark = shell?.querySelector('.brand-mark')
+    const mark = shell?.querySelector('.brand-lockup')
     const padlock = shell?.querySelector('.locked-indicator')
     if ((vaultView !== 'uninitialized' && vaultView !== 'locked') || !shell || !box || !logo || !mark) {
       setLogoState('full')
@@ -1149,10 +1150,9 @@ function App() {
         <a
           className={logoState === 'hidden' ? 'brand logo-hidden' : logoState === 'mark' ? 'brand text-hidden' : 'brand'}
           href="/"
-          aria-label="HederaVault home"
+          aria-label="HBarNone home"
         >
-          <span className="brand-mark" aria-hidden="true">H</span>
-          <span>HederaVault</span>
+          <img className="brand-lockup" src={brandLockup} alt="HBarNone — Secure your secrets" />
         </a>
         <div className="topbar-actions">
           {vaultView === 'locked' && (
