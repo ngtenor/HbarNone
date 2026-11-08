@@ -365,7 +365,9 @@ async fn find_wallet_accounts(
             Network::Testnet => "Testnet",
             Network::Mainnet => "Mainnet",
         };
-        return Err(format!("no {shown} account uses this wallet's key yet; an account is created when the key's address first receives HBAR"));
+        return Err(format!(
+            "no {shown} account uses this wallet's key yet; an account is created when the key's address first receives HBAR"
+        ));
     }
     lock_service(&state)?.add_wallet_accounts_and_save(
         &wallet_id,
