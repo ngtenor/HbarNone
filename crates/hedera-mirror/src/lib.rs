@@ -384,7 +384,7 @@ impl MirrorClient {
             .timeout(REQUEST_TIMEOUT)
             .redirect(reqwest::redirect::Policy::none())
             .https_only(true)
-            .user_agent("HederaVault")
+            .user_agent("HBarNone")
             .build()
             .map_err(|_| "could not start the network client".to_string())?;
         Ok(Self {

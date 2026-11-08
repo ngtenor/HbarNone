@@ -2,7 +2,7 @@
 name = "offline-signer"
 version = "0.1.0"
 edition = "2024"
-description = "Command-line offline signer for HederaVault signing requests (test build: keys are typed in)."
+description = "Command-line offline signer for HBarNone signing requests (test build: keys are typed in)."
 
 [[bin]]
 name = "hedera-offline-signer"

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Builds and checks HederaVault on Ubuntu/Debian. Run from anywhere:
+# Builds and checks HBarNone on Ubuntu/Debian. Run from anywhere (also from a
+# USB stick; the project folder is found automatically or set REPO=/path):
 #   bash scripts/linux-test.sh [--skip-apt] [--skip-bundle]
 # Use only disposable wallets and recovery phrases when testing.
 set -euo pipefail
@@ -14,7 +15,21 @@ for arg in "$@"; do
   esac
 done
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRIPT_PARENT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT=""
+if [ -n "${REPO:-}" ] && [ -d "$REPO/.git" ]; then
+  REPO_ROOT="$REPO"
+elif [ -d "$SCRIPT_PARENT/.git" ] && [ -d "$SCRIPT_PARENT/src-tauri" ]; then
+  REPO_ROOT="$SCRIPT_PARENT"
+else
+  for candidate in "$HOME/HbarNone" "$HOME/HBarNone" "$HOME/HederaVault"; do
+    if [ -d "$candidate/.git" ]; then REPO_ROOT="$candidate"; break; fi
+  done
+fi
+if [ -z "$REPO_ROOT" ]; then
+  echo "Could not find the HBarNone folder. Re-run with: REPO=/path/to/HbarNone bash $0" >&2
+  exit 1
+fi
 cd "$REPO_ROOT"
 LOG_FILE="$REPO_ROOT/linux-test-$(date +%Y%m%d-%H%M%S).log"
 exec > >(tee "$LOG_FILE") 2>&1
@@ -78,7 +93,7 @@ step "Frontend lint and build"
 if [ "$SKIP_BUNDLE" -eq 0 ]; then
   step "Tauri production build"
   npm run tauri:build
-  find target/release -maxdepth 3 \( -name 'hedera-vault-app' -o -name '*.deb' -o -name '*.AppImage' -o -name '*.rpm' \) -type f -print
+  find target/release -maxdepth 3 \( -name 'hbarnone' -o -name '*.deb' -o -name '*.AppImage' -o -name '*.rpm' \) -type f -print
 else
   step "Tauri production build skipped"
 fi
@@ -103,6 +118,6 @@ else
 fi
 
 step "Next: manual checks"
-echo "Launch: $REPO_ROOT/target/release/hedera-vault-app"
+echo "Launch: $REPO_ROOT/target/release/hbarnone"
 echo "Then work through the desktop verification list in docs/TODO.md using disposable wallets only."
 echo "Log saved to: $LOG_FILE"

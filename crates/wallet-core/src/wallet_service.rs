@@ -482,12 +482,12 @@ impl WalletService {
             return Err("backup file is too large".to_string());
         }
         let json: serde_json::Value = serde_json::from_str(backup_json)
-            .map_err(|_| "the selected file is not a HederaVault backup".to_string())?;
+            .map_err(|_| "the selected file is not an HBarNone backup".to_string())?;
         if json.get("wrapped_key").is_none() {
-            return Err("the selected file is not a HederaVault backup".to_string());
+            return Err("the selected file is not an HBarNone backup".to_string());
         }
         let container: VaultContainer = serde_json::from_value(json)
-            .map_err(|_| "the selected file is not a HederaVault backup".to_string())?;
+            .map_err(|_| "the selected file is not an HBarNone backup".to_string())?;
         let (master_key, payload) = container
             .unlock(backup_password)
             .map_err(|_| "incorrect backup password or damaged backup".to_string())?;

@@ -152,8 +152,8 @@ async fn export_vault_backup(
         .dialog()
         .file()
         .set_title("Save encrypted vault backup")
-        .set_file_name("hedera-vault-backup.json")
-        .add_filter("HederaVault backup", &["json"])
+        .set_file_name("hbarnone-backup.json")
+        .add_filter("HBarNone backup", &["json"])
         .blocking_save_file()
     else {
         return Ok(false);
@@ -181,8 +181,8 @@ async fn backup_and_erase_vault(
         .dialog()
         .file()
         .set_title("Save encrypted vault backup before erasing")
-        .set_file_name("hedera-vault-backup.json")
-        .add_filter("HederaVault backup", &["json"])
+        .set_file_name("hbarnone-backup.json")
+        .add_filter("HBarNone backup", &["json"])
         .blocking_save_file()
     else {
         return Ok(None);
@@ -225,7 +225,7 @@ async fn restore_vault_backup(
         .dialog()
         .file()
         .set_title("Choose an encrypted vault backup")
-        .add_filter("HederaVault backup", &["json"])
+        .add_filter("HBarNone backup", &["json"])
         .blocking_pick_file()
     else {
         return Ok(None);
@@ -240,7 +240,7 @@ async fn restore_vault_backup(
         return Err("backup file is too large".to_string());
     }
     let contents = std::fs::read_to_string(&path)
-        .map_err(|_| "the selected file is not a HederaVault backup".to_string())?;
+        .map_err(|_| "the selected file is not an HBarNone backup".to_string())?;
     let mut service = lock_service(&state)?;
     service.restore_backup(
         &contents,
@@ -1754,5 +1754,5 @@ fn main() {
             get_vault_state
         ])
         .run(tauri::generate_context!())
-        .expect("failed to run HederaVault");
+        .expect("failed to run HBarNone");
 }

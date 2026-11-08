@@ -5,8 +5,9 @@
 #   bash scripts/linux-migration-check.sh restore  # put your own vault back and clean up
 set -euo pipefail
 
-REPO_ROOT="${HV_REPO:-$HOME/HederaVault}"
-[ -d "$REPO_ROOT/.git" ] || { echo "Repo not found at $REPO_ROOT. Run: HV_REPO=/path/to/HederaVault bash $0 ${1:-old}"; exit 1; }
+REPO_ROOT="${HV_REPO:-$HOME/HbarNone}"
+[ -d "$REPO_ROOT/.git" ] || REPO_ROOT="$HOME/HederaVault"
+[ -d "$REPO_ROOT/.git" ] || { echo "Repo not found. Run: HV_REPO=/path/to/HbarNone bash $0 ${1:-old}"; exit 1; }
 OLD_DIR="$HOME/hv-old"
 OLD_COMMIT=18aed68
 STATE="$HOME/hv-migration-test"
@@ -23,7 +24,7 @@ sum() { [ -f "$FILE" ] && sha256sum "$FILE" | cut -d' ' -f1 || echo "(no file)";
 case "${1:-}" in
   old)
     echo "Data folder: $DATA_DIR"
-    pgrep -f hedera-vault-app >/dev/null && { echo "Close the HederaVault app first, then run this again."; exit 1; }
+    pgrep -f "hbarnone|hedera-vault-app" >/dev/null && { echo "Close the HBarNone app first, then run this again."; exit 1; }
     if [ -f "$FILE" ] && [ ! -f "$STATE/my-vault.json" ]; then
       cp "$FILE" "$STATE/my-vault.json"
       echo "Saved your current vault to $STATE/my-vault.json"
@@ -61,7 +62,7 @@ case "${1:-}" in
     fi
     ;;
   restore)
-    pgrep -f hedera-vault-app >/dev/null && { echo "Close the HederaVault app first."; exit 1; }
+    pgrep -f "hbarnone|hedera-vault-app" >/dev/null && { echo "Close the HBarNone app first."; exit 1; }
     if [ -f "$STATE/my-vault.json" ]; then
       mkdir -p "$DATA_DIR"
       cp "$STATE/my-vault.json" "$FILE"

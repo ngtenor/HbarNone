@@ -11,7 +11,7 @@ exec > >(tee "$LOG_FILE") 2>&1
 
 REPO="${REPO:-}"
 if [ -z "$REPO" ]; then
-  for candidate in "$HOME/HederaVault" "/home/HederaVault"; do
+  for candidate in "$HOME/HbarNone" "$HOME/HBarNone" "$HOME/HederaVault" "/home/HederaVault"; do
     if [ -d "$candidate/.git" ]; then REPO="$candidate"; break; fi
   done
 fi

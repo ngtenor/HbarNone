@@ -149,7 +149,7 @@ fn strip<'a>(text: &'a str, prefix: &str, what: &str) -> Result<&'a str, String>
     let compact = text.trim();
     compact
         .strip_prefix(prefix)
-        .ok_or_else(|| format!("This is not a signing {what} from HederaVault."))
+        .ok_or_else(|| format!("This is not a signing {what} from HBarNone."))
 }
 
 /// Builds an unsigned transfer from `sender` to `receiver`, valid for 180 seconds.

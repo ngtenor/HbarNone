@@ -1,6 +1,6 @@
 //! Command-line offline signer (test build).
 //!
-//! Shows every field of a HederaVault signing request, asks for the key, and
+//! Shows every field of an HBarNone signing request, asks for the key, and
 //! signs only after the user types `yes`. It never connects to a network.
 
 use std::io::{self, Write};
@@ -191,7 +191,7 @@ fn read_request() -> Result<String, String> {
 }
 
 fn run() -> Result<(), String> {
-    println!("HederaVault offline signer (test build). Testnet only. Use disposable keys.");
+    println!("HBarNone offline signer (test build). Testnet only. Use disposable keys.");
     println!("Nothing here connects to a network.\n");
     let request = read_request()?;
     let (_, summary) = parse_request(&request).map_err(|e| e.to_string())?;

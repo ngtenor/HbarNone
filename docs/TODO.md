@@ -317,21 +317,24 @@ HTS tokens. Use it to pick up cold.
   `cmd /c "call ...\BuildTools\VC\Auxiliary\Build\vcvars64.bat >nul && cd /d <repo> && <cmd>"`.
 - Release app: `npm.cmd run tauri:build -- --target x86_64-pc-windows-msvc --no-bundle`
   from the repo root (about 90 seconds). The output is
-  `target\x86_64-pc-windows-msvc\release\hedera-vault-app.exe`. Close the app
+  `target\x86_64-pc-windows-msvc\release\hbarnone.exe` (named
+  `hedera-vault-app.exe` before the November 2026 rename). Close the app
   first or the exe is locked ("Access is denied").
 - A stale exe is the usual reason a new feature seems to be missing: the check
   scripts only test, they do not rebuild the app.
 - PowerShell blocks `npm.ps1` and `npx.ps1`; use `npm.cmd` and `npx.cmd`.
-- `git` is not on PATH. Use
-  `C:\Users\ngt\AppData\Local\GitHubDesktop\app-3.6.10\resources\app\git\cmd\git.exe`
-  (the red NativeCommandError text it prints is harmless). The version folder
-  in that path changes when GitHub Desktop updates.
-- WSL and Python are not installed. Node is available for helper scripts.
+- `git` is not on PowerShell's PATH. Use
+  `C:\Program Files\Git\cmd\git.exe` (or add that folder to PATH in the
+  session).
+- WSL and Python are not installed system-wide, but `py` launches
+  Python 3.14 (with pillow and numpy installed). Node is available for
+  helper scripts.
 
 ### Linux testing procedure
 - Linux testing is done with a script that is copied to a USB stick, not typed
   in by hand. The stick appears at `/run/media/nick/AEAC-A758/`, the project is
-  at `/home/nick/HederaVault`, and Rust and Node are installed.
+  at `/home/nick/HederaVault` (folder name predates the rename; the scripts
+  also look for `~/HbarNone`), and Rust and Node are installed.
 - Scripts must have LF line endings (Windows CRLF breaks bash on line one).
 - Run: `bash /run/media/nick/AEAC-A758/linux-token-check.sh`. The log
   `token-check-<date>.log` is written to the stick and copied back to
@@ -341,16 +344,31 @@ HTS tokens. Use it to pick up cold.
 
 ### Git and CI workflow
 - Commits carry a `Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>`
-  trailer. Work goes on a feature branch (now `feature/token-associate-hide`,
-  pull request #18); never push to main directly. The user opens the pull
-  request from the branch link, with a title and description supplied.
+  trailer. This is a solo project: commits are made and pushed directly to
+  `main` (confirmed 8 Nov 2026); feature branches and pull requests are no
+  longer used.
 - CI (`.github/workflows/ci.yml`) runs on Windows and Ubuntu. Failed job logs
   are one long line; the useful part is the `Diff in ...` blocks from
   `cargo fmt`.
-- The pull request also carries earlier uncommitted edits to `offline.rs`,
-  `vault_container.rs` and `wallet_service.rs`.
 
 ### Recently completed (8 Nov 2026)
+- [x] Mainnet watch-only verified by the user: a genuine Mainnet public key
+  (DER form) imports, discovers its account and shows balances and history;
+  the Mainnet view offers no send, token or account actions. The QR + offline
+  signer flow was re-verified on Testnet with a watch-only wallet, and the
+  deleted-token display/dissociation works.
+- [x] Watch-only import accepts DER-encoded public keys (Ed25519 SPKI and
+  secp256k1 forms) as exported by most Hedera tools; keys are stored
+  normalized, so the duplicate-key guard works across formats.
+- [x] Deleted tokens are shown in Account assets marked "(deleted)", excluded
+  from Send/Delete/Mint/Burn, and can be dissociated whatever their balance.
+- [x] Rename completed: productName, window title, installer names, Rust
+  binary (`hbarnone.exe`), npm package, user agent, backup dialog labels and
+  signer messages all say HBarNone. The bundle identifier stays
+  `org.hederavault.desktop` so existing app-data is not relocated; changing it
+  needs a migration step.
+- [x] Merged remote feature branches deleted (hedera-testnet-readonly,
+  signer-image-scan, tokens-menus).
 - [x] Network separation: a topbar Testnet/Mainnet switch shows one network at
   a time. Wallets carry a `network` tag (existing wallets default to Testnet);
   accounts cannot be linked across networks, and every spending or signing

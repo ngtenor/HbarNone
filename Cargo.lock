@@ -1647,6 +1647,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "hbarnone"
+version = "0.1.0"
+dependencies = [
+ "hedera-mirror",
+ "hedera-tx",
+ "qrcode",
+ "serde",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "wallet-core",
+ "zeroize",
+]
+
+[[package]]
 name = "heck"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1679,21 +1694,6 @@ dependencies = [
  "sha3",
  "tonic",
  "wallet-core",
-]
-
-[[package]]
-name = "hedera-vault-app"
-version = "0.1.0"
-dependencies = [
- "hedera-mirror",
- "hedera-tx",
- "qrcode",
- "serde",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "wallet-core",
- "zeroize",
 ]
 
 [[package]]

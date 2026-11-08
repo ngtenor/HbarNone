@@ -233,7 +233,7 @@ pub enum Reject {
 impl std::fmt::Display for Reject {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Reject::NotARequest => write!(f, "This is not a HederaVault signing request."),
+            Reject::NotARequest => write!(f, "This is not an HBarNone signing request."),
             Reject::BadEncoding => write!(f, "The request text is damaged or incomplete."),
             Reject::Unsupported(why) => {
                 write!(
