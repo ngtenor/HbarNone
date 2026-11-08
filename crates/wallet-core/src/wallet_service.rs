@@ -99,6 +99,7 @@ pub struct WalletSummary {
     pub id: String,
     pub name: String,
     pub created_at: String,
+    pub network: Network,
     pub accounts: Vec<AccountSummary>,
     pub secret_kind: SecretKind,
     pub key_type: KeyType,
@@ -110,6 +111,7 @@ impl WalletSummary {
             id: wallet.id.clone(),
             name: wallet.name.clone(),
             created_at: wallet.created_at.clone(),
+            network: wallet.network,
             accounts: wallet.accounts.iter().map(AccountSummary::from).collect(),
             secret_kind: wallet.secret_kind,
             key_type: wallet.key_type,
@@ -277,6 +279,7 @@ impl WalletService {
                         id: wallet.id.clone(),
                         name: wallet.name.clone(),
                         created_at: wallet.created_at.clone(),
+                        network: Network::Testnet,
                         accounts: Vec::new(),
                         secret_kind: SecretKind::Mnemonic,
                         key_type: KeyType::Ed25519,
@@ -427,6 +430,7 @@ impl WalletService {
                 name: legacy_wallet.name.clone(),
                 created_at: legacy_wallet.created_at.clone(),
                 updated_at: legacy_wallet.updated_at.clone(),
+                network: Network::Testnet,
                 accounts: Vec::new(),
                 account_id: None,
                 secret_kind: SecretKind::Mnemonic,
@@ -646,11 +650,16 @@ impl WalletService {
         )
     }
 
+    /// Imports a watch-only wallet (a public key with no secret). This is the
+    /// only wallet kind allowed on Mainnet: the vault never holds a secret
+    /// for a Mainnet wallet, and a key already present in the vault (on any
+    /// network) is refused, so Testnet keys are not reused on Mainnet.
     pub fn import_watch_only_and_save(
         &mut self,
         name: &str,
         public_key: &str,
         key_type: KeyType,
+        network: Network,
         path: &str,
     ) -> Result<WalletSummary, String> {
         self.ensure_unlocked()?;
@@ -694,6 +703,7 @@ impl WalletService {
             name,
             created_at: now.clone(),
             updated_at: now,
+            network,
             accounts: Vec::new(),
             account_id: None,
             secret_kind: SecretKind::WatchOnly,
@@ -755,6 +765,8 @@ impl WalletService {
             name,
             created_at: now.clone(),
             updated_at: now,
+            // Wallets with secrets are always Testnet; Mainnet is watch-only.
+            network: Network::Testnet,
             accounts: Vec::new(),
             account_id: None,
             secret_kind,
@@ -827,6 +839,12 @@ impl WalletService {
             .iter_mut()
             .find(|wallet| wallet.id == wallet_id)
             .ok_or_else(|| format!("wallet not found: {wallet_id}"))?;
+        if wallet.network != network {
+            return Err(format!(
+                "wallet '{}' belongs to another network; accounts cannot cross networks",
+                wallet.name
+            ));
+        }
         for id in account_ids {
             let account = WalletAccount {
                 network,
@@ -1815,11 +1833,12 @@ mod tests {
             .add_wallet_accounts_and_save(&first.id, Network::Testnet, &ids(&["0.0.1001"]), path)
             .unwrap();
         assert_eq!(again.accounts.len(), 2);
-        // The same number on another network is a different account.
-        let mainnet = service
+        // Accounts cannot cross networks: a Testnet wallet refuses a Mainnet
+        // link, so the same number on another network stays separate.
+        let cross = service
             .add_wallet_accounts_and_save(&second.id, Network::Mainnet, &ids(&["0.0.1001"]), path)
-            .unwrap();
-        assert_eq!(mainnet.accounts[0].network, Network::Mainnet);
+            .unwrap_err();
+        assert!(cross.contains("another network"));
         let error = service
             .add_wallet_accounts_and_save(&second.id, Network::Testnet, &ids(&["0.0.1002"]), path)
             .unwrap_err();
@@ -1840,7 +1859,7 @@ mod tests {
                 )
                 .is_err()
         );
-        assert_eq!(service.list_wallets().unwrap()[1].accounts.len(), 1);
+        assert_eq!(service.list_wallets().unwrap()[1].accounts.len(), 0);
 
         service.lock();
         let mut reloaded = WalletService::load_store(path).unwrap();
@@ -2011,7 +2030,13 @@ mod tests {
         let mut service = WalletService::new();
         service.create_vault("vault password", path).unwrap();
         let wallet = service
-            .import_watch_only_and_save("Cold monitor", &public_key, KeyType::Ed25519, path)
+            .import_watch_only_and_save(
+                "Cold monitor",
+                &public_key,
+                KeyType::Ed25519,
+                Network::Testnet,
+                path,
+            )
             .unwrap();
 
         assert_eq!(wallet.secret_kind, SecretKind::WatchOnly);
@@ -2024,6 +2049,7 @@ mod tests {
                     "Duplicate monitor",
                     &public_key,
                     KeyType::Ed25519,
+                    Network::Testnet,
                     path
                 )
                 .unwrap_err()
@@ -2039,6 +2065,74 @@ mod tests {
         assert_eq!(wallets[0].secret_kind, SecretKind::WatchOnly);
         assert_eq!(restored.wallet_public_key(&wallet.id).unwrap(), public_key);
         assert!(restored.with_wallet_key(&wallet.id, |_, _| Ok(())).is_err());
+    }
+
+    #[test]
+    fn networks_stay_separate() {
+        let (_directory, path) = temp_path();
+        let path = path.to_str().unwrap();
+        let phrase = "inmate flip alley wear offer often piece magnet surge toddler submit right radio absent pear floor belt raven price stove replace reduce plate home";
+        let public_key = Wallet::from_mnemonic(phrase).unwrap().public_key;
+        let mut service = WalletService::new();
+        service.create_vault("vault password", path).unwrap();
+
+        // Wallets created with secrets are always Testnet wallets.
+        let hot = service.create_and_save_wallet("Hot", path).unwrap();
+        assert_eq!(hot.network, Network::Testnet);
+
+        // A Mainnet wallet is watch-only and carries its network tag.
+        let cold = service
+            .import_watch_only_and_save(
+                "Mainnet monitor",
+                &public_key,
+                KeyType::Ed25519,
+                Network::Mainnet,
+                path,
+            )
+            .unwrap();
+        assert_eq!(cold.network, Network::Mainnet);
+
+        // A key already in the vault is refused on any network, so a key
+        // exercised on Testnet cannot be imported again for Mainnet.
+        let testnet_phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        let testnet_key = Wallet::from_mnemonic(testnet_phrase).unwrap().public_key;
+        service
+            .import_and_save_wallet("Testnet secret", testnet_phrase, path)
+            .unwrap();
+        assert!(
+            service
+                .import_watch_only_and_save(
+                    "Reused on Mainnet",
+                    &testnet_key,
+                    KeyType::Ed25519,
+                    Network::Mainnet,
+                    path,
+                )
+                .unwrap_err()
+                .contains("already in the vault")
+        );
+
+        // Accounts cannot be linked across networks.
+        assert!(
+            service
+                .add_wallet_accounts_and_save(
+                    &cold.id,
+                    Network::Testnet,
+                    &["0.0.1234".to_string()],
+                    path,
+                )
+                .unwrap_err()
+                .contains("another network")
+        );
+        let linked = service
+            .add_wallet_accounts_and_save(
+                &cold.id,
+                Network::Mainnet,
+                &["0.0.1234".to_string()],
+                path,
+            )
+            .unwrap();
+        assert_eq!(linked.accounts[0].network, Network::Mainnet);
     }
 
     #[test]

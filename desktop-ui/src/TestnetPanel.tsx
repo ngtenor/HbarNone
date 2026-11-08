@@ -221,6 +221,8 @@ export function TestnetPanel({
   const [tokenDeleteAcknowledged, setTokenDeleteAcknowledged] = useState(false)
   const [sendTokenId, setSendTokenId] = useState('')
   const isWatchOnly = wallet.secret_kind === 'watchonly'
+  // Mainnet wallets are read-only: balances and history, no transactions.
+  const readOnly = wallet.network === 'mainnet'
   const noSupplyTokens = supplyTokenIds.length === 0
   const [signing, setSigning] = useState<SigningRequest | null>(null)
   const [signatureText, setSignatureText] = useState('')
@@ -998,6 +1000,7 @@ export function TestnetPanel({
             </div>
           </div>
           <div className="wallet-tab-actions account-actions">
+            {!readOnly && (
             <DropdownMenu
               label="Send"
               primary
@@ -1022,6 +1025,7 @@ export function TestnetPanel({
                 }
               }}
             />
+            )}
             <button
               className="secondary-button"
               type="button"
@@ -1029,6 +1033,7 @@ export function TestnetPanel({
             >
               {showAssets ? 'Recent transactions' : 'Account assets'}
             </button>
+            {!readOnly && (
             <DropdownMenu
               label="Token management"
               entries={[
@@ -1072,14 +1077,17 @@ export function TestnetPanel({
               ]}
               onSelect={(id) => toggleSection(id as TokenSection)}
             />
+            )}
             <DropdownMenu
               label="Account management"
               entries={[
                 { id: 'rename', label: accountSummary?.named ? 'Rename account' : 'Name this account' },
-                ...(!isWatchOnly && otherWallets.length > 0
+                ...(!readOnly && !isWatchOnly && otherWallets.length > 0
                   ? [{ id: 'move', label: 'Move account' }]
                   : []),
-                { id: 'delete', label: 'Delete account', danger: true },
+                ...(!readOnly
+                  ? [{ id: 'delete', label: 'Delete account', danger: true }]
+                  : []),
               ]}
               onSelect={(id) => {
                 if (id === 'rename') setNameInput(accountSummary?.named ? accountSummary.name : '')

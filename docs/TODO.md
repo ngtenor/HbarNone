@@ -351,6 +351,17 @@ HTS tokens. Use it to pick up cold.
   `vault_container.rs` and `wallet_service.rs`.
 
 ### Recently completed (8 Nov 2026)
+- [x] Network separation: a topbar Testnet/Mainnet switch shows one network at
+  a time. Wallets carry a `network` tag (existing wallets default to Testnet);
+  accounts cannot be linked across networks, and every spending or signing
+  command resolves its payer through a Testnet-only check, so Mainnet stays
+  read-only. Mainnet wallets are watch-only (public key only; balances and
+  history via the public Mainnet mirror node), and a key already in the vault
+  on another network is refused at import, so Testnet keys never graduate to
+  Mainnet. The home list now has a single Balance column.
+- [x] `scripts/build-signers.ps1` rebuilds both offline signer executables
+  (the app build does not rebuild them, and they are easy to lose since
+  `target\` is not in git).
 - [x] All manual Testnet token tests are complete through stage 6, using
   disposable accounts: stages 2–4 checklist (create and delete token with
   watch-only greyed out; associate with duplicate and invalid ID errors;

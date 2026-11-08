@@ -26,6 +26,7 @@ export type WalletSummary = {
   id: string
   name: string
   created_at: string
+  network: 'testnet' | 'mainnet'
   accounts: WalletAccount[]
   secret_kind: 'mnemonic' | 'privatekey' | 'watchonly'
   key_type: 'ed25519' | 'ecdsa'

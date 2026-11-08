@@ -749,11 +749,11 @@ h2.section-title,
   color: var(--brand-dark);
 }
 
-/* HOME layout: 30% wallet, 50% account, 15% Testnet, 15% Mainnet. */
+/* HOME layout: 30% wallet, 50% account, 20% balance. */
 .home-columns,
 .home-wallets .wallet-item {
   display: grid;
-  grid-template-columns: 30fr 50fr 15fr 15fr;
+  grid-template-columns: 30fr 50fr 20fr;
   align-items: center;
   gap: 0;
 }
@@ -780,15 +780,6 @@ h2.section-title,
   text-align: right;
 }
 
-/* A hidden ".00 ℏ" keeps empty Mainnet cells the same width as a balance. */
-.home-wallets .no-balance::after {
-  content: '.00 ℏ';
-  visibility: hidden;
-  font-size: 12px;
-  font-weight: 400;
-  font-variant-numeric: tabular-nums;
-}
-
 .home-wallets .wallet-open-button {
   min-width: 0;
 }
@@ -802,7 +793,7 @@ h2.section-title,
 
 .home-wallets .account-row,
 .home-wallets .total-row {
-  grid-template-columns: 50fr 15fr 15fr;
+  grid-template-columns: 50fr 20fr;
   gap: 0;
   padding: 4px 0;
 }
@@ -1220,6 +1211,16 @@ h2.section-title,
   align-items: center;
   justify-content: flex-end;
   gap: 4px;
+}
+
+/* Topbar network slider: one network at a time, wallets never mix. */
+.mode-switch.network-switch {
+  margin: 0 10px 0 0;
+}
+
+.network-switch .mode-button {
+  height: 30px;
+  padding: 0 12px;
 }
 
 .topbar-icon {

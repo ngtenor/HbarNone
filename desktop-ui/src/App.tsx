@@ -186,6 +186,11 @@ function App() {
   const [selectedAccounts, setSelectedAccounts] = useState<Record<string, string>>({})
   const [isRefreshingAll, setIsRefreshingAll] = useState(false)
   const [findNotice, setFindNotice] = useState('')
+  // One network at a time: wallets and keys never cross between views.
+  const [networkView, setNetworkView] = useState<'testnet' | 'mainnet'>(
+    () => (localStorage.getItem('networkView') === 'mainnet' ? 'mainnet' : 'testnet'),
+  )
+  const [confirmingMainnet, setConfirmingMainnet] = useState(false)
   const fetchedBalances = useRef(new Set<string>())
   const [error, setError] = useState('')
   const [isSavingWallet, setIsSavingWallet] = useState(false)
@@ -421,7 +426,6 @@ function App() {
     }
     for (const item of wallets) {
       for (const account of item.accounts) {
-        if (account.network !== 'testnet') continue
         const key = balanceKey(item.id, account.id)
         if (fetchedBalances.current.has(key)) continue
         fetchedBalances.current.add(key)
@@ -592,10 +596,27 @@ function App() {
     return tinybars === undefined ? '' : formatHomeBalance(tinybars)
   }
 
-  const knownBalances = wallets.flatMap((item) => item.accounts.flatMap((account) => {
-    const tinybars = account.network === 'testnet'
-      ? balances[balanceKey(item.id, account.id)]
-      : undefined
+  const visibleWallets = wallets.filter((item) => item.network === networkView)
+
+  function switchNetwork(next: 'testnet' | 'mainnet') {
+    if (next === networkView) return
+    if (next === 'mainnet') {
+      setConfirmingMainnet(true)
+      return
+    }
+    applyNetwork('testnet')
+  }
+
+  function applyNetwork(next: 'testnet' | 'mainnet') {
+    setNetworkView(next)
+    localStorage.setItem('networkView', next)
+    setConfirmingMainnet(false)
+    setActiveTab('home')
+    setError('')
+  }
+
+  const knownBalances = visibleWallets.flatMap((item) => item.accounts.flatMap((account) => {
+    const tinybars = balances[balanceKey(item.id, account.id)]
     return tinybars === undefined ? [] : [tinybars]
   }))
   const totalText = knownBalances.length > 0
@@ -651,8 +672,10 @@ function App() {
   function walletManagementEntries(wallet: WalletSummary): MenuEntry[] {
     const entries: MenuEntry[] = [
       { id: 'rename', label: 'Rename wallet' },
-      { id: 'create-account', label: 'Create account' },
     ]
+    if (wallet.network === 'testnet') {
+      entries.push({ id: 'create-account', label: 'Create account' })
+    }
     if (wallet.secret_kind === 'mnemonic') {
       entries.push({ id: 'reveal-phrase', label: 'Reveal recovery phrase', danger: true })
     }
@@ -690,16 +713,19 @@ function App() {
     event.preventDefault()
     setError('')
     setIsSavingWallet(true)
+    // Mainnet wallets are watch-only: no secret is ever created or imported
+    // for Mainnet, so keys used on Testnet stay off Mainnet and vice versa.
+    const watchOnlyForced = networkView === 'mainnet'
     try {
       let wallet: WalletSummary
-      if (walletMode === 'create') {
+      if (!watchOnlyForced && walletMode === 'create') {
         wallet = await invoke<WalletSummary>('create_wallet', { name })
-      } else if (importKind === 'phrase') {
+      } else if (!watchOnlyForced && importKind === 'phrase') {
         wallet = await invoke<WalletSummary>('import_wallet', {
           name,
           mnemonic: importMnemonic,
         })
-      } else if (importKind === 'key') {
+      } else if (!watchOnlyForced && importKind === 'key') {
         let keyType: 'ed25519' | 'ecdsa' | null = importKeyType === 'auto' ? null : importKeyType
         if (keyType === null) {
           let detection: KeyDetection
@@ -729,15 +755,17 @@ function App() {
           name,
           publicKey: importMnemonic,
           keyType: importKeyType === 'ecdsa' ? 'ecdsa' : 'ed25519',
+          network: networkView,
         })
       }
-      if (walletMode === 'import') {
-        // Link every Testnet account this key controls. The wallet is already
-        // saved, so a lookup failure only means the accounts are added later.
+      if (walletMode === 'import' || watchOnlyForced) {
+        // Link every account this key controls on the wallet's network. The
+        // wallet is already saved, so a lookup failure only means the
+        // accounts are added later.
         try {
           wallet = await invoke<WalletSummary>('find_wallet_accounts', { walletId: wallet.id })
         } catch {
-          // Nothing to link yet, or Testnet is unreachable.
+          // Nothing to link yet, or the mirror node is unreachable.
         }
       }
       setWallets((existing) => [...existing, wallet])
@@ -1166,6 +1194,24 @@ function App() {
           )}
           {vaultView === 'unlocked' && (
             <>
+              <div className="mode-switch network-switch" role="group" aria-label="Network">
+                <button
+                  className={networkView === 'testnet' ? 'mode-button active' : 'mode-button'}
+                  type="button"
+                  aria-pressed={networkView === 'testnet'}
+                  onClick={() => switchNetwork('testnet')}
+                >
+                  Testnet
+                </button>
+                <button
+                  className={networkView === 'mainnet' ? 'mode-button active' : 'mode-button'}
+                  type="button"
+                  aria-pressed={networkView === 'mainnet'}
+                  onClick={() => switchNetwork('mainnet')}
+                >
+                  Mainnet
+                </button>
+              </div>
               <button
                 className="topbar-icon"
                 type="button"
@@ -1438,7 +1484,7 @@ function App() {
             </button>
             {openWalletTabs.map((walletId) => {
               const wallet = wallets.find((item) => item.id === walletId)
-              if (!wallet) return null
+              if (!wallet || wallet.network !== networkView) return null
               return (
                 <div
                   className={`vault-tab-wrap${activeTab === walletId ? ' active' : ''}`}
@@ -1486,16 +1532,22 @@ function App() {
               </div>
               {error && <p className="error-message" role="alert">{error}</p>}
               <section className="home-wallets" aria-labelledby="home-wallets-heading">
-                {wallets.length > 0 && (
+                {visibleWallets.length === 0 && (
+                  <p className="empty-state">
+                    {networkView === 'mainnet'
+                      ? 'No Mainnet wallets yet. Mainnet wallets are watch-only: add one from the + tab with a public key.'
+                      : 'No Testnet wallets yet. Create or import one from the + tab.'}
+                  </p>
+                )}
+                {visibleWallets.length > 0 && (
                   <>
                     <div className="home-columns" aria-hidden="true">
                       <span />
                       <span>Accounts</span>
-                      <span>Testnet</span>
-                      <span>Mainnet</span>
+                      <span>Balance</span>
                     </div>
                     <ul className="wallet-list">
-                      {wallets.map((wallet) => (
+                      {visibleWallets.map((wallet) => (
                         <li className="wallet-item" key={wallet.id}>
                           <button
                             className="wallet-open-button"
@@ -1532,12 +1584,7 @@ function App() {
                                       <AccountLabel name={account.name} displayId={account.display_id} />
                                     </span>
                                     <span className="account-balance">
-                                      {account.network === 'testnet'
-                                        ? accountBalanceText(wallet.id, account.id)
-                                        : ''}
-                                    </span>
-                                    <span className={account.network === 'mainnet' ? 'account-balance no-balance' : 'account-balance'}>
-                                      {account.network === 'mainnet' ? '—' : ''}
+                                      {accountBalanceText(wallet.id, account.id)}
                                     </span>
                                   </button>
                                 </li>
@@ -1550,7 +1597,6 @@ function App() {
                         <div className="account-row total-row">
                           <strong className="account-id">Total</strong>
                           <span className="account-balance" aria-label="Total balance">{totalText}</span>
-                          <span className="account-balance" />
                         </div>
                       </li>
                     </ul>
@@ -1804,9 +1850,21 @@ function App() {
               aria-labelledby="tab-create"
             >
               <div className="settings-heading">
-                <h1>{walletMode === 'create' ? 'Create a wallet' : 'Import a wallet'}</h1>
+                <h1>
+                  {networkView === 'mainnet'
+                    ? 'Add a Mainnet watch-only wallet'
+                    : walletMode === 'create' ? 'Create a wallet' : 'Import a wallet'}
+                </h1>
               </div>
               <form className="panel settings-panel create-panel" onSubmit={handleSaveWallet}>
+                {networkView === 'mainnet' && (
+                  <p className="field-hint">
+                    Mainnet wallets are watch-only. This app never creates, imports or
+                    stores a secret for Mainnet, so keys used on Testnet stay off
+                    Mainnet. Enter a public key to monitor its accounts and balances.
+                  </p>
+                )}
+                {networkView === 'testnet' && (
                 <div className="mode-switch" role="group" aria-label="Wallet operation">
                   <button
                     className={walletMode === 'create' ? 'mode-button active' : 'mode-button'}
@@ -1834,8 +1892,9 @@ function App() {
                     Import
                   </button>
                 </div>
+                )}
 
-                {walletMode === 'import' && (
+                {networkView === 'testnet' && walletMode === 'import' && (
                   <div className="mode-switch" role="group" aria-label="What to import">
                     <button
                       className={importKind === 'phrase' ? 'mode-button active' : 'mode-button'}
@@ -1880,7 +1939,7 @@ function App() {
                   </div>
                 )}
 
-                {walletMode === 'import' && importKind === 'phrase' && (
+                {networkView === 'testnet' && walletMode === 'import' && importKind === 'phrase' && (
                   <>
                     <label htmlFor="import-mnemonic">English BIP39 recovery phrase</label>
                     <textarea
@@ -1899,7 +1958,7 @@ function App() {
                   </>
                 )}
 
-                {walletMode === 'import' && importKind === 'key' && (
+                {networkView === 'testnet' && walletMode === 'import' && importKind === 'key' && (
                   <>
                     <label htmlFor="import-private-key">Private key (hex or DER)</label>
                     <input
@@ -1933,7 +1992,7 @@ function App() {
                   </>
                 )}
 
-                {walletMode === 'import' && importKind === 'watchonly' && (
+                {(networkView === 'mainnet' || (walletMode === 'import' && importKind === 'watchonly')) && (
                   <>
                     <label htmlFor="import-watch-public-key">Public key (hex)</label>
                     <input
@@ -1956,7 +2015,8 @@ function App() {
                       <option value="ecdsa">ECDSA (secp256k1)</option>
                     </select>
                     <p className="field-hint">
-                      Stores only this public key. It can monitor matching Testnet accounts but cannot sign or spend.
+                      Stores only this public key. It can monitor matching
+                      {networkView === 'mainnet' ? ' Mainnet' : ' Testnet'} accounts but cannot sign or spend.
                     </p>
                   </>
                 )}
@@ -1976,9 +2036,11 @@ function App() {
                   <button className="primary-button" type="submit" disabled={isSavingWallet}>
                     {isSavingWallet
                       ? 'Saving securely...'
-                      : walletMode === 'create'
-                        ? 'Create encrypted wallet'
-                        : importKind === 'watchonly' ? 'Add watch-only wallet' : 'Import encrypted wallet'}
+                      : networkView === 'mainnet' || (walletMode === 'import' && importKind === 'watchonly')
+                        ? 'Add watch-only wallet'
+                        : walletMode === 'create'
+                          ? 'Create encrypted wallet'
+                          : 'Import encrypted wallet'}
                   </button>
                   <button
                     className="secondary-button"
@@ -2184,6 +2246,33 @@ function App() {
             )
           })()}
         </>
+      )}
+
+      {confirmingMainnet && (
+        <div
+          className="modal-backdrop"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setConfirmingMainnet(false)
+          }}
+        >
+          <div className="recovery-dialog" role="dialog" aria-modal="true" aria-label="Switch to Mainnet">
+            <h2>Switch to the Mainnet view?</h2>
+            <p className="dialog-copy">
+              The Mainnet view shows watch-only wallets with real balances, read
+              from the public mirror node. Wallets and keys stay separate between
+              networks: this app never creates, imports or uses a signing key on
+              Mainnet, and nothing can be sent from this view.
+            </p>
+            <div className="dialog-actions">
+              <button className="secondary-button" type="button" onClick={() => setConfirmingMainnet(false)}>
+                Cancel
+              </button>
+              <button className="primary-button" type="button" onClick={() => applyNetwork('mainnet')}>
+                Switch to Mainnet
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {walletToReveal && (

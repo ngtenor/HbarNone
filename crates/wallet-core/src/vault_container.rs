@@ -22,7 +22,8 @@ pub const DEFAULT_AUTO_LOCK_SECONDS: u32 = 300;
 pub const MIN_AUTO_LOCK_SECONDS: u32 = 30;
 pub const MAX_AUTO_LOCK_SECONDS: u32 = 1800;
 
-/// A Hedera network an account lives on. Only Testnet is reachable for now.
+/// A Hedera network an account lives on. Mainnet is read-only (watch-only
+/// wallets); all signing and spending stays on Testnet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Network {
@@ -63,6 +64,11 @@ pub struct VaultWallet {
     pub name: String,
     pub created_at: String,
     pub updated_at: String,
+    /// The network this wallet belongs to. Wallets never move between
+    /// networks, so a key used on Testnet is not reused on Mainnet.
+    /// Wallets saved before this field existed default to Testnet.
+    #[serde(default)]
+    pub network: Network,
     #[serde(default)]
     pub accounts: Vec<WalletAccount>,
     /// Single linked account of vaults saved before wallets held several.

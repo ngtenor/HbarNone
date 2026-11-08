@@ -1,6 +1,6 @@
-//! Read-only client for Hedera's public Testnet mirror node.
+//! Read-only client for Hedera's public mirror nodes (Testnet and Mainnet).
 //!
-//! The base URL is a compile-time constant, redirects are disabled and every
+//! The base URLs are compile-time constants, redirects are disabled and every
 //! response is size-limited, so a wallet can never be pointed at another host.
 //! Nothing here handles keys or recovery phrases; only the public key and
 //! account IDs are sent.
@@ -14,6 +14,7 @@ use wallet_core::vault_container::Network;
 use wallet_core::wallet_service::validate_account_id;
 
 pub const TESTNET_BASE_URL: &str = "https://testnet.mirrornode.hedera.com";
+pub const MAINNET_BASE_URL: &str = "https://mainnet-public.mirrornode.hedera.com";
 pub const TRANSACTION_LIMIT: usize = 10;
 const MAX_RESPONSE_BYTES: usize = 512 * 1024;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
@@ -370,6 +371,11 @@ pub struct MirrorClient {
 
 impl MirrorClient {
     pub fn testnet() -> Result<Self, String> {
+        Self::for_network(Network::Testnet)
+    }
+
+    /// A read-only client for the given network's public mirror node.
+    pub fn for_network(network: Network) -> Result<Self, String> {
         let http = reqwest::Client::builder()
             .timeout(REQUEST_TIMEOUT)
             .redirect(reqwest::redirect::Policy::none())
@@ -379,7 +385,10 @@ impl MirrorClient {
             .map_err(|_| "could not start the network client".to_string())?;
         Ok(Self {
             http,
-            base_url: TESTNET_BASE_URL,
+            base_url: match network {
+                Network::Testnet => TESTNET_BASE_URL,
+                Network::Mainnet => MAINNET_BASE_URL,
+            },
         })
     }
 
@@ -391,7 +400,7 @@ impl MirrorClient {
             .get(url)
             .send()
             .await
-            .map_err(|_| "could not reach the Hedera Testnet mirror node".to_string())?;
+            .map_err(|_| "could not reach the Hedera mirror node".to_string())?;
         let status = response.status();
         if status == reqwest::StatusCode::NOT_FOUND {
             return Ok(None);

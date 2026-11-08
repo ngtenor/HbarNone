@@ -288,35 +288,63 @@ fn link_wallet_account(
     account_id: String,
     state: State<'_, AppState>,
 ) -> Result<WalletSummary, String> {
-    let account_id = parse_account_input(&account_id, Network::Testnet, false)?;
+    let network = wallet_network(&state, &wallet_id)?;
+    let account_id = parse_account_input(&account_id, network, false)?;
     lock_service(&state)?.add_wallet_accounts_and_save(
         &wallet_id,
-        Network::Testnet,
+        network,
         &[account_id],
         &state.store_path.to_string_lossy(),
     )
 }
 
-/// The wallet's linked Testnet account, or an error if it is not one of them.
+/// The network a wallet is tagged with, or an error if it does not exist.
+fn wallet_network(state: &AppState, wallet_id: &str) -> Result<Network, String> {
+    lock_service(state)?
+        .list_wallets()?
+        .into_iter()
+        .find(|wallet| wallet.id == wallet_id)
+        .map(|wallet| wallet.network)
+        .ok_or_else(|| format!("wallet not found: {wallet_id}"))
+}
+
+/// The wallet's linked account on the wallet's own network, or an error if it
+/// is not one of them.
+fn linked_account_of(
+    state: &AppState,
+    wallet_id: &str,
+    account_id: &str,
+) -> Result<(String, Network), String> {
+    let account_id = validate_account_id(account_id)?;
+    let wallet = lock_service(state)?
+        .list_wallets()?
+        .into_iter()
+        .find(|wallet| wallet.id == wallet_id)
+        .ok_or_else(|| format!("wallet not found: {wallet_id}"))?;
+    let linked = wallet
+        .accounts
+        .iter()
+        .any(|a| a.network == wallet.network && a.id == account_id);
+    if linked {
+        Ok((account_id, wallet.network))
+    } else {
+        Err(format!("account {account_id} is not linked to this wallet"))
+    }
+}
+
+/// The wallet's linked Testnet account, or an error if it is not one of them
+/// or the wallet is not a Testnet wallet. Every spending or signing command
+/// resolves its payer through this, so Mainnet wallets stay read-only.
 fn testnet_account_of(
     state: &AppState,
     wallet_id: &str,
     account_id: &str,
 ) -> Result<String, String> {
-    let account_id = validate_account_id(account_id)?;
-    let linked = lock_service(state)?
-        .list_wallets()?
-        .into_iter()
-        .find(|wallet| wallet.id == wallet_id)
-        .ok_or_else(|| format!("wallet not found: {wallet_id}"))?
-        .accounts
-        .iter()
-        .any(|a| a.network == Network::Testnet && a.id == account_id);
-    if linked {
-        Ok(account_id)
-    } else {
-        Err(format!("account {account_id} is not linked to this wallet"))
+    let (account_id, network) = linked_account_of(state, wallet_id, account_id)?;
+    if network != Network::Testnet {
+        return Err("this operation is only available for Testnet wallets".to_string());
     }
+    Ok(account_id)
 }
 
 // Network commands run only when the user clicks or opens a wallet; the
@@ -327,16 +355,21 @@ async fn find_wallet_accounts(
     wallet_id: String,
     state: State<'_, AppState>,
 ) -> Result<WalletSummary, String> {
+    let network = wallet_network(&state, &wallet_id)?;
     let public_key = lock_service(&state)?.wallet_public_key(&wallet_id)?;
-    let matches = MirrorClient::testnet()?
+    let matches = MirrorClient::for_network(network)?
         .find_accounts_by_public_key(&public_key)
         .await?;
     if matches.is_empty() {
-        return Err("no Testnet account uses this wallet's key yet; an account is created when the key's address first receives HBAR".to_string());
+        let shown = match network {
+            Network::Testnet => "Testnet",
+            Network::Mainnet => "Mainnet",
+        };
+        return Err(format!("no {shown} account uses this wallet's key yet; an account is created when the key's address first receives HBAR"));
     }
     lock_service(&state)?.add_wallet_accounts_and_save(
         &wallet_id,
-        Network::Testnet,
+        network,
         &matches,
         &state.store_path.to_string_lossy(),
     )
@@ -348,8 +381,10 @@ async fn get_account_overview(
     account_id: String,
     state: State<'_, AppState>,
 ) -> Result<Option<AccountOverview>, String> {
-    let account_id = testnet_account_of(&state, &wallet_id, &account_id)?;
-    MirrorClient::testnet()?.account_overview(&account_id).await
+    let (account_id, network) = linked_account_of(&state, &wallet_id, &account_id)?;
+    MirrorClient::for_network(network)?
+        .account_overview(&account_id)
+        .await
 }
 
 #[tauri::command]
@@ -370,8 +405,10 @@ async fn get_account_balance(
     account_id: String,
     state: State<'_, AppState>,
 ) -> Result<Option<u64>, String> {
-    let account_id = testnet_account_of(&state, &wallet_id, &account_id)?;
-    MirrorClient::testnet()?.account_balance(&account_id).await
+    let (account_id, network) = linked_account_of(&state, &wallet_id, &account_id)?;
+    MirrorClient::for_network(network)?
+        .account_balance(&account_id)
+        .await
 }
 
 #[derive(Serialize)]
@@ -1347,9 +1384,10 @@ fn rename_account(
     name: String,
     state: State<'_, AppState>,
 ) -> Result<WalletSummary, String> {
+    let network = wallet_network(&state, &wallet_id)?;
     lock_service(&state)?.rename_wallet_account_and_save(
         &wallet_id,
-        Network::Testnet,
+        network,
         &account_id,
         &name,
         &state.store_path.to_string_lossy(),
@@ -1583,6 +1621,7 @@ fn import_watch_only_wallet(
     name: String,
     public_key: String,
     key_type: KeyType,
+    network: Network,
     state: State<'_, AppState>,
 ) -> Result<WalletSummary, String> {
     if public_key.len() > 130 {
@@ -1592,6 +1631,7 @@ fn import_watch_only_wallet(
         &name,
         &public_key,
         key_type,
+        network,
         &state.store_path.to_string_lossy(),
     )
 }

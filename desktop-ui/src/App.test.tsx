@@ -14,6 +14,7 @@ type Wallet = {
   id: string
   name: string
   created_at: string
+  network?: string
   accounts: Account[]
   secret_kind?: string
   key_type?: string
@@ -55,6 +56,7 @@ function wallet(id: string, name: string, accounts: string | string[] = []): Wal
     id,
     name,
     created_at: '2026-01-01T00:00:00Z',
+    network: 'testnet',
     accounts: [accounts].flat().map(testnetAccount),
     secret_kind: 'mnemonic',
   }
@@ -108,6 +110,8 @@ async function typeRecipient(user: ReturnType<typeof userEvent.setup>, value: st
 }
 
 function installBackend(overrides: Partial<Backend> = {}) {
+  // Each test starts in the Testnet view.
+  localStorage.removeItem('networkView')
   backend = {
     status: 'locked',
     wallets: [wallet('w1', 'Savings'), wallet('w2', 'Trading')],
@@ -406,6 +410,7 @@ function installBackend(overrides: Partial<Backend> = {}) {
         }
         const created = {
           ...wallet(`w${backend.wallets.length + 1}`, String(args?.name)),
+          network: args?.network ? String(args.network) : 'testnet',
           secret_kind: 'watchonly',
           key_type: String(args?.keyType),
         }
@@ -527,7 +532,8 @@ describe('vault gates', () => {
     const actions = ['Address book', 'Create / import wallet', 'Settings', 'Help', 'Lock vault']
     const buttons = actions.map((name) => screen.getByRole('button', { name }))
     const header = buttons[0].parentElement!
-    expect(Array.from(header.children)).toEqual(buttons)
+    const networkSwitch = screen.getByRole('group', { name: 'Network' })
+    expect(Array.from(header.children)).toEqual([networkSwitch, ...buttons])
     expect(screen.queryByText('Welcome home')).not.toBeInTheDocument()
     expect(screen.queryByText('IN THIS VAULT')).not.toBeInTheDocument()
     expect(screen.queryByText('Vault unlocked')).not.toBeInTheDocument()
@@ -1470,6 +1476,7 @@ describe('watch-only wallet', () => {
       name: 'Monitor',
       publicKey,
       keyType: 'ed25519',
+      network: 'testnet',
     })
     await openWalletTab(user, 'Monitor')
     expect(screen.getByTitle('Watch-only wallet')).toHaveClass('wallet-watch-only')
@@ -2442,5 +2449,94 @@ describe('auto-lock', () => {
     await advance(61_000)
     expect(screen.queryByText('alpha')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Unlock vault' })).toBeInTheDocument()
+  })
+})
+
+describe('network separation', () => {
+  function mainnetAccount(id: string): Account {
+    return { network: 'mainnet', id, display_id: `${id}-abcde`, name: 'NONAME', named: false }
+  }
+
+  function mainnetWatcher(id: string, name: string, accounts: string[] = []): Wallet {
+    return {
+      ...wallet(id, name),
+      network: 'mainnet',
+      secret_kind: 'watchonly',
+      accounts: accounts.map(mainnetAccount),
+    }
+  }
+
+  beforeEach(() => installBackend({
+    status: 'unlocked',
+    wallets: [wallet('w1', 'Savings', '0.0.1001'), mainnetWatcher('m1', 'Watcher', ['0.0.5005'])],
+  }))
+
+  it('shows one network at a time and asks before switching to Mainnet', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+    expect(await screen.findByRole('button', { name: /Savings/ })).toBeInTheDocument()
+    expect(screen.queryByText('Watcher')).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Mainnet' }))
+    // Nothing changes until the switch is confirmed.
+    expect(screen.queryByText('Watcher')).not.toBeInTheDocument()
+    await user.click(await screen.findByRole('button', { name: 'Switch to Mainnet' }))
+
+    expect(await screen.findByRole('button', { name: /Watcher/ })).toBeInTheDocument()
+    expect(screen.queryByText('Savings')).not.toBeInTheDocument()
+
+    // Switching back to Testnet needs no confirmation.
+    await user.click(screen.getByRole('button', { name: 'Testnet' }))
+    expect(await screen.findByRole('button', { name: /Savings/ })).toBeInTheDocument()
+    expect(screen.queryByText('Watcher')).not.toBeInTheDocument()
+  })
+
+  it('stays on Testnet when the Mainnet confirmation is cancelled', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+    await screen.findByRole('button', { name: /Savings/ })
+    await user.click(screen.getByRole('button', { name: 'Mainnet' }))
+    await user.click(await screen.findByRole('button', { name: 'Cancel' }))
+    expect(screen.getByRole('button', { name: /Savings/ })).toBeInTheDocument()
+    expect(screen.queryByText('Watcher')).not.toBeInTheDocument()
+  })
+
+  it('offers only watch-only import on Mainnet and tags the wallet with the network', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+    await screen.findByRole('button', { name: /Savings/ })
+    await user.click(screen.getByRole('button', { name: 'Mainnet' }))
+    await user.click(await screen.findByRole('button', { name: 'Switch to Mainnet' }))
+    await user.click(screen.getByRole('button', { name: /Create \/ import wallet/ }))
+
+    expect(await screen.findByRole('heading', { name: 'Add a Mainnet watch-only wallet' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Create' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Recovery phrase' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Private key' })).not.toBeInTheDocument()
+
+    await user.type(screen.getByLabelText('Public key (hex)'), 'ab'.repeat(32))
+    await user.type(screen.getByLabelText('Wallet name'), 'New watcher')
+    await user.click(screen.getByRole('button', { name: 'Add watch-only wallet' }))
+    await waitFor(() => {
+      expect(commandsCalled('import_watch_only_wallet')[0]?.args).toMatchObject({ network: 'mainnet' })
+    })
+  })
+
+  it('hides send, token and risky account actions for a Mainnet account', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+    await screen.findByRole('button', { name: /Savings/ })
+    await user.click(screen.getByRole('button', { name: 'Mainnet' }))
+    await user.click(await screen.findByRole('button', { name: 'Switch to Mainnet' }))
+    await openWalletTab(user, 'Watcher')
+    await user.click(await screen.findByRole('button', { name: /0\.0\.5005/ }))
+
+    expect(await screen.findByRole('button', { name: 'Account management' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Send' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Token management' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Account management' }))
+    expect(await screen.findByRole('menuitem', { name: 'Name this account' })).toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: 'Delete account' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: 'Move account' })).not.toBeInTheDocument()
   })
 })
