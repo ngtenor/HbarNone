@@ -119,6 +119,14 @@ cargo test --workspace
 cargo check --workspace
 ```
 
+Run the frontend tests and lint:
+
+```powershell
+Set-Location desktop-ui
+npm test
+npm run lint
+```
+
 Build the frontend separately:
 
 ```powershell
