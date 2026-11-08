@@ -40,7 +40,7 @@
   width: 100%;
   height: 42px;
   padding: 0 12px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--brand-medium);
   border-radius: 7px;
   outline: none;
   color: var(--ink);
@@ -72,7 +72,7 @@
 }
 
 .auto-lock-setting > span:first-child strong {
-  color: var(--purple);
+  color: var(--brand-dark);
 }
 
 .auto-lock-setting input[type="range"] {
@@ -362,9 +362,9 @@ h2.section-title,
   align-items: center;
   gap: 10px;
   margin: 0;
-  color: #6b6b78;
+  color: var(--brand-dark);
   font-size: 22px;
-  font-weight: 600;
+  font-weight: 400;
   line-height: 1.25;
   letter-spacing: -0.4px;
 }
@@ -471,7 +471,7 @@ h2.section-title,
   width: 30px;
   height: 30px;
   padding: 0;
-  border: 1px solid var(--line);
+  border: 1px solid var(--brand-medium);
   border-radius: 7px;
   color: var(--ink);
   background: var(--surface);
@@ -611,8 +611,9 @@ h2.section-title,
 
 .settings-heading h1 {
   margin: 0;
-  color: #5f5f6b;
+  color: var(--brand-dark);
   font-size: clamp(26px, 3.4vw, 34px);
+  font-weight: 400;
   letter-spacing: -1.4px;
 }
 
@@ -692,6 +693,7 @@ h2.section-title,
 .help-content h2 {
   margin: 24px 0 4px;
   font-size: 22px;
+  font-weight: 400;
 }
 
 .help-content h2:first-child {
@@ -702,6 +704,7 @@ h2.section-title,
   margin: 16px 0 4px;
   color: var(--muted);
   font-size: 15px;
+  font-weight: 400;
 }
 
 .help-content p,
@@ -718,11 +721,11 @@ h2.section-title,
 }
 
 .wallet-cold {
-  color: #2b6cb0;
+  color: var(--brand-dark);
 }
 
 .wallet-watch-only {
-  color: #b8860b;
+  color: var(--brand-dark);
 }
 
 .wallet-back-link {
@@ -739,11 +742,11 @@ h2.section-title,
 }
 
 .account-single {
-  color: #7a7f87;
+  color: var(--brand-dark);
 }
 
 .account-multisig {
-  color: #2f9e6b;
+  color: var(--brand-dark);
 }
 
 /* HOME layout: 30% wallet, 50% account, 15% Testnet, 15% Mainnet. */
@@ -904,6 +907,7 @@ h2.section-title,
 .testnet-send h3 {
   margin: 0 0 8px;
   font-size: 15px;
+  font-weight: 400;
 }
 
 .testnet-send-form {
@@ -992,11 +996,19 @@ h2.section-title,
 }
 
 .disabled-text {
-  color: #9aa0a6;
+  color: var(--brand-dark);
+  opacity: 0.6;
 }
 
 .testnet-send-form select {
   min-height: 36px;
+}
+
+.testnet-send-form input:not([type='checkbox']),
+.testnet-send-form select,
+.testnet-link-form input {
+  border: 1px solid var(--brand-medium);
+  border-radius: 7px;
 }
 
 .testnet-send-form.send-form {
@@ -1040,8 +1052,8 @@ h2.section-title,
 
 .send-form select.placeholder-shown,
 .send-form input::placeholder {
-  color: #8a8a96;
-  opacity: 1;
+  color: var(--brand-dark);
+  opacity: 0.6;
 }
 
 .send-form option {
@@ -1102,7 +1114,7 @@ h2.section-title,
 .address-subheading {
   margin: 16px 0 4px;
   font-size: 14px;
-  color: #6b7280;
+  color: var(--brand-dark);
 }
 
 .link-button {
@@ -1363,7 +1375,7 @@ button.topbar-icon:hover {
 }
 
 .secondary-button.gate-button {
-  border: 2px solid var(--purple);
+  border: 2px solid var(--brand-medium);
   background: #fff;
   font-weight: 600;
 }
@@ -1385,7 +1397,7 @@ button.topbar-icon:hover {
 }
 
 .gate-back:hover {
-  color: var(--purple);
+  color: var(--brand-dark);
 }
 
 .legacy-password-list {
@@ -1437,7 +1449,7 @@ button.topbar-icon:hover {
 
 .eyebrow {
   margin: 0 0 13px;
-  color: var(--purple);
+  color: var(--brand-dark);
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 1.6px;
@@ -1476,7 +1488,7 @@ h1 {
   padding: 28px;
   border: 1px solid var(--line);
   border-radius: 14px;
-  background: var(--surface);
+  background: var(--brand-light);
   box-shadow: 0 12px 36px #26124408;
 }
 
@@ -1495,6 +1507,7 @@ h2 {
   margin-bottom: 0;
   color: var(--ink);
   font-size: 20px;
+  font-weight: 400;
   letter-spacing: -0.6px;
 }
 
@@ -1505,7 +1518,7 @@ h2 {
   width: 30px;
   height: 30px;
   border-radius: 9px;
-  color: var(--purple);
+  color: var(--brand-dark);
   background: var(--purple-soft);
   font-size: 11px;
   font-weight: 700;
@@ -1526,7 +1539,7 @@ h2 {
   box-sizing: border-box;
   width: 100%;
   padding: 12px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--brand-medium);
   border-radius: 7px;
   outline: none;
   color: var(--ink);
@@ -1555,7 +1568,7 @@ h2 {
 .password-toggle {
   min-width: 60px;
   padding: 0 10px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--brand-medium);
   border-radius: 7px;
   color: var(--ink);
   background: var(--surface);
@@ -1617,7 +1630,7 @@ h2 {
 }
 
 .mode-button.active {
-  color: var(--purple);
+  color: var(--brand-dark);
   background: #fff;
   box-shadow: 0 1px 3px #26124412;
 }
@@ -1761,7 +1774,7 @@ h2 {
 .reveal-button,
 .secondary-button,
 .close-button {
-  border: 1px solid var(--line);
+  border: 1px solid var(--brand-medium);
   border-radius: 7px;
   color: var(--ink);
   background: var(--surface);
@@ -1818,6 +1831,7 @@ h2 {
 .progress-title {
   margin: 0 0 20px;
   font-size: 18px;
+  font-weight: 400;
 }
 
 .progress-spinner {
@@ -1864,7 +1878,7 @@ h2 {
 }
 
 .progress-success-text {
-  color: #2e9b5b;
+  color: var(--brand-dark);
   font-size: 20px;
   font-weight: 700;
 }
@@ -1923,7 +1937,7 @@ h2 {
   padding: 28px;
   border: 1px solid var(--line);
   border-radius: 14px;
-  background: var(--surface);
+  background: var(--brand-light);
   box-shadow: 0 20px 70px #120c1d40;
 }
 
@@ -1965,7 +1979,7 @@ h2 {
   width: 100%;
   height: 42px;
   padding: 0 12px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--brand-medium);
   border-radius: 7px;
   outline: none;
   color: var(--ink);
@@ -2297,7 +2311,7 @@ button.secondary-button,
 button.reveal-button,
 button.danger-button,
 button.delete-wallet-button {
-  border: 1px solid var(--line);
+  border: 1px solid var(--brand-medium);
   color: var(--ink);
   background: #fff;
   font-size: 10px !important;
@@ -2311,7 +2325,7 @@ button.delete-wallet-button {
 .recovery-dialog button.secondary-button,
 .vault-gate button.primary-button,
 .vault-gate button.secondary-button {
-  border: 1px solid var(--line);
+  border: 1px solid var(--brand-medium);
   background: #fbfafc;
 }
 

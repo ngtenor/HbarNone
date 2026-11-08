@@ -390,3 +390,26 @@ HTS tokens. Use it to pick up cold.
 - Tool approvals: the chat asks for permission often. This is an app setting
   (the approvals picker or `chat.tools.global.autoApprove`), not something the
   assistant can change.
+
+## Appendix: Branding guidelines
+
+### Colours
+The three primary brand colours:
+
+| Name   | Hex       | Usage                                                        |
+| ------ | --------- | ------------------------------------------------------------ |
+| Dark   | `#2d3742` | All text (words not included in graphics)                    |
+| Medium | `#7087a5` | Borders of text boxes and buttons                            |
+| Light  | `#a9b8ca` | Background of large boxes that contain information (panels)  |
+
+Exception: 'Danger' buttons and messages keep their own (red/warning)
+colours and are not restyled with the brand palette.
+
+### Typography
+- The font is **Inter** (fallbacks: Segoe UI, Arial, sans-serif).
+- Section titles are not bold (regular weight).
+
+### Name
+The project name is written exactly as **HBarNone** (capital H, capital B,
+lowercase "ar", capital N).
+
