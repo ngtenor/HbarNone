@@ -4,3 +4,8 @@ node_modules/
 desktop-ui/node_modules/
 desktop-ui/dist/
 /src-tauri/gen/
+
+# Never commit wallet material of any kind.
+wallet.dat
+*.mnemonic
+wallets.json
