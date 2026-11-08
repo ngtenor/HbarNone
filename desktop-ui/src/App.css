@@ -1486,9 +1486,9 @@ h1 {
 .panel {
   min-height: 270px;
   padding: 28px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--brand-light);
   border-radius: 14px;
-  background: var(--brand-light);
+  background: var(--surface);
   box-shadow: 0 12px 36px #26124408;
 }
 
@@ -1935,9 +1935,9 @@ h2 {
   box-sizing: border-box;
   width: min(100%, 560px);
   padding: 28px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--brand-light);
   border-radius: 14px;
-  background: var(--brand-light);
+  background: var(--surface);
   box-shadow: 0 20px 70px #120c1d40;
 }
 
