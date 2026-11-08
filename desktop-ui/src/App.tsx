@@ -1642,6 +1642,13 @@ function App() {
             <AddressBook
               view={addressBook}
               onChange={setAddressBook}
+              onWalletsRefresh={() => {
+                void invoke<VaultState>('get_vault_state')
+                  .then((state) => {
+                    if (state.status === 'unlocked') setWallets(state.wallets)
+                  })
+                  .catch(() => undefined)
+              }}
               onRenamed={(accountId, newName) => setWallets((existing) => existing.map((item) => ({
                 ...item,
                 accounts: item.accounts.map((account) => (

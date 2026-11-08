@@ -21,11 +21,12 @@ type Props = {
   view: AddressBookView
   onChange: (view: AddressBookView) => void
   onRenamed: (accountId: string, name: string) => void
+  onWalletsRefresh?: () => void
 }
 
 const UNNAMED = 'NONAME'
 
-export function AddressBook({ view, onChange, onRenamed }: Props) {
+export function AddressBook({ view, onChange, onRenamed, onWalletsRefresh }: Props) {
   const [editing, setEditing] = useState<string | null>(null)
   const [editName, setEditName] = useState('')
   const [name, setName] = useState('')
@@ -37,20 +38,21 @@ export function AddressBook({ view, onChange, onRenamed }: Props) {
   const [adding, setAdding] = useState(false)
   const idsKey = view.rows.map((row) => row.id).join(',')
 
-  // Outside entries whose accounts were deleted on the network are removed
-  // when the address book opens; wallet accounts are always listed live.
+  // Rows whose accounts were deleted on the network are removed when the
+  // address book opens: outside entries leave the book and wallet accounts
+  // are unlinked from their wallets.
   useEffect(() => {
     let cancelled = false
-    const outsideBefore = view.rows.filter((row) => row.wallet_id === null).length
+    const rowsBefore = view.rows.length
     void invoke<AddressBookView>('prune_address_book')
       .then((updated) => {
         if (cancelled) return
-        const outsideAfter = updated.rows.filter((row) => row.wallet_id === null).length
-        const removed = outsideBefore - outsideAfter
+        const removed = rowsBefore - updated.rows.length
         if (removed > 0) {
           setPruneNotice(
             `Removed ${removed} ${removed === 1 ? 'account' : 'accounts'} deleted on the network.`,
           )
+          onWalletsRefresh?.()
         }
         onChange(updated)
       })

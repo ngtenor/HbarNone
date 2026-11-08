@@ -1437,9 +1437,10 @@ fn get_address_book(state: State<'_, AppState>) -> Result<AddressBookView, Strin
     address_book_view(&state)
 }
 
-/// Removes outside address-book entries whose accounts are deleted on their
-/// network. Wallet accounts are listed live and need no pruning. A mirror
-/// error keeps the entry, so a network problem never empties the book.
+/// Removes address-book rows whose accounts are deleted on their network:
+/// outside entries leave the book, and wallet-linked accounts are unlinked
+/// from their wallets. A mirror error keeps a row, so a network problem
+/// never empties the book.
 #[tauri::command]
 async fn prune_address_book(state: State<'_, AppState>) -> Result<AddressBookView, String> {
     let entries = lock_service(&state)?.outside_entries()?;
@@ -1452,10 +1453,31 @@ async fn prune_address_book(state: State<'_, AppState>) -> Result<AddressBookVie
             dead.push((network, id));
         }
     }
-    if !dead.is_empty() {
+    // Wallet-linked accounts reported deleted on their network are unlinked
+    // from their wallets, so the wallets and the home list stay honest too.
+    let wallets = lock_service(&state)?.list_wallets()?;
+    let mut dead_links = Vec::new();
+    for wallet in wallets {
+        for account in &wallet.accounts {
+            if account.network != wallet.network {
+                continue;
+            }
+            if let Ok(true) = MirrorClient::for_network(wallet.network)?
+                .account_is_deleted(&account.id)
+                .await
+            {
+                dead_links.push((wallet.id.clone(), wallet.network, account.id.clone()));
+            }
+        }
+    }
+    if !dead.is_empty() || !dead_links.is_empty() {
         let mut service = lock_service(&state)?;
+        let path = state.store_path.to_string_lossy();
         for (network, id) in &dead {
-            service.remove_address_book_entry(*network, id, &state.store_path.to_string_lossy())?;
+            service.remove_address_book_entry(*network, id, &path)?;
+        }
+        for (wallet_id, network, id) in &dead_links {
+            service.remove_wallet_account_and_save(wallet_id, *network, id, &path)?;
         }
     }
     address_book_view(&state)

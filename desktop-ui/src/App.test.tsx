@@ -149,6 +149,11 @@ function installBackend(overrides: Partial<Backend> = {}) {
         backend.outside = backend.outside.filter(
           (item) => !(backend.deletedOnNetwork ?? []).includes(item.id),
         )
+        for (const owner of backend.wallets) {
+          owner.accounts = owner.accounts.filter(
+            (item) => !(backend.deletedOnNetwork ?? []).includes(item.id),
+          )
+        }
         return addressBookView()
       case 'lock_vault':
         backend.status = 'locked'
@@ -2644,5 +2649,22 @@ describe('address book pruning', () => {
     expect(await screen.findByText('Removed 1 account deleted on the network.')).toBeInTheDocument()
     expect(screen.queryByText('Gone')).not.toBeInTheDocument()
     expect(screen.getByText('Alive')).toBeInTheDocument()
+  })
+
+  it('unlinks wallet accounts deleted on the network and refreshes the wallets', async () => {
+    const user = userEvent.setup()
+    installBackend({
+      status: 'unlocked',
+      wallets: [wallet('w1', 'Savings', ['0.0.1001', '0.0.1002'])],
+      deletedOnNetwork: ['0.0.1002'],
+    })
+    render(<App />)
+    await user.click(await screen.findByRole('button', { name: 'Address book' }))
+
+    expect(await screen.findByText('Removed 1 account deleted on the network.')).toBeInTheDocument()
+    expect(screen.queryByText(/0\.0\.1002/)).not.toBeInTheDocument()
+    expect(screen.getByText(/0\.0\.1001/)).toBeInTheDocument()
+    // The wallets themselves are refreshed from the backend.
+    await waitFor(() => expect(commandsCalled('get_vault_state').length).toBeGreaterThan(1))
   })
 })
