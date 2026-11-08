@@ -350,26 +350,33 @@ HTS tokens. Use it to pick up cold.
 - The pull request also carries earlier uncommitted edits to `offline.rs`,
   `vault_container.rs` and `wallet_service.rs`.
 
+### Recently completed (8 Nov 2026)
+- [x] All manual Testnet token tests are complete through stage 6, using
+  disposable accounts: stages 2–4 checklist (create and delete token with
+  watch-only greyed out; associate with duplicate and invalid ID errors;
+  dissociate zero and non-zero balance; hide and show persisting after
+  restart; send to an associated account, to an unassociated account with the
+  readable error and no fee, more than balance, decimals, watch-only notice),
+  stage 5 mint and burn (Mint and Burn stay greyed out unless the account is
+  the treasury of a token whose supply key is this wallet's key), and the
+  stage 6 end-to-end signer test (watch-only
+  wallet with the offline signer: associate, send, dissociate). Regression
+  checks (HBAR send and Close button, Account assets layout) passed.
+- [x] Stage 6 (token signer support) is merged into main: signer-core,
+  hedera-tx offline builders, Tauri commands (prepare_unsigned_token_transfer,
+  prepare_unsigned_token_association), UI and CLI signer display. Create,
+  delete, mint and burn stay rejected by the signer by design.
+- [x] UI polish: send error spacing, a Close button after a send (error or
+  success), menu renamed to Associate token. Send section changes also apply
+  to HBAR sends.
+- [x] Linux test completed on the Ubuntu partition of the desktop machine.
+  The test script was written on the Windows Surface machine and transported
+  via micro SD card.
+
 ### Still to do
-- Manual Testnet test with disposable accounts: create a token on account A;
-  Associate token on account B; send from A to B; check B's balance; try sending to an
-  account that has not associated the token and confirm the readable error and
-  that no fee is charged. Stage 2 (create, delete) and stage 3 (add, remove,
-  hide) have also not been tested on Testnet.
-- Stage 6 (branch `feature/token-signer-support`) is built and committed locally, NOT yet tested end to end, not pushed, no PR.
-  Done: signer-core, hedera-tx offline builders, Tauri commands (prepare_unsigned_token_transfer, prepare_unsigned_token_association), UI, CLI signer display.
-  Rust tests, 89 UI tests and typecheck pass; release exe rebuilt 21:41 on 5 Nov.
-  NEXT: manual Testnet test with a watch-only wallet and the example signer (associate, send, disassociate), then push and open the PR
-  (I supply title and description). Create, delete, mint and burn stay rejected by the signer by design.
-  Tidy-up: delete merged branches feature/token-create-delete, feature/token-associate-hide, feature/token-mint-burn.
-- UI polish done: send error spacing, a Close button after a send (error or success),
-  menu renamed to Associate token. Send section changes also apply to HBAR sends.
-- Test checklist: (2) create and delete token; watch-only greyed out. (3) associate,
-  duplicate and invalid ID errors, dissociate zero and non-zero balance, hide and
-  show persists after restart. (4) send to associated account, to an unassociated
-  account (readable error, no fee), more than balance, decimals, watch-only notice.
-  Regression: HBAR send and Close button, Account assets layout.
-- Stage 5 (mint and burn) is done and tested. Mint and Burn are greyed out unless the account is the treasury of a token whose supply key is this wallet's key.
+- Run the next Linux test once the next batch of features has been added
+  (same procedure: script via micro SD to the Ubuntu desktop partition).
+- Tidy-up: delete merged branches feature/token-create-delete, feature/token-associate-hide, feature/token-mint-burn.
 - Offline signers (Windows, x64 build), both in `target\x86_64-pc-windows-msvc\release\`:
   `hedera-offline-signer.exe` is the proper test signer: shows every field, hides the key as typed, refuses to read it if the window cannot hide input. Use this for testing.
   `examples\sign_request.exe` is the older bare example (source `crates/hedera-tx/examples/sign_request.rs`); it echoes the private key as you type.
