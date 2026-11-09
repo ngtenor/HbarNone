@@ -373,7 +373,8 @@ HTS tokens. Use it to pick up cold.
   "Stop scanning" and the camera opens as a layer over the signing box; a
   click anywhere outside it closes it. Other signing flows keep the single
   "Scan reply with camera" button.
-- [x] Offline key rotation (built 9 Nov, awaiting manual Testnet test):
+- [x] Offline key rotation (built 9 Nov, manually verified on Testnet with QR
+  codes 9 Nov):
   "Move account" now also works for watch-only wallets through a signing
   request (`CryptoUpdate`). The network needs the current key and the new key
   to sign: the app shows one request QR, the signer runs once per key, and

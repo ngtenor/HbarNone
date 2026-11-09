@@ -1023,7 +1023,25 @@ h2.section-title,
 
 .move-confirm .signature-row textarea {
   flex: 1;
+  box-sizing: border-box;
+  height: 40px;
+  min-height: 40px;
   min-width: 0;
+}
+
+/* Breathing room between "Show request as text" and the first signature. */
+.move-confirm details {
+  margin-bottom: 14px;
+}
+
+/* Submit matches the scan buttons' width, so Cancel starts where the
+   signature text boxes do. */
+.move-confirm .button-pair {
+  gap: 12px;
+}
+
+.move-confirm .button-pair .primary-button {
+  flex: 0 0 200px;
 }
 
 /* The camera opens as a layer over the signing box, just below the hint
