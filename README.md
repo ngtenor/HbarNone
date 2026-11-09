@@ -139,10 +139,10 @@ See [docs/TODO.md](docs/TODO.md) for current status and next steps.
 
 ## Longer-term roadmap
 
-1. Finish Linux manual verification and remaining legacy-wallet migration checks
-2. Support for more offline transaction types (key change, tokens)
-3. Offline signing and QR-based transaction transport
-4. HTS tokens and NFTs, then a dedicated signer application and reproducible hardware reference design
+1. NFT support on Testnet: display by token ID and serial number, associate/dissociate, and transfers (hot-wallet and watch-only via the offline signer)
+2. Multisig: a 2-of-3 threshold account with the desktop app as coordinator, implemented generically for M-of-N thresholds
+3. A dedicated air-gapped signer device (QR transport, SeedQR key entry) and reproducible hardware reference design
+4. Mainnet transactions through the signer only, after independent review and testing
 
 ## Security philosophy
 

@@ -111,12 +111,19 @@ an ambitious target, not a commitment to production readiness or a finished
 hardware signer. Complete each stage's documentation, automated tests, manual
 Testnet verification and CI before moving to the next stage.
 
-### 7 November: baseline
-- [ ] Update stale roadmap and handover notes, including completed Stage 6
-  testing and the merged pull request; identify any outstanding verification.
-- [ ] Confirm the current release and agree the precise NFT and multisig scope.
-- [ ] Update the hardware bill of materials with purchased parts and the
-  requirement that the signer never be connected to a computer.
+### 7 November: baseline (completed 9 November)
+- [x] Update stale roadmap and handover notes: token stages 2–6 are tested on
+  Testnet and merged into main, offline key rotation is done, and the README
+  and TODO roadmaps were refreshed. Outstanding verification: the next Linux
+  check run (micro-SD procedure) covering the batch since the last run, the
+  README screenshot/walkthrough, and the deferred GUI-level restart test.
+- [x] Current release confirmed: the x64 Windows build of `main` at commit
+  `3140ed9` ("Move screen polish: aligned signature rows and buttons"); no
+  version tags exist yet. NFT and multisig scope agreed 9 Nov and recorded in
+  the stage sections below.
+- [x] Hardware bill of materials updated with purchased parts and the
+  requirement that the signer never be connected to a computer; see
+  "Hardware bill of materials (signer prototype)" below.
 
 ### 8–10 November: NFT support
 - [ ] Display owned NFTs by token ID and serial number; treat metadata as
@@ -124,14 +131,23 @@ Testnet verification and CI before moving to the next stage.
 - [ ] Associate and dissociate NFT tokens and transfer NFTs by serial number.
 - [ ] Support hot-wallet and watch-only transfers; show token ID, serial number,
   sender and recipient on the offline signer.
-- [ ] Explicitly handle unsupported or risky cases, including custom fees and
-  invalid ownership or association.
+- [ ] Explicitly handle risky cases: reject invalid ownership or association.
+  Transfers of NFTs with custom fees (for example artist royalties) are
+  allowed but disabled by default behind an allow/disallow toggle in Settings
+  (agreed 9 Nov); before sending, show the token's fee schedule from the
+  mirror node and warn that fallback fees can charge the receiver.
+- [ ] Out of scope: NFT minting, NFT creation and marketplace features;
+  Testnet only.
 - [ ] Test successful and failure paths with disposable Testnet accounts,
   document the workflow and pass CI.
 
 ### 11–13 November: multisig
 - [ ] Start with the planned 2-of-3 threshold account: display the key structure
   and collect, validate and combine signatures for the same transaction body.
+  Implement the threshold logic generically (M-of-N, as Hedera's
+  `ThresholdKey` already is) so shapes such as 3-of-5 need no structural
+  change; 2-of-3 is the verified baseline and a 3-of-5 Testnet test is done
+  only if time permits (agreed 9 Nov).
 - [ ] Support the agreed account setup/key-change flow and a basic transfer
   through the desktop coordinator and software signer.
 - [ ] Reject duplicate, unrelated, invalid or mismatched signatures and explain
@@ -157,15 +173,21 @@ until separately reviewed and tested.
 ## Next steps
 1. All Linux manual verification is complete.
 2. (Done) Watch-only wallets and unsigned-transaction export.
-3. Design and build QR-based offline transaction transport and a signer application.
-4. HTS tokens, in stages (hot wallets first):
-   - (Done) Stage 1: token balances in Account assets and Send menu, and Token info lookup.
-   - Stage 2 (built, awaiting Testnet test): create and delete a fungible token. The wallet key is the treasury, admin and supply key; the fee cap for creation is 20 HBAR.
-   - Stage 3 (built, awaiting Testnet test): associate, dissociate and hide tokens.
-   - Stage 4 (built, awaiting Rust compile and Testnet test): send a token, with a receiver-association check.
-   - Stage 5: mint and burn (built and tested on Testnet). Token management -> Issuing has Mint token and Burn token; the backend checks the supply key and treasury first.
-   - Stage 6: signer support for watch-only wallets: token send, associate and disassociate go through the offline request and signer flow (built, awaiting an end-to-end Testnet test). Create, delete, mint and burn stay rejected by the signer by design.
-   - Later: NFTs, key change and hardware work.
+3. QR-based offline transaction transport and a signer application: the
+   desktop side is done (request QR, camera-scanned replies, multi-signature
+   key-rotation replies) and the CLI signer works; still needed are the
+   dedicated air-gapped device and animated/multi-part QR tuned to its camera
+   and display.
+4. (Done through stage 6; all stages merged into main and manually tested on
+   Testnet with disposable accounts.) HTS tokens, in stages (hot wallets first):
+   - Stage 1: token balances in Account assets and Send menu, and Token info lookup.
+   - Stage 2: create and delete a fungible token. The wallet key is the treasury, admin and supply key; the fee cap for creation is 20 HBAR.
+   - Stage 3: associate, dissociate and hide tokens.
+   - Stage 4: send a token, with a receiver-association check.
+   - Stage 5: mint and burn. Token management -> Issuing has Mint token and Burn token; the backend checks the supply key and treasury first.
+   - Stage 6: signer support for watch-only wallets: token send, associate and disassociate go through the offline request and signer flow. Create, delete, mint and burn stay rejected by the signer by design.
+   - Later: NFTs and multisig (scope agreed, see the timetable above) and
+     hardware work. Key change is done (offline key rotation, 9 Nov).
 5. Defer Mainnet until the implementation has been reviewed and tested.
 
 ## Cold signer (SeedSigner) design notes
@@ -177,8 +199,8 @@ Goal: a small, fully readable signer. It signs only what it can show in full and
 3. NFT transfer (token ID and serial number).
 4. Token association and dissociation.
 5. Account create, update (key change) and delete. Show the full key (or key structure) being set.
-   - **Done:** create (key shown in full, warning if it differs from the signing key) and delete (recipient must be another account of the same watch-only wallet, one signature).
-   - **Still to do:** key change (two signatures) and delete to a recipient with a different key; both need a multi-signature reply format.
+   - **Done:** create (key shown in full, warning if it differs from the signing key), delete (recipient must be another account of the same watch-only wallet, one signature), and key change (two signatures via the multi-signature reply format, built and verified on Testnet 9 Nov).
+   - **Still to do:** delete to a recipient with a different key (uses the same multi-signature reply format).
 6. Optional later: approve/delete allowance, and `ScheduleCreate`/`ScheduleSign` (needed for multisig collection over days).
 
 **Rejected by default**
@@ -223,31 +245,63 @@ Goal: a small, fully readable signer. It signs only what it can show in full and
 - Aim for a few thousand lines of our own code, few dependencies, `no_std`, no `unsafe` outside the hardware layer, and fewest concepts per function. Track the line count in CI.
 - Each module gets a short walkthrough so it can be read line by line, starting with the signer core.
 
+## Hardware bill of materials (signer prototype)
+
+**The signer must never be connected to a computer** — no USB data connection
+at any point in its life. Firmware updates and CNC toolpath exports go through
+microSD cards only, with separate cards for updates and exports. Secret SeedQR
+toolpaths, and any card or CNC system handling them, must themselves be
+treated as secret.
+
+| Part | Role | Status (9 Nov 2026) |
+| --- | --- | --- |
+| Raspberry Pi Pico 2 with headers (non-W, no Wi-Fi) | Signer MCU (RP2350) | Purchased |
+| Pimoroni Pico Display Pack 2.8 | Display and buttons | Purchased |
+| Adafruit 4682 microSD SPI breakout | Firmware updates and exports | Purchased |
+| Arducam OV2640 camera | QR scanning | Purchased; confirm the exact model has an SPI interface before wiring |
+| Miscellaneous (wiring, power, microSD cards) | Assembly | Believed on hand; verify against the wiring plan (14 Nov) |
+
+No other parts have been purchased. Pin, power and physical compatibility
+checks and the wiring plan are scheduled for 14 November; camera, display and
+SD wiring, power, drivers and QR scanning have not yet been validated
+together.
+
 ## Later roadmap
 - [x] Integrate read-only Hedera Testnet access (balance and transaction history)
 - [x] Implement and manually verify HBAR transfers and account create/move/delete on Testnet
 - [x] Add watch-only wallets
 - [x] Add unsigned-transaction export (HBAR sends, QR request, pasted signature, 180 s window). Manually verified end to end on Testnet with the example signer; reply can also be scanned by camera, added after this test
-- [ ] Build QR-based offline transaction transport
-- [ ] Create an offline signer application (first iteration done: `crates/offline-signer` CLI + `crates/signer-core`, HBAR transfers only, keys typed in; still needed: dedicated air-gapped device, the signer can read a request from a screenshot or photo file, but live camera scanning on the device is still needed)
-- [ ] Add HTS token, NFT, and smart-contract support
+- [x] QR-based offline transaction transport, desktop side: request QR,
+  camera-scanned replies and multi-signature key-rotation replies. Still to
+  do: animated/multi-part QR tuned to the signer device's camera and display
+  (tracked in the pre-Mainnet checklist).
+- [ ] Create an offline signer application (first iteration done:
+  `crates/offline-signer` CLI + `crates/signer-core`; it displays and signs
+  HBAR transfers, account create/delete, key changes, token transfers and
+  token associations, and can read a request from a screenshot or photo file;
+  still needed: the dedicated air-gapped device with live camera scanning)
+- [ ] Add NFT support (fungible HTS tokens are done through stage 6; the NFT
+  scope is agreed in the timetable; smart-contract calls stay rejected by the
+  signer by design)
 - [ ] Design a reproducible hardware prototype
 
 ## Validation status
 The source security reviews found no substantiated vulnerabilities. The
 implemented desktop app includes the encrypted shared vault, wallet recovery
-and backup, safety controls, account management, watch-only wallets, and
-Testnet HBAR transaction flows. Linux app-data permissions are hardened to
-`0700`/`0600`.
+and backup, safety controls, account management, watch-only wallets, Testnet
+HBAR and fungible-token transaction flows (token stages 1–6, including signer
+support), offline key rotation, and read-only Mainnet watch-only monitoring.
+Linux app-data permissions are hardened to `0700`/`0600`.
 
-The latest Windows release build produced both NSIS and MSI installers.
-Frontend lint and production build passed, and all 67 frontend tests passed.
-All 47 wallet-core tests, Rust formatting, and a workspace check passed for
-the watch-only implementation; see CI for the Windows and Ubuntu jobs.
-Watch-only support was manually verified on Windows against Testnet but has not
-yet been included in a packaged release. The other Testnet account flows were manually
-verified on Windows with disposable accounts. Remaining manual checks are
-listed above; do not use real funds or recovery phrases.
+The current release is the x64 Windows build of `main` at commit `3140ed9`
+(confirmed 9 Nov 2026); no version tags exist yet. A release app is rebuilt
+after each change (`--no-bundle`); the last full installer build produced both
+NSIS and MSI installers. The frontend suite stands at 85 passing UI tests, and
+the Rust tests, formatting and workspace check pass on Windows and Ubuntu CI.
+All manual Testnet token tests through stage 6 are complete with disposable
+accounts, and the latest Linux check run passed on the Ubuntu desktop
+partition. Remaining manual checks are listed above; do not use real funds or
+recovery phrases.
 
 Build note: this ARM64 Windows machine needs the x64 Rust toolchain
 (`RUSTUP_TOOLCHAIN=stable-x86_64-pc-windows-msvc`) and the x64 Visual Studio
@@ -453,17 +507,11 @@ HTS tokens. Use it to pick up cold.
   Rebuild BOTH after any signer or hedera-tx change (the app build does not rebuild them):
   `cargo build --release -p offline-signer --target x86_64-pc-windows-msvc` and `cargo build --release -p hedera-tx --example sign_request --target x86_64-pc-windows-msvc`.
   Close any running copy first or the link fails (LNK1104).
-- Air-gapped signer prototype hardware (6 Nov 2026): purchased Raspberry Pi Pico 2
-  with headers (non-W, no Wi-Fi), Pimoroni Pico Display Pack 2.8 and Adafruit 4682
-  microSD SPI breakout. A seller for an Arducam OV2640 camera has been found;
-  confirm the exact model has an SPI interface before purchase. The user believes
-  they have the other required parts.
-  The signer must never be connected to a computer: use microSD for firmware
-  updates and CNC toolpath exports. Initial provisioning and a trusted,
-  verified SD-update mechanism still need designing. Use separate cards for
-  updates and exports; secret SeedQR toolpaths and any card or CNC system
-  handling them must be treated as secret. Camera, display and SD wiring,
-  power, drivers and QR scanning have not yet been validated together.
+- Air-gapped signer prototype hardware: see "Hardware bill of materials
+  (signer prototype)" above. The Arducam OV2640 camera is now purchased, but
+  its SPI interface still needs confirming before wiring. Initial
+  provisioning and a trusted, verified SD-update mechanism still need
+  designing.
 - Tool approvals: the chat asks for permission often. This is an app setting
   (the approvals picker or `chat.tools.global.autoApprove`), not something the
   assistant can change.
@@ -475,9 +523,10 @@ Watch-only Mainnet monitoring is already live; this list is about trusting
 the app near real value. Items marked (hardware) depend on the signer device.
 
 ### Core functionality
-- [ ] Offline key rotation: `CryptoUpdate` via signing request, so a
+- [x] Offline key rotation: `CryptoUpdate` via signing request, so a
       watch-only wallet can move an account to a new key without the old or
-      new key touching the desktop.
+      new key touching the desktop. Built and manually verified on Testnet
+      with QR codes, 9 Nov 2026.
 - [ ] QR transaction transport: animated/multi-part QR display of unsigned
       requests and camera scan of signed replies, tuned to the signer
       device's camera and display. (hardware)
