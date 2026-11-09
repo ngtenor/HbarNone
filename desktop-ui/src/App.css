@@ -982,6 +982,78 @@ h2.section-title,
   border-radius: 8px;
 }
 
+/* The move screens span the full panel width, like the assets and
+   transactions boxes below them. */
+.testnet-confirm.move-confirm {
+  position: relative;
+  max-width: none;
+}
+
+.move-confirm .signing-layout {
+  display: flex;
+  gap: 28px;
+  align-items: flex-start;
+}
+
+.move-confirm .signing-layout dl {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+}
+
+.move-confirm .signing-qr {
+  flex: 0 0 auto;
+  display: grid;
+  gap: 6px;
+  justify-items: start;
+}
+
+.move-confirm .signature-row {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  margin: 6px 0 12px;
+}
+
+.move-confirm .signature-row .scan-signature-button {
+  flex: 0 0 200px;
+  min-height: 40px;
+  padding: 0 14px;
+}
+
+.move-confirm .signature-row textarea {
+  flex: 1;
+  min-width: 0;
+}
+
+/* The camera opens as a layer over the signing box, just below the hint
+   text above it. A click anywhere outside closes it. */
+.qr-scanner-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 30;
+  display: flex;
+  justify-content: center;
+}
+
+.qr-scanner-overlay .qr-scanner {
+  box-sizing: border-box;
+  width: min(440px, 100%);
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 10px 30px rgba(45, 55, 66, 0.3);
+}
+
+.qr-scanner-overlay .qr-scanner video {
+  width: 100%;
+  border-radius: 6px;
+  background: #000;
+}
+
 .testnet-warning {
   margin: 0 0 8px;
   padding: 8px 10px;

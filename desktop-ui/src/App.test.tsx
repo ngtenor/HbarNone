@@ -2825,4 +2825,38 @@ describe('offline key rotation', () => {
       targetWalletId: 'w2',
     }))
   })
+
+  it('offers a camera scan button per signature and closes the camera on an outside click', async () => {
+    const user = userEvent.setup()
+    installBackend({
+      status: 'unlocked',
+      wallets: [
+        { ...wallet('w1', 'Watcher', '0.0.1001'), secret_kind: 'watchonly', key_type: 'ed25519' },
+        { ...wallet('w2', 'Cold'), secret_kind: 'watchonly', key_type: 'ed25519' },
+      ],
+    })
+    render(<App />)
+    await openAccount(user, 'Watcher')
+    await chooseMenu(user, 'Account management', 'Move account')
+    await user.selectOptions(screen.getByLabelText('New wallet'), 'w2')
+    await user.click(screen.getByRole('button', { name: 'Review move' }))
+    await user.click(screen.getByLabelText(/I understand that the other wallet/))
+    await user.click(screen.getByRole('button', { name: 'Create signing request' }))
+    await screen.findByRole('group', { name: 'Signing request' })
+
+    expect(screen.getByRole('button', { name: "Scan current key's signature" })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: "Scan new key's signature" }))
+    expect(await screen.findByText(/does not allow camera access/)).toBeInTheDocument()
+    // The clicked button now stops the scan; the other button keeps its label.
+    expect(screen.getByRole('button', { name: 'Stop scanning' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: "Scan new key's signature" })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: "Scan current key's signature" })).toBeInTheDocument()
+
+    // A click anywhere outside the camera window closes it.
+    await user.click(screen.getByText("Signature from the current key's signer"))
+    await waitFor(() =>
+      expect(screen.queryByText(/does not allow camera access/)).not.toBeInTheDocument())
+    expect(screen.getByRole('button', { name: "Scan new key's signature" })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Stop scanning' })).not.toBeInTheDocument()
+  })
 })

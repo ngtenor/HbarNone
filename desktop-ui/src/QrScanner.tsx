@@ -7,10 +7,12 @@ type QrScannerProps = {
   prefix: string
   onScan: (text: string) => void
   onClose: () => void
+  // Hidden when the button that opened the scanner already reads "Stop scanning".
+  showStopButton?: boolean
 }
 
 // Reads QR codes from the camera. Frames are decoded in memory only and never stored or sent.
-export function QrScanner({ prefix, onScan, onClose }: QrScannerProps) {
+export function QrScanner({ prefix, onScan, onClose, showStopButton = true }: QrScannerProps) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const onScanRef = useRef(onScan)
@@ -93,9 +95,11 @@ export function QrScanner({ prefix, onScan, onClose }: QrScannerProps) {
       <p className="field-hint" role="status">
         {message}
       </p>
-      <button className="secondary-button" type="button" onClick={onClose}>
-        Stop scanning
-      </button>
+      {showStopButton && (
+        <button className="secondary-button" type="button" onClick={onClose}>
+          Stop scanning
+        </button>
+      )}
     </div>
   )
 }

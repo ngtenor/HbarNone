@@ -228,15 +228,27 @@ export function TestnetPanel({
   const [signing, setSigning] = useState<SigningRequest | null>(null)
   const [signatureText, setSignatureText] = useState('')
   const [signatureText2, setSignatureText2] = useState('')
-  const [scanning, setScanning] = useState(false)
+  const [scanning, setScanning] = useState<'current' | 'new' | null>(null)
   const handleScanned = (text: string) => {
-    setSignatureText(text)
-    setScanning(false)
+    if (scanning === 'new') setSignatureText2(text)
+    else setSignatureText(text)
+    setScanning(null)
   }
   const [secondsLeft, setSecondsLeft] = useState(0)
   useEffect(() => {
-    if (!signing) setScanning(false)
+    if (!signing) setScanning(null)
   }, [signing])
+  // The move screen shows the camera as a layer; a click anywhere outside it closes it.
+  useEffect(() => {
+    if (!scanning || signing?.action !== 'key-update') return
+    const closeOnOutsideClick = (event: MouseEvent) => {
+      const target = event.target as Element | null
+      if (target?.closest('.qr-scanner-overlay, .scan-signature-button')) return
+      setScanning(null)
+    }
+    document.addEventListener('mousedown', closeOnOutsideClick)
+    return () => document.removeEventListener('mousedown', closeOnOutsideClick)
+  }, [scanning, signing])
   useEffect(() => {
     if (!signing) return
     const tick = () =>
@@ -785,18 +797,23 @@ export function TestnetPanel({
 
   const signingToken = signing ? allTokens.find((token) => token.token_id === signing.tokenId) : undefined
 
-  const renderSigning = (submitLabel: string, onCancel: () => void) => signing && (
-    <div className="testnet-confirm" role="group" aria-label="Signing request">
+  const renderSigning = (submitLabel: string, onCancel: () => void) => {
+    if (!signing) return null
+    const isMoveSigning = signing.action === 'key-update'
+    const intro = (
       <p>
         Scan this code with your offline signer, check the details it shows, then paste its
         reply below.
       </p>
-      <QrCode request={signing} />
+    )
+    const timerHint = (
       <p className="field-hint" role="timer">
         {secondsLeft > 0
           ? `Valid for ${secondsLeft} more seconds.`
           : 'This request has expired. Go back and create a new one.'}
       </p>
+    )
+    const requestDetails = (
       <dl>
         {signing.action === 'transfer' && (
           <>
@@ -877,52 +894,14 @@ export function TestnetPanel({
           </>
         )}
       </dl>
+    )
+    const requestAsText = (
       <details>
         <summary>Show request as text</summary>
         <textarea readOnly rows={4} aria-label="Signing request text" value={signing.payload} />
       </details>
-      <label htmlFor={`signature-${wallet.id}`}>
-        {signing.action === 'key-update'
-          ? "Signature from the current key's signer"
-          : 'Signature from the signer'}
-      </label>
-      {scanning ? (
-        <QrScanner prefix="HVTX1-SIG:" onScan={handleScanned} onClose={() => setScanning(false)} />
-      ) : (
-        <button
-          className="secondary-button"
-          type="button"
-          disabled={isBusy || secondsLeft === 0}
-          onClick={() => setScanning(true)}
-        >
-          Scan reply with camera
-        </button>
-      )}
-      <textarea
-        id={`signature-${wallet.id}`}
-        rows={3}
-        autoComplete="off"
-        spellCheck={false}
-        placeholder="HVTX1-SIG:..."
-        value={signatureText}
-        onChange={(event) => setSignatureText(event.target.value)}
-      />
-      {signing.action === 'key-update' && moveNeedsTwoSignatures && (
-        <>
-          <label htmlFor={`signature2-${wallet.id}`}>
-            Signature from the new key&apos;s signer (run the signer again with the target wallet&apos;s key)
-          </label>
-          <textarea
-            id={`signature2-${wallet.id}`}
-            rows={3}
-            autoComplete="off"
-            spellCheck={false}
-            placeholder="HVTX1-SIG:..."
-            value={signatureText2}
-            onChange={(event) => setSignatureText2(event.target.value)}
-          />
-        </>
-      )}
+    )
+    const actions = (
       <div className="button-pair">
         <button
           className="primary-button"
@@ -931,7 +910,7 @@ export function TestnetPanel({
             isBusy
             || secondsLeft === 0
             || !signatureText.trim()
-            || (signing.action === 'key-update' && moveNeedsTwoSignatures && !signatureText2.trim())
+            || (isMoveSigning && moveNeedsTwoSignatures && !signatureText2.trim())
           }
           onClick={handleSubmitSigned}
         >
@@ -941,8 +920,112 @@ export function TestnetPanel({
           Cancel
         </button>
       </div>
-    </div>
-  )
+    )
+    if (isMoveSigning) {
+      // The move screen is wide: details sit beside the QR code, each signature
+      // has its own scan button, and the camera opens as a layer over the box.
+      return (
+        <div className="testnet-confirm move-confirm" role="group" aria-label="Signing request">
+          {intro}
+          <div className="signing-layout">
+            <div className="signing-qr">
+              <QrCode request={signing} />
+              {timerHint}
+            </div>
+            {requestDetails}
+          </div>
+          {requestAsText}
+          <label htmlFor={`signature-${wallet.id}`}>Signature from the current key&apos;s signer</label>
+          <div className="signature-row">
+            <button
+              className="secondary-button scan-signature-button"
+              type="button"
+              disabled={isBusy || secondsLeft === 0}
+              onClick={() => setScanning(scanning === 'current' ? null : 'current')}
+            >
+              {scanning === 'current' ? 'Stop scanning' : "Scan current key's signature"}
+            </button>
+            <textarea
+              id={`signature-${wallet.id}`}
+              rows={3}
+              autoComplete="off"
+              spellCheck={false}
+              placeholder="HVTX1-SIG:..."
+              value={signatureText}
+              onChange={(event) => setSignatureText(event.target.value)}
+            />
+          </div>
+          {moveNeedsTwoSignatures && (
+            <>
+              <label htmlFor={`signature2-${wallet.id}`}>Signature from the new key&apos;s signer</label>
+              <div className="signature-row">
+                <button
+                  className="secondary-button scan-signature-button"
+                  type="button"
+                  disabled={isBusy || secondsLeft === 0}
+                  onClick={() => setScanning(scanning === 'new' ? null : 'new')}
+                >
+                  {scanning === 'new' ? 'Stop scanning' : "Scan new key's signature"}
+                </button>
+                <textarea
+                  id={`signature2-${wallet.id}`}
+                  rows={3}
+                  autoComplete="off"
+                  spellCheck={false}
+                  placeholder="HVTX1-SIG:..."
+                  value={signatureText2}
+                  onChange={(event) => setSignatureText2(event.target.value)}
+                />
+              </div>
+            </>
+          )}
+          {actions}
+          {scanning && (
+            <div className="qr-scanner-overlay">
+              <QrScanner
+                prefix="HVTX1-SIG:"
+                onScan={handleScanned}
+                onClose={() => setScanning(null)}
+                showStopButton={false}
+              />
+            </div>
+          )}
+        </div>
+      )
+    }
+    return (
+      <div className="testnet-confirm" role="group" aria-label="Signing request">
+        {intro}
+        <QrCode request={signing} />
+        {timerHint}
+        {requestDetails}
+        {requestAsText}
+        <label htmlFor={`signature-${wallet.id}`}>Signature from the signer</label>
+        {scanning ? (
+          <QrScanner prefix="HVTX1-SIG:" onScan={handleScanned} onClose={() => setScanning(null)} />
+        ) : (
+          <button
+            className="secondary-button"
+            type="button"
+            disabled={isBusy || secondsLeft === 0}
+            onClick={() => setScanning('current')}
+          >
+            Scan reply with camera
+          </button>
+        )}
+        <textarea
+          id={`signature-${wallet.id}`}
+          rows={3}
+          autoComplete="off"
+          spellCheck={false}
+          placeholder="HVTX1-SIG:..."
+          value={signatureText}
+          onChange={(event) => setSignatureText(event.target.value)}
+        />
+        {actions}
+      </div>
+    )
+  }
 
   const handleReview = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -1873,7 +1956,7 @@ export function TestnetPanel({
               setSignatureText2('')
             })
           ) : confirmingMove ? (
-            <div className="testnet-confirm" role="group" aria-label="Confirm account move">
+            <div className="testnet-confirm move-confirm" role="group" aria-label="Confirm account move">
               <p className="testnet-warning" role="alert">
                 <span aria-hidden="true">⚠ </span>
                 Moving an account hands control of its funds to the other wallet&apos;s key. If

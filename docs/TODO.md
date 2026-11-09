@@ -365,6 +365,14 @@ HTS tokens. Use it to pick up cold.
   local build time alone does not establish AI usage cost.
 
 ### Recently completed (8 Nov 2026)
+- [x] Move-screen layout and per-signature camera scan (9 Nov): the watch-only
+  move confirmation and signing boxes now span the full panel width, the
+  request details sit beside the QR code, and each signature line pairs a scan
+  button ("Scan current key's signature" / "Scan new key's signature") with
+  its text box, so both replies can be read by camera. A pressed button reads
+  "Stop scanning" and the camera opens as a layer over the signing box; a
+  click anywhere outside it closes it. Other signing flows keep the single
+  "Scan reply with camera" button.
 - [x] Offline key rotation (built 9 Nov, awaiting manual Testnet test):
   "Move account" now also works for watch-only wallets through a signing
   request (`CryptoUpdate`). The network needs the current key and the new key
