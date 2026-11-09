@@ -405,7 +405,18 @@ HTS tokens. Use it to pick up cold.
 ### Still to do
 - Run the next Linux test once the next batch of features has been added
   (same procedure: script via micro SD to the Ubuntu desktop partition).
-- Tidy-up: delete merged branches feature/token-create-delete, feature/token-associate-hide, feature/token-mint-burn.
+- Slow start after a quick relaunch (measured 8 Nov 2026): closing the app
+  leaves its `msedgewebview2.exe` child processes draining for ~10–60 seconds
+  while they hold the shared browser profile
+  (`%LOCALAPPDATA%\org.hederavault.desktop\EBWebView`). A relaunch during that
+  window shows its window immediately but the WebView cannot initialise until
+  the old processes release the profile, so the user sees a white screen for
+  7–10 seconds. A cold start is ~200 ms to the window and ~700 ms to content.
+  Research the current Tauri 2 mitigation (explicitly closing the webview on
+  exit, or a separate profile per instance) and fix.
+- Branded startup splash: show the HBarNone logo (hexagon lockup on the app
+  background) instead of a white screen while the WebView initialises and the
+  vault state loads. Also softens the relaunch delay above until it is fixed.
 - Offline signers (Windows, x64 build), both in `target\x86_64-pc-windows-msvc\release\`:
   `hedera-offline-signer.exe` is the proper test signer: shows every field, hides the key as typed, refuses to read it if the window cannot hide input. Use this for testing.
   `examples\sign_request.exe` is the older bare example (source `crates/hedera-tx/examples/sign_request.rs`); it echoes the private key as you type.
@@ -426,6 +437,55 @@ HTS tokens. Use it to pick up cold.
 - Tool approvals: the chat asks for permission often. This is an app setting
   (the approvals picker or `chat.tools.global.autoApprove`), not something the
   assistant can change.
+
+## Pre-Mainnet launch checklist
+
+Everything needed before the app is launched / used to transact on Mainnet.
+Watch-only Mainnet monitoring is already live; this list is about trusting
+the app near real value. Items marked (hardware) depend on the signer device.
+
+### Core functionality
+- [ ] Offline key rotation: `CryptoUpdate` via signing request, so a
+      watch-only wallet can move an account to a new key without the old or
+      new key touching the desktop.
+- [ ] QR transaction transport: animated/multi-part QR display of unsigned
+      requests and camera scan of signed replies, tuned to the signer
+      device's camera and display. (hardware)
+- [ ] Air-gapped signer device: wiring, firmware, QR scan/display, SeedQR
+      key entry, initial provisioning, verified SD-update mechanism. (hardware)
+- [ ] Mainnet transactions through the signer only: Mainnet gRPC submit
+      endpoints and node IDs, network-aware checksums in every parse path,
+      network-aware signer validation and display, no stored Mainnet secrets.
+- [ ] Per-network address book (entries are Testnet-only today).
+- [ ] Fee preview and explicit fee caps on every transaction type.
+
+### Security hardening
+- [ ] Independent security audit (vault crypto, signing-request format,
+      transaction encoding, signer parser); fix findings.
+- [ ] Threat-model pass on the signing-request format: replay protection,
+      expiry, node pinning, cross-network confusion.
+- [ ] Secret-handling review: zeroization coverage, clipboard and screenshot
+      hygiene, reveal-flow warnings.
+- [ ] Supply-chain checks: cargo audit / npm audit in CI, dependency pinning
+      review, signed release binaries (code-signing certificate), and a
+      defined update/verification story for users.
+- [ ] Vault password policy review (minimum strength at creation).
+
+### Reliability and UX
+- [ ] WebView relaunch delay fixed and branded startup splash (above).
+- [ ] Graceful handling of mirror-node outages and partial failures
+      (submitted-but-unconfirmed transactions, retry guidance).
+- [ ] Backup/restore round-trip tests across app versions (vault format
+      migration policy).
+- [ ] Final branding/UX pass incl. Help text rewritten for Mainnet use.
+
+### Testing and release
+- [ ] Full manual test matrix per release on Windows and Linux (scripted
+      checklists; Linux via the micro-SD procedure).
+- [ ] Mainnet dress rehearsal: tiny real amounts end to end (fund, send,
+      token associate/transfer, key rotation, delete) via the signer.
+- [ ] CI enforcing fmt, lint, tests and audits on both platforms.
+- [ ] Versioned release with changelog, checksums and signed installers.
 
 ## Appendix: Branding guidelines
 
