@@ -421,6 +421,9 @@ function installBackend(overrides: Partial<Backend> = {}) {
         backend.outside = backend.outside.filter((item) => item.id !== args?.accountId)
         return addressBookView()
       case 'get_address_balance':
+        if (!args?.network) {
+          throw new Error('command get_address_balance missing required key network')
+        }
         return 250_000_000
       case 'get_wallet_keys':
         return { publicKey: 'ab'.repeat(32), evmAddress: null }

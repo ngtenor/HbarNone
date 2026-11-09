@@ -1013,6 +1013,7 @@ export function TestnetPanel({
     return run(async () => {
       const balance = await invoke<number | null>('get_address_balance', {
         accountId: funder.split('-')[0],
+        network: 'testnet',
       })
       if (balance === null || balance < tinybars) {
         throw new Error(
