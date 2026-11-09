@@ -2105,7 +2105,9 @@ function App() {
                 key={`${wallet.id}/${openAccount ?? ''}`}
                 wallet={wallet}
                 account={openAccount}
-                otherWallets={wallets.filter((item) => item.id !== wallet.id)}
+                otherWallets={wallets.filter((item) => (
+                  item.id !== wallet.id && item.network === wallet.network
+                ))}
                 onAccountMoved={handleAccountMoved}
                 onAccountDeleted={handleAccountDeleted}
                 addressBook={addressBook}

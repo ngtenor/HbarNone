@@ -2584,6 +2584,33 @@ describe('network separation', () => {
     expect(screen.queryByRole('menuitem', { name: 'Move account' })).not.toBeInTheDocument()
   })
 
+  it('offers only same-network wallets as move targets', async () => {
+    const user = userEvent.setup()
+    installBackend({
+      status: 'unlocked',
+      wallets: [
+        wallet('w1', 'Savings', '0.0.1001'),
+        wallet('w2', 'Trading'),
+        mainnetWatcher('m1', 'Watcher', ['0.0.5005']),
+      ],
+    })
+    render(<App />)
+    await openAccount(user, 'Savings', 'Move account')
+    const dropdown = await screen.findByLabelText('New wallet')
+    const names = within(dropdown).getAllByRole('option').map((option) => option.textContent)
+    expect(names).toContain('Trading')
+    expect(names).not.toContain('Watcher')
+  })
+
+  it('hides the move action when no same-network wallet exists', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+    await openAccount(user, 'Savings')
+    await user.click(screen.getByRole('button', { name: 'Account management' }))
+    expect(await screen.findByRole('menuitem', { name: 'Name this account' })).toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: 'Move account' })).not.toBeInTheDocument()
+  })
+
   it('keeps the Testnet and Mainnet address books separate', async () => {
     const user = userEvent.setup()
     installBackend({

@@ -570,6 +570,13 @@ set RUSTUP_TOOLCHAIN=stable-x86_64-pc-windows-msvc
 npm run tauri:build -- --target x86_64-pc-windows-msvc
 ```
 
+To rebuild only the app itself (skipping the MSI/NSIS installers, which
+saves time when just testing a change), append `--no-bundle`:
+
+```
+npm run tauri:build -- --target x86_64-pc-windows-msvc --no-bundle
+```
+
 The build writes:
 
 - the app itself to
