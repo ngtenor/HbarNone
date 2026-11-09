@@ -530,3 +530,56 @@ colours and are not restyled with the brand palette.
 ### Name
 The project name is written exactly as **HBarNone** (capital H, capital B,
 lowercase "ar", capital N).
+
+## Appendix: Building on Windows
+
+Prerequisites: Node.js, Rust (rustup) and the Visual Studio 2022 Build
+Tools with the "Desktop development with C++" workload and a Windows SDK.
+
+On an ARM64 Windows machine the default `aarch64-pc-windows-msvc`
+toolchain cannot link (the Build Tools ship no arm64-target `link.exe`),
+so everything is built with the x86_64 toolchain and target, which run
+fine under emulation:
+
+```
+rustup toolchain install stable-x86_64-pc-windows-msvc
+rustup target add x86_64-pc-windows-msvc
+```
+
+If PowerShell blocks `npm`/`npx` with an execution-policy error, run the
+Node commands from `cmd` instead.
+
+Install dependencies (first time, or after a dependency change):
+
+```
+npm install
+npm install --prefix desktop-ui
+```
+
+Run the tests:
+
+```
+cargo +stable-x86_64-pc-windows-msvc test --workspace --target x86_64-pc-windows-msvc
+npm test --prefix desktop-ui
+```
+
+Build the release app and installers:
+
+```
+set RUSTUP_TOOLCHAIN=stable-x86_64-pc-windows-msvc
+npm run tauri:build -- --target x86_64-pc-windows-msvc
+```
+
+The build writes:
+
+- the app itself to
+  `target\x86_64-pc-windows-msvc\release\hbarnone.exe` (run directly to
+  test),
+- an MSI installer to
+  `target\x86_64-pc-windows-msvc\release\bundle\msi\`, and
+- an NSIS installer to
+  `target\x86_64-pc-windows-msvc\release\bundle\nsis\`.
+
+For day-to-day development, `npm run tauri:dev` (with the same
+`RUSTUP_TOOLCHAIN` set) starts the app against the Vite dev server with
+hot reload.
