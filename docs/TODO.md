@@ -351,6 +351,19 @@ HTS tokens. Use it to pick up cold.
   are one long line; the useful part is the `Diff in ...` blocks from
   `cargo fmt`.
 
+### Cost discipline for future sessions
+- Start a fresh session per substantial feature or related batch; use this TODO
+  and Git history for handoff. Batch related small requests and keep general
+  questions separate from implementation sessions.
+- Search and read only relevant, bounded context; avoid repeated full-file
+  reads, unnecessary tool chatter, and delegation without a concrete need.
+- Use targeted tests while iterating, then run the appropriate final checks
+  and build once; repeat only when failures or further changes require it.
+- Close the app before rebuilding. Use `--no-bundle` for developer builds
+  unless installers are requested; documentation-only changes need no rebuild.
+- These practices reduce avoidable work, not guarantee a particular saving;
+  local build time alone does not establish AI usage cost.
+
 ### Recently completed (8 Nov 2026)
 - [x] Offline key rotation (built 9 Nov, awaiting manual Testnet test):
   "Move account" now also works for watch-only wallets through a signing
@@ -516,4 +529,3 @@ colours and are not restyled with the brand palette.
 ### Name
 The project name is written exactly as **HBarNone** (capital H, capital B,
 lowercase "ar", capital N).
-
