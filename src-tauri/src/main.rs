@@ -1535,24 +1535,25 @@ fn get_address_book(state: State<'_, AppState>) -> Result<AddressBookView, Strin
     address_book_view(&state)
 }
 
-/// Removes address-book rows whose accounts are deleted on their network:
-/// outside entries leave the book, and wallet-linked accounts are unlinked
-/// from their wallets. A mirror error keeps a row, so a network problem
-/// never empties the book.
+/// Removes address-book rows whose accounts no longer exist on their network
+/// (deleted, or wiped entirely as after a Testnet reset): outside entries
+/// leave the book, and wallet-linked accounts are unlinked from their
+/// wallets. A mirror error keeps a row, so a network problem never empties
+/// the book.
 #[tauri::command]
 async fn prune_address_book(state: State<'_, AppState>) -> Result<AddressBookView, String> {
     let entries = lock_service(&state)?.outside_entries()?;
     let mut dead = Vec::new();
     for (network, id) in entries {
         if let Ok(true) = MirrorClient::for_network(network)?
-            .account_is_deleted(&id)
+            .account_is_gone(&id)
             .await
         {
             dead.push((network, id));
         }
     }
-    // Wallet-linked accounts reported deleted on their network are unlinked
-    // from their wallets, so the wallets and the home list stay honest too.
+    // Wallet-linked accounts gone from their network are unlinked from their
+    // wallets, so the wallets and the home list stay honest too.
     let wallets = lock_service(&state)?.list_wallets()?;
     let mut dead_links = Vec::new();
     for wallet in wallets {
@@ -1561,7 +1562,7 @@ async fn prune_address_book(state: State<'_, AppState>) -> Result<AddressBookVie
                 continue;
             }
             if let Ok(true) = MirrorClient::for_network(wallet.network)?
-                .account_is_deleted(&account.id)
+                .account_is_gone(&account.id)
                 .await
             {
                 dead_links.push((wallet.id.clone(), wallet.network, account.id.clone()));
@@ -1629,11 +1630,12 @@ async fn add_address_book_entry(
 #[tauri::command]
 fn rename_address_book_account(
     account_id: String,
+    network: Network,
     name: String,
     state: State<'_, AppState>,
 ) -> Result<AddressBookView, String> {
     lock_service(&state)?.rename_address_book_account(
-        Network::Testnet,
+        network,
         &account_id,
         &name,
         &state.store_path.to_string_lossy(),
@@ -1644,10 +1646,11 @@ fn rename_address_book_account(
 #[tauri::command]
 fn remove_address_book_entry(
     account_id: String,
+    network: Network,
     state: State<'_, AppState>,
 ) -> Result<AddressBookView, String> {
     lock_service(&state)?.remove_address_book_entry(
-        Network::Testnet,
+        network,
         &account_id,
         &state.store_path.to_string_lossy(),
     )?;
@@ -1658,13 +1661,16 @@ fn remove_address_book_entry(
 #[tauri::command]
 async fn get_address_balance(
     account_id: String,
+    network: Network,
     state: State<'_, AppState>,
 ) -> Result<Option<u64>, String> {
     let id = validate_account_id(&account_id)?;
-    if !lock_service(&state)?.address_book_contains(Network::Testnet, &id)? {
+    if !lock_service(&state)?.address_book_contains(network, &id)? {
         return Err(format!("account {id} is not in the address book"));
     }
-    MirrorClient::testnet()?.account_balance(&id).await
+    MirrorClient::for_network(network)?
+        .account_balance(&id)
+        .await
 }
 
 #[tauri::command]

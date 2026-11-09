@@ -477,7 +477,8 @@ the app near real value. Items marked (hardware) depend on the signer device.
 - [ ] Mainnet transactions through the signer only: Mainnet gRPC submit
       endpoints and node IDs, network-aware checksums in every parse path,
       network-aware signer validation and display, no stored Mainnet secrets.
-- [ ] Per-network address book (entries are Testnet-only today).
+- [ ] Mainnet outside entries in the address book (the book shows one
+      network at a time, but outside entries are Testnet-only today).
 
 ### Security hardening
 - [ ] Independent security audit (vault crypto, signing-request format,

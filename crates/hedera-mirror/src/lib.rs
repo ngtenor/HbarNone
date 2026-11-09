@@ -449,6 +449,17 @@ impl MirrorClient {
         }
     }
 
+    /// Whether the account no longer exists on this network: marked deleted,
+    /// or unknown to the mirror node (as after a Testnet reset). A mirror
+    /// error is still an error, so an outage is never read as "gone".
+    pub async fn account_is_gone(&self, account_id: &str) -> Result<bool, String> {
+        let account_id = validate_account_id(account_id)?;
+        match self.get(&format!("/api/v1/accounts/{account_id}")).await? {
+            Some(body) => parse_deleted(&body, &account_id),
+            None => Ok(true),
+        }
+    }
+
     /// Consensus result of a submitted transaction; `None` until Testnet has it.
     pub async fn transaction_result(&self, transaction_id: &str) -> Result<Option<String>, String> {
         let id = validate_transaction_id(transaction_id)?;

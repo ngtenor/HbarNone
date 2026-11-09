@@ -2580,6 +2580,39 @@ describe('network separation', () => {
     expect(screen.queryByRole('menuitem', { name: 'Delete account' })).not.toBeInTheDocument()
     expect(screen.queryByRole('menuitem', { name: 'Move account' })).not.toBeInTheDocument()
   })
+
+  it('keeps the Testnet and Mainnet address books separate', async () => {
+    const user = userEvent.setup()
+    installBackend({
+      status: 'unlocked',
+      wallets: [wallet('w1', 'Savings', '0.0.1001'), mainnetWatcher('m1', 'Watcher', ['0.0.5005'])],
+      outside: [{ id: '0.0.7777', name: 'Landlord' }],
+    })
+    render(<App />)
+    await screen.findByRole('button', { name: /Savings/ })
+    await user.click(screen.getByRole('button', { name: 'Address book' }))
+
+    // The Testnet book: the Testnet account and the outside entry, not the
+    // Mainnet account.
+    const unnamed = await screen.findByRole('list', { name: 'Unnamed accounts' })
+    expect(within(unnamed).getByText('0.0.1001-abcde')).toBeInTheDocument()
+    expect(within(await screen.findByRole('list', { name: 'Address book' })).getByText('Landlord'))
+      .toBeInTheDocument()
+    expect(screen.queryByText('0.0.5005-abcde')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Add outside account' })).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Mainnet' }))
+    await user.click(await screen.findByRole('button', { name: 'Switch to Mainnet' }))
+    await user.click(screen.getByRole('button', { name: 'Address book' }))
+
+    // The Mainnet book: only the Mainnet account. Outside entries are
+    // Testnet-only, so there is nothing to add here.
+    const mainnetUnnamed = await screen.findByRole('list', { name: 'Unnamed accounts' })
+    expect(within(mainnetUnnamed).getByText('0.0.5005-abcde')).toBeInTheDocument()
+    expect(screen.queryByText('0.0.1001-abcde')).not.toBeInTheDocument()
+    expect(screen.queryByText('Landlord')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Add outside account' })).not.toBeInTheDocument()
+  })
 })
 
 describe('deleted tokens', () => {

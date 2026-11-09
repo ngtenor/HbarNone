@@ -1641,6 +1641,7 @@ function App() {
           {activeTab === 'addressbook' && utilityTab === 'addressbook' && (
             <AddressBook
               view={addressBook}
+              network={networkView}
               onChange={setAddressBook}
               onWalletsRefresh={() => {
                 void invoke<VaultState>('get_vault_state')

@@ -555,7 +555,7 @@ export function TestnetPanel({
     if (account || !funderKey) return
     let cancelled = false
     for (const displayId of funderKey.split(',')) {
-      invoke<number | null>('get_address_balance', { accountId: displayId.split('-')[0] })
+      invoke<number | null>('get_address_balance', { accountId: displayId.split('-')[0], network: 'testnet' })
         .then((tinybars) => {
           if (!cancelled && tinybars !== null) {
             setFunderBalances((existing) => ({ ...existing, [displayId]: tinybars }))
@@ -1664,7 +1664,7 @@ export function TestnetPanel({
               >
                 <option value="">Select recipient from the address book</option>
                 {addressBook.rows
-                  .filter((row) => row.id !== account)
+                  .filter((row) => row.network === 'testnet' && row.id !== account)
                   .map((row) => (
                     <option key={`${row.network}/${row.id}`} value={row.display_id}>
                       {row.name} {row.display_id}
@@ -2059,7 +2059,8 @@ export function TestnetPanel({
               >
                 <option value="">Select an account</option>
                 {addressBook.rows
-                  .filter((row) => row.id !== account && (!isWatchOnly || row.wallet_id === wallet.id))
+                  .filter((row) => row.network === 'testnet' && row.id !== account
+                    && (!isWatchOnly || row.wallet_id === wallet.id))
                   .map((row) => (
                     <option key={`${row.network}/${row.id}`} value={row.display_id}>
                       {row.name} {row.display_id}

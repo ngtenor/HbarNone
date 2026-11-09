@@ -19,6 +19,7 @@ function formatHbar(tinybars: number) {
 
 type Props = {
   view: AddressBookView
+  network: 'testnet' | 'mainnet'
   onChange: (view: AddressBookView) => void
   onRenamed: (accountId: string, name: string) => void
   onWalletsRefresh?: () => void
@@ -26,7 +27,7 @@ type Props = {
 
 const UNNAMED = 'NONAME'
 
-export function AddressBook({ view, onChange, onRenamed, onWalletsRefresh }: Props) {
+export function AddressBook({ view, network, onChange, onRenamed, onWalletsRefresh }: Props) {
   const [editing, setEditing] = useState<string | null>(null)
   const [editName, setEditName] = useState('')
   const [name, setName] = useState('')
@@ -36,7 +37,9 @@ export function AddressBook({ view, onChange, onRenamed, onWalletsRefresh }: Pro
   const [balances, setBalances] = useState<Record<string, number | null>>({})
   const [pruneNotice, setPruneNotice] = useState('')
   const [adding, setAdding] = useState(false)
-  const idsKey = view.rows.map((row) => row.id).join(',')
+  // One network at a time: the book only shows the network in view.
+  const rows = view.rows.filter((row) => row.network === network)
+  const idsKey = rows.map((row) => `${row.network}/${row.id}`).join(',')
 
   // Rows whose accounts were deleted on the network are removed when the
   // address book opens: outside entries leave the book and wallet accounts
@@ -68,11 +71,15 @@ export function AddressBook({ view, onChange, onRenamed, onWalletsRefresh }: Pro
   useEffect(() => {
     let cancelled = false
     void (async () => {
-      for (const id of idsKey ? idsKey.split(',') : []) {
+      for (const key of idsKey ? idsKey.split(',') : []) {
+        const [rowNetwork, id] = key.split('/') as ['testnet' | 'mainnet', string]
         try {
-          const tinybars = await invoke<number | null>('get_address_balance', { accountId: id })
+          const tinybars = await invoke<number | null>('get_address_balance', {
+            accountId: id,
+            network: rowNetwork,
+          })
           if (cancelled) return
-          setBalances((existing) => ({ ...existing, [id]: tinybars }))
+          setBalances((existing) => ({ ...existing, [key]: tinybars }))
         } catch {
           if (cancelled) return
         }
@@ -110,6 +117,7 @@ export function AddressBook({ view, onChange, onRenamed, onWalletsRefresh }: Pro
     try {
       const updated = await invoke<AddressBookView>('rename_address_book_account', {
         accountId: editing,
+        network,
         name: editName,
       })
       onChange(updated)
@@ -154,8 +162,10 @@ export function AddressBook({ view, onChange, onRenamed, onWalletsRefresh }: Pro
         <span>{row.wallet_name ?? 'Outside the vault'}</span>
         <span className="account-number">{row.display_id}</span>
         <span className="account-balance">
-          {row.id in balances
-            ? balances[row.id] === null ? 'not found' : formatHbar(balances[row.id] as number)
+          {`${row.network}/${row.id}` in balances
+            ? balances[`${row.network}/${row.id}`] === null
+              ? 'not found'
+              : formatHbar(balances[`${row.network}/${row.id}`] as number)
             : '…'}
         </span>
         {row.wallet_id === null ? (
@@ -178,7 +188,9 @@ export function AddressBook({ view, onChange, onRenamed, onWalletsRefresh }: Pro
   async function handleRemove(accountId: string) {
     setError('')
     try {
-      onChange(await invoke<AddressBookView>('remove_address_book_entry', { accountId }))
+      onChange(
+        await invoke<AddressBookView>('remove_address_book_entry', { accountId, network }),
+      )
     } catch (failure) {
       setError(errorMessage(failure))
     }
@@ -186,8 +198,8 @@ export function AddressBook({ view, onChange, onRenamed, onWalletsRefresh }: Pro
 
   const byName = (a: AddressBookView['rows'][number], b: AddressBookView['rows'][number]) =>
     a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
-  const namedRows = view.rows.filter((row) => row.name !== UNNAMED).sort(byName)
-  const unnamedRows = view.rows.filter((row) => row.name === UNNAMED)
+  const namedRows = rows.filter((row) => row.name !== UNNAMED).sort(byName)
+  const unnamedRows = rows.filter((row) => row.name === UNNAMED)
 
   return (
     <section
@@ -198,20 +210,22 @@ export function AddressBook({ view, onChange, onRenamed, onWalletsRefresh }: Pro
     >
       <div className="settings-heading address-book-heading">
         <h1>Address book</h1>
-        <button
-          className="secondary-button"
-          type="button"
-          onClick={() => {
-            setAdding((current) => !current)
-            setError('')
-          }}
-        >
-          Add outside account
-        </button>
+        {network === 'testnet' && (
+          <button
+            className="secondary-button"
+            type="button"
+            onClick={() => {
+              setAdding((current) => !current)
+              setError('')
+            }}
+          >
+            Add outside account
+          </button>
+        )}
       </div>
       {pruneNotice && <p className="field-hint" role="status">{pruneNotice}</p>}
 
-      {adding && (
+      {adding && network === 'testnet' && (
       <section className="panel settings-panel" aria-labelledby="address-book-add-heading">
         <h2 id="address-book-add-heading">Add an outside account</h2>
         <p className="dialog-copy">
@@ -266,7 +280,7 @@ export function AddressBook({ view, onChange, onRenamed, onWalletsRefresh }: Pro
           <span>Balance</span>
           <span />
         </div>
-        {view.rows.length === 0 ? (
+        {rows.length === 0 ? (
           <p className="empty-state">No accounts yet.</p>
         ) : (
           <>
