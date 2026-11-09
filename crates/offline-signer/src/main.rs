@@ -136,6 +136,21 @@ fn show(summary: &Summary) {
             println!("  Account       {}", with_checksum(&summary.payer));
             println!("  Token ID      {}", with_checksum(token));
         }
+        Action::KeyUpdate { key_kind, key_hex } => {
+            println!("  Action        REPLACE THE ACCOUNT'S KEY (key rotation)");
+            println!("  Network       Hedera Testnet (no real value)");
+            println!("  Account       {}", with_checksum(&summary.payer));
+            println!(
+                "  New key       {} {key_hex}",
+                match key_kind {
+                    KeyKind::Ed25519 => "(Ed25519)",
+                    KeyKind::Ecdsa => "(ECDSA)",
+                }
+            );
+            println!("  After this, ONLY the new key controls the account and its funds.");
+            println!("  The network needs TWO signatures: the current key and the new key.");
+            println!("  Run this signer once with each key and give both replies to the app.");
+        }
     }
     println!(
         "  Fee limit     {} HBAR (the real fee is far lower)",
@@ -216,6 +231,14 @@ fn run() -> Result<(), String> {
         }
         Action::DeleteAccount { .. } => {
             println!("A deletion needs this key to control both accounts shown above.");
+        }
+        Action::KeyUpdate { key_hex: new, .. } if *new == key_hex => {
+            println!("This signature is from the NEW key. The current key must also sign.");
+        }
+        Action::KeyUpdate { .. } => {
+            println!(
+                "This signature should be from the account's CURRENT key. The new key must also sign."
+            );
         }
         Action::Transfer { .. }
         | Action::TokenTransfer { .. }

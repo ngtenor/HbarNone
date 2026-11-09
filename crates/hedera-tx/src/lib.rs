@@ -563,6 +563,14 @@ fn key_message(key_type: KeyType, public_key: &[u8]) -> Result<Key, String> {
 /// Serialised `TransactionBody` that sets a new key on `account`. The network
 /// requires signatures from both the current key and the new key.
 pub fn change_key_body_bytes(p: &ChangeKeyParams) -> Result<Vec<u8>, String> {
+    change_key_body_bytes_valid_for(p, 120)
+}
+
+/// Like [`change_key_body_bytes`], but valid for `valid_seconds`.
+pub fn change_key_body_bytes_valid_for(
+    p: &ChangeKeyParams,
+    valid_seconds: i64,
+) -> Result<Vec<u8>, String> {
     let body = TransactionBody {
         transaction_id: Some(TransactionId {
             valid_start: Some(Timestamp {
@@ -573,7 +581,9 @@ pub fn change_key_body_bytes(p: &ChangeKeyParams) -> Result<Vec<u8>, String> {
         }),
         node_account: Some(account(p.node)),
         fee: p.max_fee_tinybars,
-        valid_duration: Some(Duration { seconds: 120 }),
+        valid_duration: Some(Duration {
+            seconds: valid_seconds,
+        }),
         memo: String::new(),
         crypto_create: None,
         crypto_delete: None,

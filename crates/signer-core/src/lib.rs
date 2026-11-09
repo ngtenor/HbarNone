@@ -146,6 +146,14 @@ struct CryptoCreateBody {
     memo: String,
 }
 
+#[derive(Clone, PartialEq, Message)]
+struct CryptoUpdateBody {
+    #[prost(message, optional, tag = "2")]
+    account_to_update: Option<AccountId>,
+    #[prost(message, optional, tag = "3")]
+    key: Option<Key>,
+}
+
 /// Only the fields of the supported transactions. Any other field is dropped on
 /// decode, so re-encoding no longer matches the input and the request is rejected.
 #[derive(Clone, PartialEq, Message)]
@@ -166,6 +174,8 @@ struct TransactionBody {
     crypto_delete: Option<CryptoDeleteBody>,
     #[prost(message, optional, tag = "14")]
     crypto_transfer: Option<CryptoTransferBody>,
+    #[prost(message, optional, tag = "15")]
+    crypto_update: Option<CryptoUpdateBody>,
     #[prost(message, optional, tag = "40")]
     token_association: Option<TokenAssociationBody>,
     #[prost(message, optional, tag = "41")]
@@ -205,6 +215,12 @@ pub enum Action {
     /// Stops the payer's account holding `token`.
     TokenDissociate {
         token: String,
+    },
+    /// Replaces the key of the payer's own account with `key_hex` (lowercase
+    /// hex). Both the current key and the new key must sign.
+    KeyUpdate {
+        key_kind: KeyKind,
+        key_hex: String,
     },
 }
 
@@ -326,6 +342,7 @@ fn summarise(bytes: &[u8]) -> Result<Summary, Reject> {
     let actions = usize::from(body.crypto_transfer.is_some())
         + usize::from(body.crypto_delete.is_some())
         + usize::from(body.crypto_create.is_some())
+        + usize::from(body.crypto_update.is_some())
         + usize::from(body.token_association.is_some())
         + usize::from(body.token_dissociation.is_some());
     if actions != 1 {
@@ -333,7 +350,31 @@ fn summarise(bytes: &[u8]) -> Result<Summary, Reject> {
     }
     let token_text = |t: &TokenId| format!("{}.{}.{}", t.shard, t.realm, t.num);
     let token_ok = |t: &TokenId| t.shard == 0 && t.realm == 0 && t.num > 0;
-    let (action, memo) = if let Some(change) = body
+    let (action, memo) = if let Some(update) = body.crypto_update.as_ref() {
+        let account = update
+            .account_to_update
+            .as_ref()
+            .ok_or(No("no account to update"))?;
+        if account != payer {
+            return Err(No("the updated account must be the payer's own"));
+        }
+        if !body.memo.is_empty() {
+            return Err(No("a key change has no memo"));
+        }
+        let key = update.key.as_ref().ok_or(No("no new key"))?;
+        let (key_kind, key_bytes) = match (&key.ed25519, &key.ecdsa_secp256k1) {
+            (Some(k), None) if valid_ed25519(k) => (KeyKind::Ed25519, k),
+            (None, Some(k)) if valid_secp256k1(k) => (KeyKind::Ecdsa, k),
+            _ => return Err(No("the new key is not a valid single key")),
+        };
+        (
+            Action::KeyUpdate {
+                key_kind,
+                key_hex: key_bytes.iter().map(|b| format!("{b:02x}")).collect(),
+            },
+            String::new(),
+        )
+    } else if let Some(change) = body
         .token_association
         .as_ref()
         .or(body.token_dissociation.as_ref())

@@ -17,15 +17,15 @@ use wallet_core::key_import::KeyType;
 use crate::AUTO_RENEW_SECONDS;
 use crate::submit::{
     CREATE_PATH, DELETE_PATH, MAX_FEE_TINYBARS, MAX_INITIAL_TINYBARS, MAX_MEMO_BYTES,
-    TESTNET_NODE_ACCOUNT, TOKEN_ASSOCIATE_PATH, TOKEN_DISSOCIATE_PATH, TRANSFER_PATH,
+    TESTNET_NODE_ACCOUNT, TOKEN_ASSOCIATE_PATH, TOKEN_DISSOCIATE_PATH, TRANSFER_PATH, UPDATE_PATH,
     parse_account, submit,
 };
 use crate::{
-    CreateAccountParams, DeleteAccountParams, SignatureMap, SignaturePair, SignedTransaction,
-    TokenAssociationParams, TokenTransferParams, Transaction, TransactionBody, TransferParams,
-    create_account_body_bytes_valid_for, delete_account_body_bytes_valid_for, signature_pair,
-    token_association_body_bytes_valid_for, token_transfer_body_bytes_valid_for,
-    transfer_body_bytes_valid_for,
+    ChangeKeyParams, CreateAccountParams, DeleteAccountParams, SignatureMap, SignaturePair,
+    SignedTransaction, TokenAssociationParams, TokenTransferParams, Transaction, TransactionBody,
+    TransferParams, change_key_body_bytes_valid_for, create_account_body_bytes_valid_for,
+    delete_account_body_bytes_valid_for, signature_pair, token_association_body_bytes_valid_for,
+    token_transfer_body_bytes_valid_for, transfer_body_bytes_valid_for,
 };
 
 pub const REQUEST_PREFIX: &str = "HVTX1-REQ:";
@@ -68,6 +68,12 @@ pub enum Action {
     TokenDissociate {
         token: String,
     },
+    /// Replaces the payer's account key with `key_hex`. The network requires
+    /// signatures from both the current key and the new key.
+    KeyUpdate {
+        key_type: KeyType,
+        key_hex: String,
+    },
 }
 
 /// What a request will do, decoded from the transaction body itself.
@@ -109,6 +115,9 @@ impl RequestDescription {
             }
             Action::TokenAssociate { token } => format!("associate token {token}"),
             Action::TokenDissociate { token } => format!("dissociate token {token}"),
+            Action::KeyUpdate { key_hex, .. } => {
+                format!("replace the account's key with {key_hex}")
+            }
         }
     }
     pub fn transaction_id(&self) -> String {
@@ -273,6 +282,26 @@ pub fn build_token_association_request(
     )?)
 }
 
+/// Builds an unsigned key change: `account` pays and its key is replaced by
+/// `public_key`. Both the current key and the new key must sign.
+pub fn build_key_update_request(
+    account: &str,
+    key_type: KeyType,
+    public_key: &[u8],
+) -> Result<UnsignedRequest, String> {
+    let (seconds, nanos) = start_time()?;
+    let params = ChangeKeyParams {
+        account: parse_account(account)?,
+        new_key_type: key_type,
+        new_public_key: public_key.to_vec(),
+        node: TESTNET_NODE_ACCOUNT,
+        valid_start_seconds: seconds,
+        valid_start_nanos: nanos,
+        max_fee_tinybars: MAX_FEE_TINYBARS,
+    };
+    finish(change_key_body_bytes_valid_for(&params, VALID_SECONDS)?)
+}
+
 fn start_time() -> Result<(i64, i32), String> {
     Ok((now_seconds()?.saturating_sub(BACKDATE_SECONDS) as i64, 0))
 }
@@ -309,13 +338,13 @@ pub fn describe_body(body_bytes: &[u8]) -> Result<RequestDescription, String> {
     let actions = usize::from(body.crypto_transfer.is_some())
         + usize::from(body.crypto_create.is_some())
         + usize::from(body.crypto_delete.is_some())
+        + usize::from(body.crypto_update.is_some())
         + usize::from(body.token_association.is_some())
         + usize::from(body.token_dissociation.is_some());
     let on_main = |a: &crate::AccountId| a.shard == 0 && a.realm == 0 && a.num > 0;
     if !(1..=VALID_SECONDS).contains(&valid)
         || body.fee > MAX_FEE_TINYBARS
         || body.memo.len() > MAX_MEMO_BYTES
-        || body.crypto_update.is_some()
         || body.token_creation.is_some()
         || body.token_deletion.is_some()
         || body.token_mint.is_some()
@@ -328,7 +357,25 @@ pub fn describe_body(body_bytes: &[u8]) -> Result<RequestDescription, String> {
     }
     let token_text = |t: &crate::TokenId| format!("{}.{}.{}", t.shard, t.realm, t.num);
     let token_ok = |t: &crate::TokenId| t.shard == 0 && t.realm == 0 && t.num > 0;
-    let (action, memo) = if let Some(change) = body
+    let (action, memo) = if let Some(update) = body.crypto_update.as_ref() {
+        let account = update.account_to_update.as_ref().ok_or_else(bad)?;
+        let key = update.key.as_ref().ok_or_else(bad)?;
+        let (key_type, key_bytes) = match (&key.ed25519, &key.ecdsa_secp256k1) {
+            (Some(k), None) if k.len() == 32 => (KeyType::Ed25519, k),
+            (None, Some(k)) if k.len() == 33 => (KeyType::Ecdsa, k),
+            _ => return Err(bad()),
+        };
+        if account != payer || !body.memo.is_empty() {
+            return Err(bad());
+        }
+        (
+            Action::KeyUpdate {
+                key_type,
+                key_hex: key_bytes.iter().map(|b| format!("{b:02x}")).collect(),
+            },
+            String::new(),
+        )
+    } else if let Some(change) = body
         .token_association
         .as_ref()
         .or(body.token_dissociation.as_ref())
@@ -550,27 +597,117 @@ pub fn seconds_remaining(description: &RequestDescription) -> Result<i64, String
     Ok(description.expires_at_seconds - now_seconds()? as i64)
 }
 
+/// A request with one or more verified signatures collected from signers.
+pub struct PartiallySigned {
+    body: Vec<u8>,
+    pub description: RequestDescription,
+    pairs: Vec<SignaturePair>,
+    /// Lowercase hex public keys, one per collected signature.
+    pub signer_keys: Vec<String>,
+}
+
+/// Checks each response against the request. A duplicate signature (the same
+/// public key twice) is kept once. Used for actions that need more than one
+/// key, such as a key change signed by the current and the new key.
+pub fn collect_signatures(request: &str, responses: &[String]) -> Result<PartiallySigned, String> {
+    let (body, description) = decode_request(request)?;
+    let mut collected = PartiallySigned {
+        body,
+        description,
+        pairs: Vec::new(),
+        signer_keys: Vec::new(),
+    };
+    let bad = || "This is not a valid signature from a signer.".to_string();
+    for response in responses {
+        let raw = from_hex(strip(response, RESPONSE_PREFIX, "signature")?)?;
+        let (&tag, rest) = raw.split_first().ok_or_else(bad)?;
+        let (key_type, key_len) = match tag {
+            0 => (KeyType::Ed25519, 32),
+            1 => (KeyType::Ecdsa, 33),
+            _ => return Err(bad()),
+        };
+        if rest.len() != key_len + 64 {
+            return Err(bad());
+        }
+        let (public, signature) = rest.split_at(key_len);
+        verify(&collected.body, key_type, public, signature)?;
+        let key_hex: String = public.iter().map(|b| format!("{b:02x}")).collect();
+        if collected.signer_keys.contains(&key_hex) {
+            continue;
+        }
+        collected.pairs.push(SignaturePair {
+            pub_key_prefix: public.to_vec(),
+            ed25519: (key_type == KeyType::Ed25519).then(|| signature.to_vec()),
+            ecdsa_secp256k1: (key_type == KeyType::Ecdsa).then(|| signature.to_vec()),
+        });
+        collected.signer_keys.push(key_hex);
+    }
+    if collected.pairs.is_empty() {
+        return Err("No valid signature was provided.".to_string());
+    }
+    Ok(collected)
+}
+
+impl PartiallySigned {
+    /// Adds a signature from a key held in the vault (for example when the
+    /// new key of a key change belongs to a hot wallet). A key that has
+    /// already signed is not added twice.
+    pub fn sign_locally(&mut self, key_type: KeyType, secret: &[u8; 32]) -> Result<(), String> {
+        let key_hex = wallet_core::key_import::public_key_hex(key_type, secret)?.to_lowercase();
+        if self.signer_keys.contains(&key_hex) {
+            return Ok(());
+        }
+        let pair = signature_pair(&self.body, key_type, secret)?;
+        self.pairs.push(pair);
+        self.signer_keys.push(key_hex);
+        Ok(())
+    }
+
+    /// Submits the fully signed request and returns its transaction ID.
+    pub async fn submit(self) -> Result<String, String> {
+        if seconds_remaining(&self.description)? <= 0 {
+            return Err("The signing request has expired. Create a new one.".to_string());
+        }
+        let signed = SignedTransaction {
+            body_bytes: self.body,
+            sig_map: Some(SignatureMap { pairs: self.pairs }),
+        };
+        let transaction = Transaction {
+            signed_transaction_bytes: signed.encode_to_vec(),
+        };
+        submit_action(transaction, &self.description).await
+    }
+}
+
 /// Submits a verified request to Testnet and returns its transaction ID.
 pub async fn submit_verified(verified: &VerifiedRequest) -> Result<String, String> {
     if seconds_remaining(&verified.description)? <= 0 {
         return Err("The signing request has expired. Create a new one.".to_string());
     }
-    let (path, what) = match verified.description.action {
+    submit_action(verified.transaction.clone(), &verified.description).await
+}
+
+async fn submit_action(
+    transaction: Transaction,
+    description: &RequestDescription,
+) -> Result<String, String> {
+    let (path, what) = match description.action {
         Action::Transfer { .. } => (TRANSFER_PATH, "transfer"),
         Action::DeleteAccount { .. } => (DELETE_PATH, "account deletion"),
         Action::CreateAccount { .. } => (CREATE_PATH, "account creation"),
         Action::TokenTransfer { .. } => (TRANSFER_PATH, "token transfer"),
         Action::TokenAssociate { .. } => (TOKEN_ASSOCIATE_PATH, "token association"),
         Action::TokenDissociate { .. } => (TOKEN_DISSOCIATE_PATH, "token dissociation"),
+        Action::KeyUpdate { .. } => (UPDATE_PATH, "key change"),
     };
-    let response = submit(verified.transaction.clone(), path).await?;
+    let response = submit(transaction, path).await?;
     if response.precheck_code != 0 {
         return Err(format!(
             "The node rejected the {what}: {}",
             crate::submit::precheck_message(response.precheck_code)
         ));
     }
-    Ok(verified.description.transaction_id())
+    Ok(description.transaction_id())
 }
 
 #[cfg(test)]
@@ -614,6 +751,46 @@ mod tests {
                 assert_eq!(v.transaction.encode_to_vec(), direct);
             }
         }
+    }
+
+    #[test]
+    fn key_update_round_trip_with_two_signatures() {
+        let old_secret = [7u8; 32];
+        let new_secret = [8u8; 32];
+        let new_public =
+            wallet_core::key_import::public_key_bytes(KeyType::Ed25519, &new_secret).unwrap();
+        let r = build_key_update_request("0.0.1001", KeyType::Ed25519, &new_public).unwrap();
+        let new_hex: String = new_public.iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(r.description.payer, "0.0.1001");
+        assert_eq!(
+            r.description.action,
+            Action::KeyUpdate {
+                key_type: KeyType::Ed25519,
+                key_hex: new_hex.clone(),
+            }
+        );
+        assert_eq!(decode_request(&r.payload).unwrap().1, r.description);
+
+        // Two distinct signatures are collected; a repeat is kept once.
+        let sig_old = sign_request(&r.payload, KeyType::Ed25519, &old_secret).unwrap();
+        let sig_new = sign_request(&r.payload, KeyType::Ed25519, &new_secret).unwrap();
+        let collected = collect_signatures(
+            &r.payload,
+            &[sig_old.clone(), sig_new.clone(), sig_old.clone()],
+        )
+        .unwrap();
+        assert_eq!(collected.signer_keys.len(), 2);
+        assert!(collected.signer_keys.contains(&new_hex));
+
+        // The new key can also sign locally, and never twice.
+        let mut partial = collect_signatures(&r.payload, &[sig_old]).unwrap();
+        partial.sign_locally(KeyType::Ed25519, &new_secret).unwrap();
+        partial.sign_locally(KeyType::Ed25519, &new_secret).unwrap();
+        assert_eq!(partial.signer_keys.len(), 2);
+
+        // A signature for a different request is refused.
+        let other = build_key_update_request("0.0.1002", KeyType::Ed25519, &new_public).unwrap();
+        assert!(collect_signatures(&other.payload, &[sig_new]).is_err());
     }
 
     #[test]

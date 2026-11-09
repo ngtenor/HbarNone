@@ -961,6 +961,13 @@ fn signing_request(request: hedera_tx::offline::UnsignedRequest) -> Result<Signi
             String::new(),
             0,
         ),
+        Action::KeyUpdate { key_hex, .. } => (
+            "key-update",
+            String::new(),
+            String::new(),
+            key_hex.clone(),
+            0,
+        ),
     };
     let (token_id, token_units, token_decimals) = match &d.action {
         Action::TokenTransfer {
@@ -1170,8 +1177,99 @@ async fn submit_signed_request(
                 return Err("The new account must use this wallet's own key.".to_string());
             }
         }
+        Action::KeyUpdate { .. } => {
+            return Err("Use Move account to submit a key change.".to_string());
+        }
     }
     let transaction_id = hedera_tx::offline::submit_verified(&verified).await?;
+    Ok(SendResult { transaction_id })
+}
+
+/// Builds an unsigned key change that moves one of the watch-only wallet's
+/// accounts to the target wallet's key. The network requires signatures from
+/// both the current key and the new key.
+#[tauri::command]
+fn prepare_unsigned_move(
+    wallet_id: String,
+    account_id: String,
+    target_wallet_id: String,
+    state: State<'_, AppState>,
+) -> Result<SigningRequest, String> {
+    let account = testnet_account_of(&state, &wallet_id, &account_id)?;
+    require_watch_only(&state, &wallet_id)?;
+    if target_wallet_id == wallet_id {
+        return Err("Choose a different target wallet.".to_string());
+    }
+    if wallet_network(&state, &target_wallet_id)? != Network::Testnet {
+        return Err("The target wallet must be a Testnet wallet.".to_string());
+    }
+    let target_type = lock_service(&state)?
+        .list_wallets()?
+        .into_iter()
+        .find(|wallet| wallet.id == target_wallet_id)
+        .map(|wallet| wallet.key_type)
+        .ok_or_else(|| format!("wallet not found: {target_wallet_id}"))?;
+    let target_key = lock_service(&state)?.wallet_public_key(&target_wallet_id)?;
+    let key_bytes = (0..target_key.len())
+        .step_by(2)
+        .map(|i| {
+            target_key
+                .get(i..i + 2)
+                .and_then(|h| u8::from_str_radix(h, 16).ok())
+        })
+        .collect::<Option<Vec<u8>>>()
+        .ok_or_else(|| "The target wallet key is damaged.".to_string())?;
+    signing_request(hedera_tx::offline::build_key_update_request(
+        &account,
+        target_type,
+        &key_bytes,
+    )?)
+}
+
+/// Verifies the signed replies for a key change and submits it. The current
+/// key's reply is required; the new key's reply is also required unless the
+/// target wallet holds its key in the vault, in which case the app co-signs.
+#[tauri::command]
+async fn submit_signed_move(
+    request: String,
+    responses: Vec<String>,
+    wallet_id: String,
+    target_wallet_id: String,
+    state: State<'_, AppState>,
+) -> Result<SendResult, String> {
+    use hedera_tx::offline::Action;
+    let mut partial = hedera_tx::offline::collect_signatures(&request, &responses)?;
+    let payer = partial.description.payer.clone();
+    testnet_account_of(&state, &wallet_id, &payer)?;
+    require_watch_only(&state, &wallet_id)?;
+    let old_key = lock_service(&state)?
+        .wallet_public_key(&wallet_id)?
+        .to_lowercase();
+    let target_key = lock_service(&state)?
+        .wallet_public_key(&target_wallet_id)?
+        .to_lowercase();
+    match &partial.description.action {
+        Action::KeyUpdate { key_hex, .. } if *key_hex == target_key => {}
+        Action::KeyUpdate { .. } => {
+            return Err("The request does not move the account to the chosen wallet.".to_string());
+        }
+        _ => return Err("This request is not a key change.".to_string()),
+    }
+    if !partial.signer_keys.contains(&old_key) {
+        return Err("The current key's signature is missing.".to_string());
+    }
+    if !partial.signer_keys.contains(&target_key) {
+        let local = lock_service(&state)?.with_wallet_key(&target_wallet_id, |key_type, secret| {
+            Ok((key_type, Zeroizing::new(*secret)))
+        });
+        match local {
+            Ok((key_type, secret)) => partial.sign_locally(key_type, &secret)?,
+            Err(_) => {
+                return Err("The new key's signature is missing. Sign the request with the target wallet's key too.".to_string());
+            }
+        }
+    }
+    let transaction_id = partial.submit().await?;
     Ok(SendResult { transaction_id })
 }
 
@@ -1779,7 +1877,9 @@ fn main() {
             prepare_unsigned_create,
             prepare_unsigned_token_transfer,
             prepare_unsigned_token_association,
+            prepare_unsigned_move,
             submit_signed_request,
+            submit_signed_move,
             find_wallet_accounts,
             get_account_balance,
             get_token_info,

@@ -352,6 +352,14 @@ HTS tokens. Use it to pick up cold.
   `cargo fmt`.
 
 ### Recently completed (8 Nov 2026)
+- [x] Offline key rotation (built 9 Nov, awaiting manual Testnet test):
+  "Move account" now also works for watch-only wallets through a signing
+  request (`CryptoUpdate`). The network needs the current key and the new key
+  to sign: the app shows one request QR, the signer runs once per key, and
+  the app accepts both replies (or co-signs itself when the target wallet's
+  key is in the vault). The CLI signer displays and signs key changes with
+  loud warnings. Fee preview was dropped from the pre-Mainnet checklist:
+  Hedera fees are fixed in USD, so there is no fee-spike risk.
 - [x] Mainnet watch-only verified by the user: a genuine Mainnet public key
   (DER form) imports, discovers its account and shows balances and history;
   the Mainnet view offers no send, token or account actions. The QR + offline
@@ -457,7 +465,6 @@ the app near real value. Items marked (hardware) depend on the signer device.
       endpoints and node IDs, network-aware checksums in every parse path,
       network-aware signer validation and display, no stored Mainnet secrets.
 - [ ] Per-network address book (entries are Testnet-only today).
-- [ ] Fee preview and explicit fee caps on every transaction type.
 
 ### Security hardening
 - [ ] Independent security audit (vault crypto, signing-request format,

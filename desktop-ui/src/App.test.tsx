@@ -328,6 +328,25 @@ function installBackend(overrides: Partial<Backend> = {}) {
           memo: '',
           expiresAtSeconds: Math.floor(Date.now() / 1000) + 170,
         }
+      case 'prepare_unsigned_move':
+        return {
+          payload: 'HVTX1-REQ:05',
+          qrSize: 2,
+          qrModules: [true, false, false, true],
+          action: 'key-update',
+          sender: '0.0.1001-abcde',
+          receiver: '',
+          deleteAccount: '',
+          newKey: 'cd'.repeat(32),
+          tinybars: 0,
+          tokenId: '',
+          tokenUnits: '',
+          tokenDecimals: 0,
+          memo: '',
+          expiresAtSeconds: Math.floor(Date.now() / 1000) + 170,
+        }
+      case 'submit_signed_move':
+        return { transactionId: '0.0.1001-1700000000-000000009' }
       case 'submit_signed_request':
         return { transactionId: '0.0.1001-1700000000-000000008' }
       case 'create_account':
@@ -2666,5 +2685,81 @@ describe('address book pruning', () => {
     expect(screen.getByText(/0\.0\.1001/)).toBeInTheDocument()
     // The wallets themselves are refreshed from the backend.
     await waitFor(() => expect(commandsCalled('get_vault_state').length).toBeGreaterThan(1))
+  })
+})
+
+describe('offline key rotation', () => {
+  it('moves a watch-only account with signatures from both keys', async () => {
+    const user = userEvent.setup()
+    installBackend({
+      status: 'unlocked',
+      wallets: [
+        { ...wallet('w1', 'Watcher', '0.0.1001'), secret_kind: 'watchonly', key_type: 'ed25519' },
+        { ...wallet('w2', 'Cold'), secret_kind: 'watchonly', key_type: 'ed25519' },
+      ],
+    })
+    render(<App />)
+    await openAccount(user, 'Watcher')
+    await chooseMenu(user, 'Account management', 'Move account')
+    await user.selectOptions(screen.getByLabelText('New wallet'), 'w2')
+    await user.click(screen.getByRole('button', { name: 'Review move' }))
+    await user.click(screen.getByLabelText(/I understand that the other wallet/))
+    await user.click(screen.getByRole('button', { name: 'Create signing request' }))
+
+    const request = await screen.findByRole('group', { name: 'Signing request' })
+    expect(request).toHaveTextContent('New key')
+    expect(request).toHaveTextContent('Cold')
+    expect(commandsCalled('prepare_unsigned_move')[0].args).toEqual({
+      walletId: 'w1',
+      accountId: '0.0.1001',
+      targetWalletId: 'w2',
+    })
+
+    // The target is watch-only, so both keys must sign before submitting.
+    await user.type(
+      screen.getByLabelText("Signature from the current key's signer"),
+      'HVTX1-SIG:AA',
+    )
+    const submit = screen.getByRole('button', { name: 'Submit signed move' })
+    expect(submit).toBeDisabled()
+    await user.type(screen.getByLabelText(/new key.s signer/), 'HVTX1-SIG:BB')
+    await user.click(submit)
+    await waitFor(() => expect(commandsCalled('submit_signed_move')[0].args).toMatchObject({
+      request: 'HVTX1-REQ:05',
+      responses: ['HVTX1-SIG:AA', 'HVTX1-SIG:BB'],
+      walletId: 'w1',
+      targetWalletId: 'w2',
+    }))
+    expect(commandsCalled('move_account')).toHaveLength(0)
+  })
+
+  it('needs only the current key when the target wallet holds its key', async () => {
+    const user = userEvent.setup()
+    installBackend({
+      status: 'unlocked',
+      wallets: [
+        { ...wallet('w1', 'Watcher', '0.0.1001'), secret_kind: 'watchonly', key_type: 'ed25519' },
+        wallet('w2', 'Hot'),
+      ],
+    })
+    render(<App />)
+    await openAccount(user, 'Watcher')
+    await chooseMenu(user, 'Account management', 'Move account')
+    await user.selectOptions(screen.getByLabelText('New wallet'), 'w2')
+    await user.click(screen.getByRole('button', { name: 'Review move' }))
+    await user.click(screen.getByLabelText(/I understand that the other wallet/))
+    await user.click(screen.getByRole('button', { name: 'Create signing request' }))
+
+    await screen.findByRole('group', { name: 'Signing request' })
+    expect(screen.queryByLabelText(/new key.s signer/)).not.toBeInTheDocument()
+    await user.type(
+      screen.getByLabelText("Signature from the current key's signer"),
+      'HVTX1-SIG:AA',
+    )
+    await user.click(screen.getByRole('button', { name: 'Submit signed move' }))
+    await waitFor(() => expect(commandsCalled('submit_signed_move')[0].args).toMatchObject({
+      responses: ['HVTX1-SIG:AA'],
+      targetWalletId: 'w2',
+    }))
   })
 })

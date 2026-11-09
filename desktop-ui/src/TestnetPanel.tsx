@@ -112,7 +112,7 @@ type SigningRequest = {
   payload: string
   qrSize: number
   qrModules: boolean[]
-  action: 'transfer' | 'delete' | 'create' | 'token-transfer' | 'token-associate' | 'token-dissociate'
+  action: 'transfer' | 'delete' | 'create' | 'token-transfer' | 'token-associate' | 'token-dissociate' | 'key-update'
   sender: string
   receiver: string
   deleteAccount: string
@@ -227,6 +227,7 @@ export function TestnetPanel({
   const noSupplyTokens = supplyTokenIds.length === 0
   const [signing, setSigning] = useState<SigningRequest | null>(null)
   const [signatureText, setSignatureText] = useState('')
+  const [signatureText2, setSignatureText2] = useState('')
   const [scanning, setScanning] = useState(false)
   const handleScanned = (text: string) => {
     setSignatureText(text)
@@ -254,6 +255,7 @@ export function TestnetPanel({
     setConfirming(false)
     setSigning(null)
     setSignatureText('')
+    setSignatureText2('')
     setMoveTarget('')
     setConfirmingMove(false)
     setMoveAcknowledged(false)
@@ -646,6 +648,25 @@ export function TestnetPanel({
     void watchTransaction(result.transactionId, 'Moving account', () => completeMove(target))
   })
 
+  // A watch-only wallet moves an account by a signing request: the current
+  // key always signs offline; the new key signs offline too unless the
+  // target wallet holds its key, in which case the app co-signs.
+  const moveTargetWallet = otherWallets.find((item) => item.id === moveTarget)
+  const moveNeedsTwoSignatures = moveTargetWallet?.secret_kind === 'watchonly'
+
+  const handlePrepareMove = () => run(async () => {
+    const request = await invoke<SigningRequest>('prepare_unsigned_move', {
+      walletId: wallet.id,
+      accountId: account,
+      targetWalletId: moveTarget,
+    })
+    setSignatureText('')
+    setSignatureText2('')
+    setConfirmingMove(false)
+    setMoveAcknowledged(false)
+    setSigning(request)
+  })
+
   const handleCheckMove = () => run(async () => {
     if (!account || !pendingMove) return
     const updated = await invoke<WalletSummary>('finish_account_move', {
@@ -691,6 +712,20 @@ export function TestnetPanel({
   const handleSubmitSigned = () => run(async () => {
     if (!signing) return
     const action = signing.action
+    if (action === 'key-update') {
+      const target = moveTarget
+      const result = await invoke<{ transactionId: string }>('submit_signed_move', {
+        request: signing.payload,
+        responses: [signatureText.trim(), signatureText2.trim()].filter(Boolean),
+        walletId: wallet.id,
+        targetWalletId: target,
+      })
+      setSigning(null)
+      setSignatureText('')
+      setSignatureText2('')
+      void watchTransaction(result.transactionId, 'Moving account', () => completeMove(target))
+      return
+    }
     const tokenName = sendToken ? tokenLabel(sendToken) : 'token'
     const result = await invoke<{ transactionId: string }>('submit_signed_request', {
       request: signing.payload,
@@ -831,12 +866,26 @@ export function TestnetPanel({
             <dd>{signing.sender}</dd>
           </>
         )}
+        {signing.action === 'key-update' && (
+          <>
+            <dt>Account</dt>
+            <dd>{signing.sender}</dd>
+            <dt>New owner</dt>
+            <dd>{targetName}</dd>
+            <dt>New key</dt>
+            <dd className="key-text">{signing.newKey}</dd>
+          </>
+        )}
       </dl>
       <details>
         <summary>Show request as text</summary>
         <textarea readOnly rows={4} aria-label="Signing request text" value={signing.payload} />
       </details>
-      <label htmlFor={`signature-${wallet.id}`}>Signature from the signer</label>
+      <label htmlFor={`signature-${wallet.id}`}>
+        {signing.action === 'key-update'
+          ? "Signature from the current key's signer"
+          : 'Signature from the signer'}
+      </label>
       {scanning ? (
         <QrScanner prefix="HVTX1-SIG:" onScan={handleScanned} onClose={() => setScanning(false)} />
       ) : (
@@ -858,11 +907,32 @@ export function TestnetPanel({
         value={signatureText}
         onChange={(event) => setSignatureText(event.target.value)}
       />
+      {signing.action === 'key-update' && moveNeedsTwoSignatures && (
+        <>
+          <label htmlFor={`signature2-${wallet.id}`}>
+            Signature from the new key&apos;s signer (run the signer again with the target wallet&apos;s key)
+          </label>
+          <textarea
+            id={`signature2-${wallet.id}`}
+            rows={3}
+            autoComplete="off"
+            spellCheck={false}
+            placeholder="HVTX1-SIG:..."
+            value={signatureText2}
+            onChange={(event) => setSignatureText2(event.target.value)}
+          />
+        </>
+      )}
       <div className="button-pair">
         <button
           className="primary-button"
           type="button"
-          disabled={isBusy || secondsLeft === 0 || !signatureText.trim()}
+          disabled={
+            isBusy
+            || secondsLeft === 0
+            || !signatureText.trim()
+            || (signing.action === 'key-update' && moveNeedsTwoSignatures && !signatureText2.trim())
+          }
           onClick={handleSubmitSigned}
         >
           {isBusy ? 'Submitting...' : submitLabel}
@@ -1092,7 +1162,7 @@ export function TestnetPanel({
               label="Account management"
               entries={[
                 { id: 'rename', label: accountSummary?.named ? 'Rename account' : 'Name this account' },
-                ...(!readOnly && !isWatchOnly && otherWallets.length > 0
+                ...(!readOnly && otherWallets.length > 0
                   ? [{ id: 'move', label: 'Move account' }]
                   : []),
                 ...(!readOnly
@@ -1781,13 +1851,13 @@ export function TestnetPanel({
         </div>
       )}
 
-      {account && !isWatchOnly && section === 'move' && otherWallets.length > 0 && (
+      {account && section === 'move' && otherWallets.length > 0 && (
         <div className="testnet-send">
           <h3 className="section-title">Move account to another wallet</h3>
           <p className="field-hint">
-            Changes this account&apos;s key to another wallet&apos;s key, for example if this
-            wallet&apos;s key may have been exposed. Both keys sign, so both wallets must be in
-            this vault. After it is confirmed, the account belongs to the other wallet.
+            {isWatchOnly
+              ? 'Changes this account\u2019s key to another wallet\u2019s key. The network needs signatures from both the current key and the new key: your offline signer signs with the current key, and with the new key too when the target wallet is watch-only.'
+              : 'Changes this account\u2019s key to another wallet\u2019s key, for example if this wallet\u2019s key may have been exposed. Both keys sign, so both wallets must be in this vault. After it is confirmed, the account belongs to the other wallet.'}
           </p>
           {pendingMove ? (
             <div className="wallet-tab-actions">
@@ -1795,6 +1865,12 @@ export function TestnetPanel({
                 Check again
               </button>
             </div>
+          ) : signing ? (
+            renderSigning('Submit signed move', () => {
+              setSigning(null)
+              setSignatureText('')
+              setSignatureText2('')
+            })
           ) : confirmingMove ? (
             <div className="testnet-confirm" role="group" aria-label="Confirm account move">
               <p className="testnet-warning" role="alert">
@@ -1820,8 +1896,15 @@ export function TestnetPanel({
                 it is backed up and secured.
               </label>
               <div className="button-pair">
-                <button className="primary-button risky-button" type="button" disabled={isBusy || !moveAcknowledged} onClick={handleMove}>
-                  {isBusy ? 'Moving...' : 'Sign and move'}
+                <button
+                  className="primary-button risky-button"
+                  type="button"
+                  disabled={isBusy || !moveAcknowledged}
+                  onClick={isWatchOnly ? handlePrepareMove : handleMove}
+                >
+                  {isBusy
+                    ? 'Working...'
+                    : isWatchOnly ? 'Create signing request' : 'Sign and move'}
                 </button>
                 <button
                   className="secondary-button"
