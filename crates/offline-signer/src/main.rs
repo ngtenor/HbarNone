@@ -213,6 +213,10 @@ fn run() -> Result<(), String> {
     check_time(&summary, now_seconds()).map_err(|e| e.to_string())?;
     show(&summary);
 
+    if matches!(summary.action, Action::KeyUpdate { .. }) {
+        return run_key_update(&request, &summary);
+    }
+
     let key = read_key()?;
     let key_hex = key.public_key_hex()?;
     println!("\nSigning key (public): {key_hex}");
@@ -232,15 +236,8 @@ fn run() -> Result<(), String> {
         Action::DeleteAccount { .. } => {
             println!("A deletion needs this key to control both accounts shown above.");
         }
-        Action::KeyUpdate { key_hex: new, .. } if *new == key_hex => {
-            println!("This signature is from the NEW key. The current key must also sign.");
-        }
-        Action::KeyUpdate { .. } => {
-            println!(
-                "This signature should be from the account's CURRENT key. The new key must also sign."
-            );
-        }
-        Action::Transfer { .. }
+        Action::KeyUpdate { .. }
+        | Action::Transfer { .. }
         | Action::TokenTransfer { .. }
         | Action::TokenAssociate { .. }
         | Action::TokenDissociate { .. } => {}
@@ -252,6 +249,52 @@ fn run() -> Result<(), String> {
     println!("\nPaste this reply into the app, or scan the QR code below:\n\n{reply}\n");
     print_qr(&reply);
     Ok(())
+}
+
+/// Key rotation needs two signatures (the current key and the new key), so
+/// after each signature the user may sign again with the other key without
+/// pasting the request a second time.
+fn run_key_update(request: &str, summary: &Summary) -> Result<(), String> {
+    loop {
+        let key = read_key()?;
+        let key_hex = key.public_key_hex()?;
+        println!("\nSigning key (public): {key_hex}");
+        println!(
+            "Check this is the key of the paying account, {}.",
+            with_checksum(&summary.payer)
+        );
+        match &summary.action {
+            Action::KeyUpdate { key_hex: new, .. } if *new == key_hex => {
+                println!("This signature is from the NEW key. The current key must also sign.");
+            }
+            _ => {
+                println!(
+                    "This signature should be from the account's CURRENT key. The new key must also sign."
+                );
+            }
+        }
+        let as_qr = match ask(
+            "Type 1 to sign and show the signature as a QR code,\n\
+             2 to show it in plain text, anything else to cancel: ",
+        )?
+        .as_str()
+        {
+            "1" => true,
+            "2" => false,
+            _ => return Err("Cancelled. Nothing was signed.".to_string()),
+        };
+        let reply = sign(request, &key, now_seconds())?;
+        if as_qr {
+            println!("\nScan the QR code below into the app:\n");
+            print_qr(&reply);
+        } else {
+            println!("\nPaste this reply into the app:\n\n{reply}\n");
+        }
+        if ask("Type 1 to sign again with the target wallet's key, 2 to close: ")? != "1" {
+            return Ok(());
+        }
+        println!();
+    }
 }
 
 /// Draws the reply as a QR code with half-block characters, light on dark so it scans in a dark terminal.
