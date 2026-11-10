@@ -152,6 +152,15 @@ Testnet verification and CI before moving to the next stage.
   the signer keeps rejecting token creation and minting by design. The app can
   now produce its own NFT test data. Marketplace features remain out of scope;
   Testnet only.
+- [ ] Deferred NFT follow-ups, to be implemented later (after the current
+  timetable permits):
+  - Tier 2: custom fees at collection creation (royalty with an optional
+    fallback fee), with its own fee-input form and review warnings. Until
+    then, testing the custom-fee toggle needs an externally created royalty
+    collection.
+  - Tier 3: burn an owned NFT by serial number (`TokenBurn` with
+    `serialNumbers`; supply key and treasury checks as for minting).
+  - Both stay hot-wallet only and rejected by the offline signer by design.
 - [ ] Test successful and failure paths with disposable Testnet accounts,
   document the workflow and pass CI. (Automated tests added for the mirror
   parsers, transaction bodies, signer whitelist and UI flows; the manual
@@ -305,8 +314,9 @@ together.
   serial number, the custom-fee Settings toggle and fee-schedule warnings,
   plus collection creation and minting for hot wallets (scope extension
   agreed 10 Nov); manual Testnet verification with disposable accounts is
-  still to be done; smart-contract calls stay rejected by the signer by
-  design)
+  still to be done; deferred for later: custom fees at collection creation
+  (tier 2) and burn by serial number (tier 3), see the NFT stage above;
+  smart-contract calls stay rejected by the signer by design)
 - [ ] Design a reproducible hardware prototype
 
 ## Validation status
