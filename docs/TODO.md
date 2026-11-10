@@ -189,6 +189,21 @@ Testnet verification and CI before moving to the next stage.
 - [ ] Prepare software-side QR transport tests and a non-secret sample CNC
   toolpath; document the risks of exporting secret toolpaths.
 - [ ] Run regression checks and prepare a hardware test handover checklist.
+- [ ] BIP39 passphrase support in the signer, to be implemented before the
+  physical signer is developed (agreed 10 Nov). The device is stateless (the
+  seed is wiped on unplug), so transporting the device together with the seed
+  QR is only safe if a passphrase protects the seed. Minimal scope: derive the
+  seed with `mnemonic.to_seed(passphrase)` in `wallet-core` (today it is
+  hard-coded empty, `wallet.rs::from_bip39`) and add a hidden, double-entry
+  passphrase prompt to the CLI signer's `read_key`; the QR request/reply
+  protocol and the desktop watch-only flow are unchanged (they only see the
+  public key). Design notes: any passphrase derives a valid but *different*
+  key, so the signer's existing public-key display is the typo safeguard and
+  must be compared with the paying account's key; BIP39's PBKDF2 (2048
+  iterations) is weak stretching, so recommend a diceware-style passphrase
+  (the EFF wordlist is already bundled for the vault-password generator); a
+  forgotten passphrase is unrecoverable. Optional later: a passphrase field
+  on the desktop mnemonic import for hot-wallet parity.
 
 If time runs short, finish and verify NFTs first, then narrow multisig to the
 smallest safe end-to-end flow. Hardware integration can begin after the parts
