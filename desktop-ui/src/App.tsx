@@ -2272,8 +2272,7 @@ function App() {
                         )}
                         Accounts
                       </div>
-                      <span>Testnet</span>
-                      <span>Mainnet</span>
+                      <span>Balances</span>
                     </div>
                     {wallet.accounts.length === 0 ? (
                       <p className="field-hint">No accounts yet. Use refresh to find accounts or Wallet management to create one.</p>
@@ -2299,12 +2298,7 @@ function App() {
                                 <AccountLabel name={account.name} displayId={account.display_id} />
                               </span>
                               <span className="account-balance">
-                                {account.network === 'testnet'
-                                  ? accountBalanceText(wallet.id, account.id)
-                                  : ''}
-                              </span>
-                              <span className="account-balance">
-                                {account.network === 'mainnet' ? '—' : ''}
+                                {accountBalanceText(wallet.id, account.id)}
                               </span>
                             </button>
                           </li>

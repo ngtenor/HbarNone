@@ -266,7 +266,7 @@
 .account-columns,
 .account-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 130px 130px;
+  grid-template-columns: minmax(0, 1fr) 130px;
   gap: 8px;
   align-items: center;
   box-sizing: border-box;
