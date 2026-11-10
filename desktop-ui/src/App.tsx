@@ -1590,7 +1590,7 @@ function App() {
                     <div className="home-columns" aria-hidden="true">
                       <span />
                       <span>Accounts</span>
-                      <span>Balance</span>
+                      <span>Balances</span>
                     </div>
                     <ul className="wallet-list">
                       {visibleWallets.map((wallet) => (
