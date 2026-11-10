@@ -126,20 +126,33 @@ Testnet verification and CI before moving to the next stage.
   "Hardware bill of materials (signer prototype)" below.
 
 ### 8–10 November: NFT support
-- [ ] Display owned NFTs by token ID and serial number; treat metadata as
-  untrusted.
-- [ ] Associate and dissociate NFT tokens and transfer NFTs by serial number.
-- [ ] Support hot-wallet and watch-only transfers; show token ID, serial number,
-  sender and recipient on the offline signer.
-- [ ] Explicitly handle risky cases: reject invalid ownership or association.
+- [x] Display owned NFTs by token ID and serial number; treat metadata as
+  untrusted. (Implemented 10 Nov: `/accounts/{id}/nfts` on the mirror client,
+  Account assets list and Send menu entries; metadata is base64-decoded,
+  control-stripped and capped at 100 characters.)
+- [x] Associate and dissociate NFT tokens and transfer NFTs by serial number.
+  (Implemented 10 Nov: association checks now cover both token types; NFT
+  dissociation requires zero owned serials unless the token is deleted;
+  `CryptoTransfer` with `nftTransfers` built in `hedera-tx`.)
+- [x] Support hot-wallet and watch-only transfers; show token ID, serial number,
+  sender and recipient on the offline signer. (Implemented 10 Nov: `send_nft`,
+  `prepare_unsigned_nft_transfer`, and a `SEND AN NFT` screen in the CLI
+  signer; signer-core rejects NFT bodies with fungible amounts, decimals,
+  several serials, or a sender other than the payer.)
+- [x] Explicitly handle risky cases: reject invalid ownership or association.
   Transfers of NFTs with custom fees (for example artist royalties) are
   allowed but disabled by default behind an allow/disallow toggle in Settings
   (agreed 9 Nov); before sending, show the token's fee schedule from the
   mirror node and warn that fallback fees can charge the receiver.
+  (Implemented 10 Nov: ownership checked against `/tokens/{id}/nfts/{serial}`,
+  receiver association checked, Settings toggle stored in the vault payload
+  and also enforced when a signed watch-only request is submitted.)
 - [ ] Out of scope: NFT minting, NFT creation and marketplace features;
   Testnet only.
 - [ ] Test successful and failure paths with disposable Testnet accounts,
-  document the workflow and pass CI.
+  document the workflow and pass CI. (Automated tests added for the mirror
+  parsers, transaction bodies, signer whitelist and UI flows; the manual
+  Testnet run with disposable accounts is still to be done.)
 
 ### 11–13 November: multisig
 - [ ] Start with the planned 2-of-3 threshold account: display the key structure
@@ -197,6 +210,9 @@ Goal: a small, fully readable signer. It signs only what it can show in full and
 1. HBAR transfer (`CryptoTransfer`, HBAR only).
 2. Fungible HTS token transfer (same body). Show token ID and the raw amount; a token name or decimals from the QR is an unverified hint only.
 3. NFT transfer (token ID and serial number).
+   - **Done (10 Nov):** the CLI signer shows token ID, serial number, sender and
+     recipient, and rejects NFT bodies that also move fungible amounts or HBAR,
+     carry decimals, move several serials, or whose sender is not the payer.
 4. Token association and dissociation.
 5. Account create, update (key change) and delete. Show the full key (or key structure) being set.
    - **Done:** create (key shown in full, warning if it differs from the signing key), delete (recipient must be another account of the same watch-only wallet, one signature), and key change (two signatures via the multi-signature reply format, built and verified on Testnet 9 Nov).
@@ -277,12 +293,15 @@ together.
   (tracked in the pre-Mainnet checklist).
 - [ ] Create an offline signer application (first iteration done:
   `crates/offline-signer` CLI + `crates/signer-core`; it displays and signs
-  HBAR transfers, account create/delete, key changes, token transfers and
-  token associations, and can read a request from a screenshot or photo file;
-  still needed: the dedicated air-gapped device with live camera scanning)
-- [ ] Add NFT support (fungible HTS tokens are done through stage 6; the NFT
-  scope is agreed in the timetable; smart-contract calls stay rejected by the
-  signer by design)
+  HBAR transfers, account create/delete, key changes, token transfers, NFT
+  transfers (token ID and serial number) and token associations, and can read
+  a request from a screenshot or photo file; still needed: the dedicated
+  air-gapped device with live camera scanning)
+- [x] Add NFT support (implemented 10 Nov for the agreed scope: owned-NFT
+  display, associate/dissociate, hot-wallet and watch-only transfers by
+  serial number, the custom-fee Settings toggle and fee-schedule warnings;
+  manual Testnet verification with disposable accounts is still to be done;
+  smart-contract calls stay rejected by the signer by design)
 - [ ] Design a reproducible hardware prototype
 
 ## Validation status
@@ -290,17 +309,20 @@ The source security reviews found no substantiated vulnerabilities. The
 implemented desktop app includes the encrypted shared vault, wallet recovery
 and backup, safety controls, account management, watch-only wallets, Testnet
 HBAR and fungible-token transaction flows (token stages 1–6, including signer
-support), offline key rotation, and read-only Mainnet watch-only monitoring.
+support), NFT support (display, associate/dissociate, hot-wallet and
+watch-only transfers, custom-fee gating), offline key rotation, and read-only
+Mainnet watch-only monitoring.
 Linux app-data permissions are hardened to `0700`/`0600`.
 
 The current release is the x64 Windows build of `main` at commit `3140ed9`
 (confirmed 9 Nov 2026); no version tags exist yet. A release app is rebuilt
 after each change (`--no-bundle`); the last full installer build produced both
-NSIS and MSI installers. The frontend suite stands at 85 passing UI tests, and
+NSIS and MSI installers. The frontend suite stands at 116 passing UI tests, and
 the Rust tests, formatting and workspace check pass on Windows and Ubuntu CI.
 All manual Testnet token tests through stage 6 are complete with disposable
 accounts, and the latest Linux check run passed on the Ubuntu desktop
-partition. Remaining manual checks are listed above; do not use real funds or
+partition. The NFT flows have automated tests but still need their manual
+Testnet run. Remaining manual checks are listed above; do not use real funds or
 recovery phrases.
 
 Build note: this ARM64 Windows machine needs the x64 Rust toolchain

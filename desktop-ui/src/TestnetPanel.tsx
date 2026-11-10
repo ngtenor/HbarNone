@@ -39,6 +39,32 @@ type AccountToken = {
   balance: string
   decimals: number
   deleted?: boolean
+  is_nft?: boolean
+}
+
+type AccountNft = {
+  token_id: string
+  serial_number: number
+  metadata: string
+}
+
+type FixedFee = {
+  amount: string
+  denominating_token_id: string
+  collector: string
+}
+
+type RoyaltyFee = {
+  numerator: string
+  denominator: string
+  collector: string
+  fallback: FixedFee | null
+}
+
+type TokenCustomFees = {
+  fixed_fees: FixedFee[]
+  royalty_fees: RoyaltyFee[]
+  has_other_fees: boolean
 }
 
 type TokenInfo = {
@@ -53,6 +79,7 @@ type TokenInfo = {
   has_admin_key: boolean
   admin_key: string | null
   memo: string
+  custom_fees: TokenCustomFees
 }
 
 type AccountOverview = {
@@ -60,6 +87,7 @@ type AccountOverview = {
   balance_tinybars: number
   transactions: TransactionSummary[]
   tokens?: AccountToken[]
+  nfts?: AccountNft[]
 }
 
 type TokenSection =
@@ -99,6 +127,43 @@ function tokenLabel(token: AccountToken) {
   return token.symbol || token.token_id
 }
 
+function hasCustomFees(fees: TokenCustomFees | undefined) {
+  return Boolean(
+    fees && (fees.fixed_fees.length > 0 || fees.royalty_fees.length > 0 || fees.has_other_fees),
+  )
+}
+
+// The token's custom fee schedule, as reported by the mirror node.
+function FeeSchedule({ fees }: { fees: TokenCustomFees }) {
+  return (
+    <>
+      {fees.fixed_fees.map((fee, index) => (
+        <li key={`fixed-${index}`}>
+          Fixed fee: {fee.amount}{' '}
+          {fee.denominating_token_id ? `units of token ${fee.denominating_token_id}` : 'tinybars'}
+          {fee.collector ? ` to ${fee.collector}` : ''} on every transfer, paid by the sender.
+        </li>
+      ))}
+      {fees.royalty_fees.map((fee, index) => (
+        <li key={`royalty-${index}`}>
+          Royalty: {fee.numerator}/{fee.denominator} of any fungible value exchanged
+          {fee.collector ? ` to ${fee.collector}` : ''}.
+          {fee.fallback
+            ? ` Fallback fee when nothing is exchanged: ${fee.fallback.amount} ${
+                fee.fallback.denominating_token_id
+                  ? `units of token ${fee.fallback.denominating_token_id}`
+                  : 'tinybars'
+              }, charged to the RECEIVER.`
+            : ' No fallback fee.'}
+        </li>
+      ))}
+      {fees.has_other_fees && (
+        <li>This token has further fees this app does not break down.</li>
+      )}
+    </>
+  )
+}
+
 function formatNet(tinybars: number) {
   const sign = tinybars > 0 ? '+' : ''
   return `${sign}${formatHbar(tinybars, 2)} ℏ`
@@ -112,7 +177,7 @@ type SigningRequest = {
   payload: string
   qrSize: number
   qrModules: boolean[]
-  action: 'transfer' | 'delete' | 'create' | 'token-transfer' | 'token-associate' | 'token-dissociate' | 'key-update'
+  action: 'transfer' | 'delete' | 'create' | 'token-transfer' | 'nft-transfer' | 'token-associate' | 'token-dissociate' | 'key-update'
   sender: string
   receiver: string
   deleteAccount: string
@@ -121,6 +186,7 @@ type SigningRequest = {
   tokenId: string
   tokenUnits: string
   tokenDecimals: number
+  serialNumber: string
   memo: string
   expiresAtSeconds: number
 }
@@ -221,6 +287,8 @@ export function TestnetPanel({
   const [supplyAmount, setSupplyAmount] = useState('')
   const [tokenDeleteAcknowledged, setTokenDeleteAcknowledged] = useState(false)
   const [sendTokenId, setSendTokenId] = useState('')
+  const [sendNftKey, setSendNftKey] = useState('')
+  const [nftFeeInfo, setNftFeeInfo] = useState<TokenInfo | null>(null)
   const isWatchOnly = wallet.secret_kind === 'watchonly'
   // Mainnet wallets are read-only: balances and history, no transactions.
   const readOnly = wallet.network === 'mainnet'
@@ -288,21 +356,42 @@ export function TestnetPanel({
     setTokenToRemove('')
     setTokenDeleteAcknowledged(false)
     setSendTokenId('')
+    setSendNftKey('')
+    setNftFeeInfo(null)
     setError('')
     setNotice('')
   }
   const allTokens = [...(overview?.tokens ?? [])].sort((a, b) =>
     tokenLabel(a).localeCompare(tokenLabel(b)),
   )
+  const fungibleTokens = allTokens.filter((token) => !token.is_nft)
+  // Owned NFTs by token ID and serial number. Metadata is untrusted text.
+  const ownedNfts = [...(overview?.nfts ?? [])].sort(
+    (a, b) => a.token_id.localeCompare(b.token_id) || a.serial_number - b.serial_number,
+  )
+  const nftLabel = (tokenId: string) => {
+    const token = allTokens.find((item) => item.token_id === tokenId)
+    return token && token.symbol ? token.symbol : 'NFT'
+  }
+  const ownedSerials = (tokenId: string) =>
+    ownedNfts.filter((nft) => nft.token_id === tokenId).length
   // Deleted tokens cannot move again: they are shown (marked) and can be
   // dissociated, but are excluded from Send, Delete token and Mint/Burn.
-  const sendableTokens = allTokens.filter(
+  const sendableTokens = fungibleTokens.filter(
     (token) => !hiddenTokens.includes(token.token_id) && !token.deleted,
+  )
+  const sendableNfts = ownedNfts.filter(
+    (nft) =>
+      !hiddenTokens.includes(nft.token_id)
+      && !allTokens.find((token) => token.token_id === nft.token_id)?.deleted,
   )
   const hiddenHere = allTokens.filter((token) => hiddenTokens.includes(token.token_id)).length
   const assetTokens = showHidden
-    ? allTokens
-    : allTokens.filter((token) => !hiddenTokens.includes(token.token_id))
+    ? fungibleTokens
+    : fungibleTokens.filter((token) => !hiddenTokens.includes(token.token_id))
+  const assetNfts = showHidden
+    ? ownedNfts
+    : ownedNfts.filter((nft) => !hiddenTokens.includes(nft.token_id))
   const handleAddToken = () =>
     run(async () => {
       if (!tokenDetails) return
@@ -472,7 +561,7 @@ export function TestnetPanel({
 
   // Mint and burn are only offered for tokens this account is the supply-key treasury of.
   const heldTokenKey = (overview?.tokens ?? [])
-    .filter((token) => !token.deleted)
+    .filter((token) => !token.deleted && !token.is_nft)
     .map((token) => token.token_id)
     .join(',')
   useEffect(() => {
@@ -698,10 +787,21 @@ export function TestnetPanel({
     setSigning(null)
     setSignatureText('')
     setSendTokenId('')
+    setSendNftKey('')
+    setNftFeeInfo(null)
   }
 
   const handlePrepare = () => run(async () => {
-    const request = sendToken
+    const request = sendNft
+      ? await invoke<SigningRequest>('prepare_unsigned_nft_transfer', {
+          walletId: wallet.id,
+          fromAccount: account,
+          recipient: recipient.trim(),
+          tokenId: sendNft.token_id,
+          serialNumber: String(sendNft.serial_number),
+          memo,
+        })
+      : sendToken
       ? await invoke<SigningRequest>('prepare_unsigned_token_transfer', {
           walletId: wallet.id,
           fromAccount: account,
@@ -752,6 +852,12 @@ export function TestnetPanel({
     } else if (action === 'token-transfer') {
       resetSend()
       void watchTransaction(result.transactionId, `Sending ${tokenName}`, async () => {
+        await retry(loadOverview, 2)
+      })
+    } else if (action === 'nft-transfer') {
+      const title = `Sending ${nftLabel(signing.tokenId)} #${signing.serialNumber}`
+      resetSend()
+      void watchTransaction(result.transactionId, title, async () => {
         await retry(loadOverview, 2)
       })
     } else if (action === 'delete') {
@@ -865,6 +971,26 @@ export function TestnetPanel({
             <dd>
               {formatTokenAmount(signing.tokenUnits, signing.tokenDecimals)} (raw {signing.tokenUnits})
             </dd>
+            {signing.memo && (
+              <>
+                <dt>Memo</dt>
+                <dd>{signing.memo}</dd>
+              </>
+            )}
+          </>
+        )}
+        {signing.action === 'nft-transfer' && (
+          <>
+            <dt>From</dt>
+            <dd>{signing.sender}</dd>
+            <dt>To</dt>
+            <dd>{signing.receiver}</dd>
+            <dt>Token</dt>
+            <dd>
+              {signingToken ? `${tokenLabel(signingToken)} ` : ''}({signing.tokenId})
+            </dd>
+            <dt>Serial number</dt>
+            <dd>{signing.serialNumber}</dd>
             {signing.memo && (
               <>
                 <dt>Memo</dt>
@@ -1041,13 +1167,38 @@ export function TestnetPanel({
     }
     return run(async () => {
       await invoke<string>('check_recipient', { recipient, forSend: true })
+      // Before an NFT send, the token's fee schedule is fetched so custom
+      // fees (for example artist royalties) are shown in the review step.
+      if (sendNft) {
+        const info = await invoke<TokenInfo | null>('get_token_info', { tokenId: sendNft.token_id })
+        setNftFeeInfo(info)
+      }
       setConfirming(true)
     })
   }
 
   const sendToken = allTokens.find((token) => token.token_id === sendTokenId)
+  const sendNft = ownedNfts.find(
+    (nft) => `${nft.token_id}#${nft.serial_number}` === sendNftKey,
+  )
 
   const handleSend = () => run(async () => {
+    if (sendNft) {
+      const result = await invoke<{ transactionId: string }>('send_nft', {
+        walletId: wallet.id,
+        fromAccount: account,
+        recipient: recipient.trim(),
+        tokenId: sendNft.token_id,
+        serialNumber: String(sendNft.serial_number),
+        memo,
+      })
+      const title = `Sending ${nftLabel(sendNft.token_id)} #${sendNft.serial_number}`
+      resetSend()
+      void watchTransaction(result.transactionId, title, async () => {
+        await retry(loadOverview, 2)
+      })
+      return
+    }
     if (sendToken) {
       const result = await invoke<{ transactionId: string }>('send_token', {
         walletId: wallet.id,
@@ -1176,12 +1327,21 @@ export function TestnetPanel({
                   detail: formatTokenAmount(token.balance, token.decimals),
                   disabled: token.balance === '0',
                 })),
+                ...sendableNfts.map((nft) => ({
+                  id: `nft:${nft.token_id}#${nft.serial_number}`,
+                  label: `${nftLabel(nft.token_id)} #${nft.serial_number}`,
+                  detail: nft.token_id,
+                })),
               ]}
               onSelect={(id) => {
                 if (id === 'hbar') {
                   toggleSection('send')
                   // Switching from a token send to HBAR must keep the section open.
-                  if (sendTokenId) setSection('send')
+                  if (sendTokenId || sendNftKey) setSection('send')
+                } else if (id.startsWith('nft:')) {
+                  toggleSection('send')
+                  setSection('send')
+                  setSendNftKey(id.slice('nft:'.length))
                 } else {
                   toggleSection('send')
                   setSection('send')
@@ -1312,6 +1472,7 @@ export function TestnetPanel({
             </div>
           </form>
           {tokenDetails && (
+            <>
             <dl className="testnet-confirm token-details" aria-label="Token details">
               <dt>Name</dt>
               <dd>{tokenDetails.name || '(none)'}</dd>
@@ -1342,6 +1503,18 @@ export function TestnetPanel({
                 </>
               )}
             </dl>
+            {hasCustomFees(tokenDetails.custom_fees) && (
+              <div role="note" aria-label="Custom fee note">
+                <p className="error-message">
+                  This token charges custom fees on every transfer. A royalty&apos;s fallback fee can
+                  charge the receiver.
+                </p>
+                <ul className="field-hint" aria-label="Fee schedule">
+                  <FeeSchedule fees={tokenDetails.custom_fees} />
+                </ul>
+              </div>
+            )}
+            </>
           )}
         </div>
       )}
@@ -1380,6 +1553,8 @@ export function TestnetPanel({
                 <dd>{tokenDetails.symbol || '(none)'}</dd>
                 <dt>Token ID</dt>
                 <dd>{tokenDetails.token_id}</dd>
+                <dt>Type</dt>
+                <dd>{tokenDetails.token_type === 'NON_FUNGIBLE_UNIQUE' ? 'NFT (non-fungible)' : tokenDetails.token_type}</dd>
                 <dt>Decimals</dt>
                 <dd>{tokenDetails.decimals}</dd>
                 <dt>Total supply</dt>
@@ -1391,6 +1566,16 @@ export function TestnetPanel({
                 <dt>Fee</dt>
                 <dd>A small network fee, about 0.05 USD in HBAR</dd>
               </dl>
+              {hasCustomFees(tokenDetails.custom_fees) && (
+                <div role="note" aria-label="Custom fee note">
+                  <p className="error-message">
+                    This token charges custom fees on every transfer.
+                  </p>
+                  <ul className="field-hint" aria-label="Fee schedule">
+                    <FeeSchedule fees={tokenDetails.custom_fees} />
+                  </ul>
+                </div>
+              )}
               {tokenDetails.deleted && <p className="error-message">This token has been deleted.</p>}
               <button
                 className="primary-button"
@@ -1420,15 +1605,29 @@ export function TestnetPanel({
             >
               <option value="">Choose a token</option>
               {allTokens.map((token) => (
-                <option key={token.token_id} value={token.token_id} disabled={token.balance !== '0' && !token.deleted}>
+                <option
+                  key={token.token_id}
+                  value={token.token_id}
+                  disabled={
+                    token.is_nft
+                      ? ownedSerials(token.token_id) > 0 && !token.deleted
+                      : token.balance !== '0' && !token.deleted
+                  }
+                >
                   {tokenLabel(token)} ({token.token_id})
-                  {token.deleted
-                    ? token.balance !== '0'
-                      ? ' - deleted token; its stuck balance is discarded'
-                      : ' - deleted token'
-                    : token.balance !== '0'
-                      ? ` - balance ${formatTokenAmount(token.balance, token.decimals)}, must be 0`
-                      : ''}
+                  {token.is_nft
+                    ? token.deleted
+                      ? ' - deleted NFT token; leftover serial numbers are discarded'
+                      : ownedSerials(token.token_id) > 0
+                        ? ` - owns ${ownedSerials(token.token_id)} NFT(s), must be 0`
+                        : ' - NFT token'
+                    : token.deleted
+                      ? token.balance !== '0'
+                        ? ' - deleted token; its stuck balance is discarded'
+                        : ' - deleted token'
+                      : token.balance !== '0'
+                        ? ` - balance ${formatTokenAmount(token.balance, token.decimals)}, must be 0`
+                        : ''}
                 </option>
               ))}
             </select>
@@ -1693,7 +1892,13 @@ export function TestnetPanel({
 
       {account && section === 'send' && (
         <div className="testnet-send">
-          <h3 className="section-title">{sendToken ? `Send ${tokenLabel(sendToken)}` : 'Send HBAR'}</h3>
+          <h3 className="section-title">
+            {sendNft
+              ? `Send ${nftLabel(sendNft.token_id)} #${sendNft.serial_number}`
+              : sendToken
+                ? `Send ${tokenLabel(sendToken)}`
+                : 'Send HBAR'}
+          </h3>
           {signing ? renderSigning('Submit signed transfer', resetSend) : confirming ? (
             <div className="testnet-confirm" role="group" aria-label="Confirm transfer">
               <p>Please check the details. A transfer cannot be undone.</p>
@@ -1704,8 +1909,25 @@ export function TestnetPanel({
                 <dd>{accountLabel}</dd>
                 <dt>To</dt>
                 <dd>{recipient.trim()}</dd>
-                <dt>Amount</dt>
-                <dd>{amount.trim()} {sendToken ? tokenLabel(sendToken) : 'ℏ'}</dd>
+                {sendNft ? (
+                  <>
+                    <dt>Token</dt>
+                    <dd>{sendNft.token_id}</dd>
+                    <dt>Serial number</dt>
+                    <dd>{sendNft.serial_number}</dd>
+                    {sendNft.metadata && (
+                      <>
+                        <dt>Metadata (unverified)</dt>
+                        <dd>{sendNft.metadata}</dd>
+                      </>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <dt>Amount</dt>
+                    <dd>{amount.trim()} {sendToken ? tokenLabel(sendToken) : 'ℏ'}</dd>
+                  </>
+                )}
                 {memo && (
                   <>
                     <dt>Memo</dt>
@@ -1715,6 +1937,17 @@ export function TestnetPanel({
                 <dt>Maximum fee</dt>
                 <dd>1 ℏ (the real fee is far lower)</dd>
               </dl>
+              {sendNft && hasCustomFees(nftFeeInfo?.custom_fees) && nftFeeInfo && (
+                <div role="note" aria-label="Custom fee warning">
+                  <p className="error-message">
+                    This NFT&apos;s token charges custom fees on every transfer. A royalty&apos;s
+                    fallback fee can charge the <strong>receiver</strong>.
+                  </p>
+                  <ul className="field-hint" aria-label="Fee schedule">
+                    <FeeSchedule fees={nftFeeInfo.custom_fees} />
+                  </ul>
+                </div>
+              )}
               <div className="button-pair">
                 <button
                   className="primary-button"
@@ -1791,17 +2024,24 @@ export function TestnetPanel({
                   />
                 </>
               )}
-              <input
-                id={`send-amount-${wallet.id}`}
-                aria-label={sendToken ? 'Amount' : 'Amount (ℏ)'}
-                autoComplete="off"
-                inputMode="decimal"
-                placeholder={sendToken ? 'Enter send amount here' : 'Enter send amount here (ℏ)'}
-                maxLength={20}
-                required
-                value={amount}
-                onChange={(event) => setAmount(event.target.value)}
-              />
+              {sendNft ? (
+                <p className="field-hint">
+                  Sending NFT serial number {sendNft.serial_number} of token {sendNft.token_id}.
+                  {sendNft.metadata ? ` Metadata (unverified): ${sendNft.metadata}` : ''}
+                </p>
+              ) : (
+                <input
+                  id={`send-amount-${wallet.id}`}
+                  aria-label={sendToken ? 'Amount' : 'Amount (ℏ)'}
+                  autoComplete="off"
+                  inputMode="decimal"
+                  placeholder={sendToken ? 'Enter send amount here' : 'Enter send amount here (ℏ)'}
+                  maxLength={20}
+                  required
+                  value={amount}
+                  onChange={(event) => setAmount(event.target.value)}
+                />
+              )}
               <input
                 id={`send-memo-${wallet.id}`}
                 aria-label="Memo (optional)"
@@ -2238,6 +2478,24 @@ export function TestnetPanel({
                   </span>
                   <span className="testnet-token-id">{token.token_id}</span>
                   <span className="testnet-net">{formatTokenAmount(token.balance, token.decimals)}</span>
+                </li>
+              ))}
+              {assetNfts.map((nft) => (
+                <li key={`${nft.token_id}#${nft.serial_number}`}>
+                  <span className="testnet-kind">
+                    {nftLabel(nft.token_id)} #{nft.serial_number}
+                    {nft.metadata ? (
+                      <span className="testnet-token-name"> {nft.metadata}</span>
+                    ) : null}
+                    {allTokens.find((token) => token.token_id === nft.token_id)?.deleted ? (
+                      <span className="testnet-token-name"> (deleted)</span>
+                    ) : null}
+                    {hiddenTokens.includes(nft.token_id) ? (
+                      <span className="testnet-token-name"> (hidden)</span>
+                    ) : null}
+                  </span>
+                  <span className="testnet-token-id">{nft.token_id}</span>
+                  <span className="testnet-net">NFT</span>
                 </li>
               ))}
             </ul>

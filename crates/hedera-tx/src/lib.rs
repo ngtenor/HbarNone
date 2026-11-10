@@ -66,15 +66,29 @@ pub struct CryptoTransferBody {
     pub token_transfers: Vec<TokenTransferList>,
 }
 
-/// Fungible amounts of one token moving between accounts (debits negative).
+/// Fungible amounts of one token moving between accounts (debits negative),
+/// or single NFTs of one token moving by serial number.
 #[derive(Clone, PartialEq, Message)]
 pub struct TokenTransferList {
     #[prost(message, optional, tag = "1")]
     pub token: Option<TokenId>,
     #[prost(message, repeated, tag = "2")]
     pub transfers: Vec<AccountAmount>,
+    #[prost(message, repeated, tag = "3")]
+    pub nft_transfers: Vec<NftTransfer>,
     #[prost(message, optional, tag = "4")]
     pub expected_decimals: Option<UInt32Value>,
+}
+
+/// One NFT (identified by its serial number) moving between two accounts.
+#[derive(Clone, PartialEq, Message)]
+pub struct NftTransfer {
+    #[prost(message, optional, tag = "1")]
+    pub sender: Option<AccountId>,
+    #[prost(message, optional, tag = "2")]
+    pub receiver: Option<AccountId>,
+    #[prost(int64, tag = "3")]
+    pub serial_number: i64,
 }
 
 /// `google.protobuf.UInt32Value`.
@@ -404,7 +418,84 @@ pub fn token_transfer_body_bytes_valid_for(
                         amount: p.amount,
                     },
                 ],
+                nft_transfers: Vec::new(),
                 expected_decimals: Some(UInt32Value { value: p.decimals }),
+            }],
+        }),
+    };
+    Ok(body.encode_to_vec())
+}
+
+/// Parameters of an NFT transfer (one serial number) between two accounts.
+pub struct NftTransferParams {
+    pub sender: (i64, i64, i64),
+    pub receiver: (i64, i64, i64),
+    pub token: (i64, i64, i64),
+    /// Serial number of the NFT being sent.
+    pub serial_number: i64,
+    pub node: (i64, i64, i64),
+    pub valid_start_seconds: i64,
+    pub valid_start_nanos: i32,
+    pub max_fee_tinybars: u64,
+    pub memo: String,
+}
+
+pub fn nft_transfer_body_bytes(p: &NftTransferParams) -> Result<Vec<u8>, String> {
+    nft_transfer_body_bytes_valid_for(p, 120)
+}
+
+/// Like [`nft_transfer_body_bytes`], but valid for `valid_seconds` after its start time.
+pub fn nft_transfer_body_bytes_valid_for(
+    p: &NftTransferParams,
+    valid_seconds: i64,
+) -> Result<Vec<u8>, String> {
+    if p.serial_number <= 0 {
+        return Err("Invalid serial number.".into());
+    }
+    if p.sender == p.receiver {
+        return Err("Sender and recipient must differ.".into());
+    }
+    if p.token.0 != 0 || p.token.1 != 0 || p.token.2 <= 0 {
+        return Err("Invalid token ID.".into());
+    }
+    let body = TransactionBody {
+        transaction_id: Some(TransactionId {
+            valid_start: Some(Timestamp {
+                seconds: p.valid_start_seconds,
+                nanos: p.valid_start_nanos,
+            }),
+            account: Some(account(p.sender)),
+        }),
+        node_account: Some(account(p.node)),
+        fee: p.max_fee_tinybars,
+        valid_duration: Some(Duration {
+            seconds: valid_seconds,
+        }),
+        memo: p.memo.clone(),
+        crypto_create: None,
+        crypto_delete: None,
+        crypto_update: None,
+        token_creation: None,
+        token_deletion: None,
+        token_association: None,
+        token_dissociation: None,
+        token_mint: None,
+        token_burn: None,
+        crypto_transfer: Some(CryptoTransferBody {
+            transfers: None,
+            token_transfers: vec![TokenTransferList {
+                token: Some(TokenId {
+                    shard: p.token.0,
+                    realm: p.token.1,
+                    num: p.token.2,
+                }),
+                transfers: Vec::new(),
+                nft_transfers: vec![NftTransfer {
+                    sender: Some(account(p.sender)),
+                    receiver: Some(account(p.receiver)),
+                    serial_number: p.serial_number,
+                }],
+                expected_decimals: None,
             }],
         }),
     };

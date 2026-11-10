@@ -114,6 +114,11 @@ pub struct VaultPayload {
     /// Token IDs each wallet has chosen to hide, keyed by wallet ID.
     #[serde(default)]
     pub hidden_tokens: std::collections::BTreeMap<String, Vec<String>>,
+    /// Whether NFTs whose token carries custom fees (for example artist
+    /// royalties) may be sent. Off by default: a fallback fee can charge the
+    /// receiver.
+    #[serde(default)]
+    pub allow_nft_custom_fees: bool,
 }
 
 impl Default for VaultPayload {
@@ -125,6 +130,7 @@ impl Default for VaultPayload {
             allow_external_sends: false,
             allow_external_deletes: false,
             hidden_tokens: Default::default(),
+            allow_nft_custom_fees: false,
         }
     }
 }

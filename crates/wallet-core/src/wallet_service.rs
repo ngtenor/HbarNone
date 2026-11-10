@@ -990,6 +990,22 @@ impl WalletService {
         self.persist_payload(next_payload, path)
     }
 
+    pub fn allow_nft_custom_fees(&mut self) -> Result<bool, String> {
+        self.ensure_unlocked()?;
+        Ok(self
+            .payload
+            .as_ref()
+            .expect("checked unlocked")
+            .allow_nft_custom_fees)
+    }
+
+    pub fn set_allow_nft_custom_fees(&mut self, allowed: bool, path: &str) -> Result<(), String> {
+        self.ensure_unlocked()?;
+        let mut next_payload = self.payload.as_ref().expect("checked unlocked").clone();
+        next_payload.allow_nft_custom_fees = allowed;
+        self.persist_payload(next_payload, path)
+    }
+
     /// The token IDs this wallet hides, in the order they were hidden.
     pub fn hidden_tokens(&mut self, wallet_id: &str) -> Result<Vec<String>, String> {
         self.ensure_unlocked()?;

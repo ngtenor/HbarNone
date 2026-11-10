@@ -38,6 +38,8 @@ type Backend = {
   detection: { keyType: string | null; accounts: string[] }
   allowExternalSends: boolean
   allowExternalDeletes: boolean
+  allowNftCustomFees: boolean
+  tokenInfo?: Record<string, unknown>
   outside: { id: string; name: string }[]
   deletedOnNetwork?: string[]
   calls: { cmd: string; args?: Record<string, unknown> }[]
@@ -128,6 +130,7 @@ function installBackend(overrides: Partial<Backend> = {}) {
     detection: { keyType: null, accounts: [] },
     allowExternalSends: true,
     allowExternalDeletes: false,
+    allowNftCustomFees: false,
     outside: [],
     calls: [],
     ...overrides,
@@ -220,6 +223,8 @@ function installBackend(overrides: Partial<Backend> = {}) {
           has_admin_key: true,
           admin_key: 'ab'.repeat(32),
           memo: '',
+          custom_fees: { fixed_fees: [], royalty_fees: [], has_other_fees: false },
+          ...(backend.tokenInfo ?? {}),
         }
       case 'get_hidden_tokens':
         return [...backend.hidden]
@@ -252,6 +257,14 @@ function installBackend(overrides: Partial<Backend> = {}) {
       case 'send_token':
         if (backend.sendError) throw new Error(backend.sendError)
         return { transactionId: '0.0.1001-1700000000-000000005' }
+      case 'send_nft':
+        if (backend.sendError) throw new Error(backend.sendError)
+        return { transactionId: '0.0.1001-1700000000-000000013' }
+      case 'get_allow_nft_custom_fees':
+        return backend.allowNftCustomFees
+      case 'set_allow_nft_custom_fees':
+        backend.allowNftCustomFees = Boolean(args?.allowed)
+        return backend.allowNftCustomFees
       case 'prepare_unsigned_transfer':
         return {
           payload: 'HVTX1-REQ:00',
@@ -308,6 +321,24 @@ function installBackend(overrides: Partial<Backend> = {}) {
           tokenId: '0.0.8',
           tokenUnits: '150',
           tokenDecimals: 2,
+          memo: '',
+          expiresAtSeconds: Math.floor(Date.now() / 1000) + 170,
+        }
+      case 'prepare_unsigned_nft_transfer':
+        return {
+          payload: 'HVTX1-REQ:06',
+          qrSize: 2,
+          qrModules: [true, false, false, true],
+          action: 'nft-transfer',
+          sender: '0.0.1001-abcde',
+          receiver: '0.0.2002-abcde',
+          deleteAccount: '',
+          newKey: '',
+          tinybars: 0,
+          tokenId: (args as { tokenId: string }).tokenId,
+          tokenUnits: '',
+          tokenDecimals: 0,
+          serialNumber: (args as { serialNumber: string }).serialNumber,
           memo: '',
           expiresAtSeconds: Math.floor(Date.now() / 1000) + 170,
         }
@@ -2682,6 +2713,188 @@ describe('deleted tokens', () => {
     const select = await screen.findByLabelText('Token to remove')
     expect(within(select).getByRole('option', { name: /TGBP.*deleted token/ })).toBeEnabled()
     expect(within(select).getByRole('option', { name: /ALP.*must be 0/ })).toBeDisabled()
+  })
+})
+
+describe('NFT support', () => {
+  const nftOverview = {
+    account_id: 'x',
+    balance_tinybars: 150_000_000,
+    transactions: [],
+    tokens: [
+      { token_id: '0.0.8', symbol: 'ALP', name: 'Alpha', balance: '12345', decimals: 2 },
+      { token_id: '0.0.21', symbol: 'ART', name: 'Art', balance: '2', decimals: 0, is_nft: true },
+    ],
+    nfts: [
+      { token_id: '0.0.21', serial_number: 1, metadata: 'ipfs://one' },
+      { token_id: '0.0.21', serial_number: 2, metadata: '' },
+    ],
+  }
+  const nftTokenInfo = {
+    token_id: '0.0.21',
+    name: 'Art',
+    symbol: 'ART',
+    decimals: 0,
+    token_type: 'NON_FUNGIBLE_UNIQUE',
+    total_supply: '2',
+  }
+
+  it('lists owned NFTs by token ID and serial number and sends one after review', async () => {
+    const user = userEvent.setup()
+    installBackend({
+      wallets: [wallet('w1', 'Savings', '0.0.1001'), wallet('w2', 'Trading', '0.0.1002')],
+      overview: nftOverview,
+      tokenInfo: nftTokenInfo,
+    })
+    render(<App />)
+    await unlock(user)
+    await openAccount(user, 'Savings')
+    await screen.findByRole('button', { name: 'Refresh transactions' })
+    const rows = within(screen.getByRole('list', { name: 'Account assets' })).getAllByRole('listitem')
+    expect(rows.map((row) => row.textContent)).toEqual([
+      'HBAR1.50 ℏ',
+      'ALP Alpha0.0.8123.45',
+      'ART #1 ipfs://one0.0.21NFT',
+      'ART #20.0.21NFT',
+    ])
+    await user.click(screen.getByRole('button', { name: 'Send' }))
+    expect(screen.getAllByRole('menuitem').map((item) => item.textContent)).toEqual([
+      'HBAR',
+      'ALP123.45',
+      'ART #10.0.21',
+      'ART #20.0.21',
+    ])
+    await user.click(screen.getByRole('menuitem', { name: /ART #2/ }))
+    expect(screen.getByRole('heading', { name: 'Send ART #2' })).toBeInTheDocument()
+    // An NFT send has no amount field; the serial number is fixed.
+    expect(screen.queryByLabelText('Amount')).not.toBeInTheDocument()
+    await user.selectOptions(screen.getByLabelText('Recipient from the address book'), '0.0.1002-abcde')
+    await user.click(screen.getByRole('button', { name: 'Review transfer' }))
+    const review = await screen.findByRole('group', { name: 'Confirm transfer' })
+    expect(review).toHaveTextContent('Serial number2')
+    expect(review).toHaveTextContent('0.0.21')
+    // No custom fees, so no warning.
+    expect(screen.queryByText(/charges custom fees/)).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Sign and send' }))
+    await screen.findByText('SUCCESS!')
+    expect(commandsCalled('send_nft')[0].args).toMatchObject({
+      walletId: 'w1',
+      fromAccount: '0.0.1001',
+      tokenId: '0.0.21',
+      serialNumber: '2',
+    })
+    expect(commandsCalled('send_token')).toHaveLength(0)
+    expect(commandsCalled('send_hbar')).toHaveLength(0)
+  })
+
+  it('shows the fee schedule and a receiver warning before sending an NFT with custom fees', async () => {
+    const user = userEvent.setup()
+    installBackend({
+      wallets: [wallet('w1', 'Savings', '0.0.1001'), wallet('w2', 'Trading', '0.0.1002')],
+      overview: nftOverview,
+      tokenInfo: {
+        ...nftTokenInfo,
+        custom_fees: {
+          fixed_fees: [],
+          royalty_fees: [
+            {
+              numerator: '5',
+              denominator: '100',
+              collector: '0.0.77',
+              fallback: { amount: '100', denominating_token_id: '', collector: '' },
+            },
+          ],
+          has_other_fees: false,
+        },
+      },
+    })
+    render(<App />)
+    await unlock(user)
+    await openAccount(user, 'Savings')
+    await screen.findByRole('button', { name: 'Refresh transactions' })
+    await user.click(screen.getByRole('button', { name: 'Send' }))
+    await user.click(screen.getByRole('menuitem', { name: /ART #1/ }))
+    await user.selectOptions(screen.getByLabelText('Recipient from the address book'), '0.0.1002-abcde')
+    await user.click(screen.getByRole('button', { name: 'Review transfer' }))
+    await screen.findByRole('group', { name: 'Confirm transfer' })
+    expect(screen.getByText(/charges custom fees/)).toBeInTheDocument()
+    const schedule = screen.getByRole('list', { name: 'Fee schedule' })
+    expect(schedule).toHaveTextContent('Royalty: 5/100')
+    expect(schedule).toHaveTextContent('charged to the RECEIVER')
+    // A send rejected by the backend policy shows its error.
+    backend.sendError = 'Sending it is disabled. You can allow such transfers in Settings.'
+    await user.click(screen.getByRole('button', { name: 'Sign and send' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('allow such transfers in Settings')
+  })
+
+  it('changes the NFT custom fee setting from Settings', async () => {
+    const user = userEvent.setup()
+    installBackend({ allowNftCustomFees: false })
+    render(<App />)
+    await unlock(user)
+    await user.click(screen.getByRole('button', { name: 'Settings' }))
+    await user.click(await screen.findByLabelText(/NFTs whose token charges custom fees/))
+    await waitFor(() => expect(backend.allowNftCustomFees).toBe(true))
+  })
+
+  it('sends an NFT from a watch-only wallet through a signing request', async () => {
+    const user = userEvent.setup()
+    installBackend({
+      wallets: [
+        { ...wallet('w1', 'Watcher', '0.0.1001'), secret_kind: 'watchonly', key_type: 'ed25519' },
+        wallet('w2', 'Trading', '0.0.1002'),
+      ],
+      overview: nftOverview,
+      tokenInfo: nftTokenInfo,
+    })
+    render(<App />)
+    await unlock(user)
+    await openAccount(user, 'Watcher')
+    await screen.findByRole('button', { name: 'Refresh transactions' })
+    await user.click(screen.getByRole('button', { name: 'Send' }))
+    await user.click(screen.getByRole('menuitem', { name: /ART #1/ }))
+    await user.selectOptions(screen.getByLabelText('Recipient from the address book'), '0.0.1002-abcde')
+    await user.click(screen.getByRole('button', { name: 'Review transfer' }))
+    await user.click(await screen.findByRole('button', { name: 'Create signing request' }))
+    const request = await screen.findByRole('group', { name: 'Signing request' })
+    expect(request).toHaveTextContent('Serial number1')
+    expect(request).toHaveTextContent('0.0.21')
+    expect(commandsCalled('prepare_unsigned_nft_transfer')[0].args).toMatchObject({
+      walletId: 'w1',
+      fromAccount: '0.0.1001',
+      tokenId: '0.0.21',
+      serialNumber: '1',
+    })
+    expect(commandsCalled('send_nft')).toHaveLength(0)
+    await user.type(screen.getByLabelText('Signature from the signer'), 'HVTX1-SIG:AB')
+    await user.click(screen.getByRole('button', { name: 'Submit signed transfer' }))
+    await screen.findByText('SUCCESS!')
+    expect(commandsCalled('submit_signed_request')).toHaveLength(1)
+  })
+
+  it('offers NFT tokens for dissociation only once no serials are owned', async () => {
+    const user = userEvent.setup()
+    installBackend({
+      wallets: [wallet('w1', 'Savings', '0.0.1001')],
+      overview: {
+        ...nftOverview,
+        tokens: [
+          ...nftOverview.tokens,
+          { token_id: '0.0.22', symbol: 'GONE', name: 'Gone', balance: '0', decimals: 0, is_nft: true },
+        ],
+      },
+      tokenInfo: nftTokenInfo,
+    })
+    render(<App />)
+    await unlock(user)
+    await openAccount(user, 'Savings')
+    await chooseMenu(user, 'Token management', 'Disassociate token')
+    const owned = screen.getByRole('option', { name: /ART \(0\.0\.21\)/ }) as HTMLOptionElement
+    expect(owned.disabled).toBe(true)
+    expect(owned.textContent).toContain('owns 2 NFT(s), must be 0')
+    const empty = screen.getByRole('option', { name: /GONE \(0\.0\.22\)/ }) as HTMLOptionElement
+    expect(empty.disabled).toBe(false)
+    expect(empty.textContent).toContain('NFT token')
   })
 })
 

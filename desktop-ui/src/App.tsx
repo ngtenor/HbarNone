@@ -143,6 +143,7 @@ function App() {
   const [activeTab, setActiveTab] = useState('home')
   const [utilityTab, setUtilityTab] = useState<UtilityTab>('create')
   const [addressBook, setAddressBook] = useState<AddressBookView>({ rows: [], allowExternalSends: false, allowExternalDeletes: false })
+  const [allowNftCustomFees, setAllowNftCustomFees] = useState(false)
   const [openWalletTabs, setOpenWalletTabs] = useState<string[]>([])
   const [legacyWallets, setLegacyWallets] = useState<WalletSummary[]>([])
   const [vaultView, setVaultView] = useState<VaultView>('loading')
@@ -408,6 +409,11 @@ function App() {
     void invoke<AddressBookView>('get_address_book')
       .then((view) => {
         if (!cancelled) setAddressBook(view)
+      })
+      .catch(() => undefined)
+    void invoke<boolean>('get_allow_nft_custom_fees')
+      .then((allowed) => {
+        if (!cancelled) setAllowNftCustomFees(allowed)
       })
       .catch(() => undefined)
     return () => {
@@ -1183,6 +1189,14 @@ function App() {
     }
   }
 
+  async function handleAllowNftCustomFees(allowed: boolean) {
+    try {
+      setAllowNftCustomFees(await invoke<boolean>('set_allow_nft_custom_fees', { allowed }))
+    } catch (failure) {
+      setError(errorMessage(failure))
+    }
+  }
+
   function closeWalletTab(walletId: string) {
     setOpenWalletTabs((existing) => existing.filter((id) => id !== walletId))
     if (creatingAccountWalletId === walletId) setCreatingAccountWalletId(null)
@@ -1716,6 +1730,28 @@ function App() {
                     onChange={(event) => void handleAllowExternalDeletes(event.target.checked)}
                   />
                   <span>Allow sending the funds of a deleted account to an account that is not in the address book</span>
+                </label>
+              </section>
+              <section className="panel settings-panel" aria-labelledby="nft-custom-fees-heading">
+                <div className="panel-heading">
+                  <div>
+                    <p className="eyebrow">SAFETY</p>
+                    <h2 id="nft-custom-fees-heading">Sending NFTs</h2>
+                  </div>
+                </div>
+                <p className="dialog-copy">
+                  Some NFTs charge custom fees on every transfer, such as artist royalties.
+                  A royalty&apos;s fallback fee can even charge the <strong>receiver</strong>.
+                  The fee schedule is shown before each send.
+                </p>
+                <label className="testnet-acknowledge settings-check" htmlFor="allow-nft-custom-fees">
+                  <input
+                    id="allow-nft-custom-fees"
+                    type="checkbox"
+                    checked={allowNftCustomFees}
+                    onChange={(event) => void handleAllowNftCustomFees(event.target.checked)}
+                  />
+                  <span>Allow sending NFTs whose token charges custom fees</span>
                 </label>
               </section>
               <section className="panel settings-panel create-panel" aria-labelledby="change-password-heading">

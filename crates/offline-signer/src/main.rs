@@ -124,6 +124,22 @@ fn show(summary: &Summary) {
             );
             println!("  Memo          {:?}", summary.memo);
         }
+        Action::NftTransfer {
+            token,
+            serial_number,
+            recipient,
+        } => {
+            println!("  Action        SEND AN NFT");
+            println!("  Network       Hedera Testnet (no real value)");
+            println!("  From          {}", with_checksum(&summary.payer));
+            println!("  To            {}", with_checksum(recipient));
+            println!("  Token ID      {}", with_checksum(token));
+            println!("  Serial number {serial_number}");
+            println!(
+                "  The NFT's name and image cannot be checked here. Compare the token ID and serial number with the app."
+            );
+            println!("  Memo          {:?}", summary.memo);
+        }
         Action::TokenAssociate { token } => {
             println!("  Action        ASSOCIATE A TOKEN (lets the account hold it)");
             println!("  Network       Hedera Testnet (no real value)");
@@ -239,6 +255,7 @@ fn run() -> Result<(), String> {
         Action::KeyUpdate { .. }
         | Action::Transfer { .. }
         | Action::TokenTransfer { .. }
+        | Action::NftTransfer { .. }
         | Action::TokenAssociate { .. }
         | Action::TokenDissociate { .. } => {}
     }
@@ -273,10 +290,8 @@ fn run_key_update(request: &str, summary: &Summary) -> Result<(), String> {
                 );
             }
         }
-        let as_qr = match ask(
-            "Type 1 to sign and show the signature as a QR code,\n\
-             2 to show it in plain text, anything else to cancel: ",
-        )?
+        let as_qr = match ask("Type 1 to sign and show the signature as a QR code,\n\
+             2 to show it in plain text, anything else to cancel: ")?
         .as_str()
         {
             "1" => true,

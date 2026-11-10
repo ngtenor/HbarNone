@@ -814,6 +814,118 @@ async fn check_token_send(
     Ok((units, info.decimals))
 }
 
+/// Parses an NFT serial number such as `7`.
+fn parse_serial_number(input: &str) -> Result<i64, String> {
+    let text = input.trim();
+    if text.is_empty() || text.len() > 19 || !text.bytes().all(|b| b.is_ascii_digit()) {
+        return Err("Enter the NFT's serial number (a positive whole number).".to_string());
+    }
+    let serial = text
+        .parse::<i64>()
+        .map_err(|_| "The serial number is too large.".to_string())?;
+    if serial <= 0 {
+        return Err("Enter the NFT's serial number (a positive whole number).".to_string());
+    }
+    Ok(serial)
+}
+
+/// Mirror checks shared by hot and watch-only NFT sends: the token is a live
+/// NFT, the sender owns that serial number, the receiver is associated, and
+/// custom fees are only accepted when Settings allow them.
+async fn check_nft_send(
+    mirror: &MirrorClient,
+    sender: &str,
+    recipient: &str,
+    token_id: &str,
+    serial_number: i64,
+    allow_custom_fees: bool,
+) -> Result<(), String> {
+    let info = mirror
+        .token_info(token_id)
+        .await?
+        .ok_or_else(|| "The mirror node does not know this token.".to_string())?;
+    if info.deleted {
+        return Err("This token has been deleted.".to_string());
+    }
+    if info.token_type != "NON_FUNGIBLE_UNIQUE" {
+        return Err("This token is not an NFT. Use Send token instead.".to_string());
+    }
+    if !info.custom_fees.is_empty() && !allow_custom_fees {
+        return Err(
+            "This NFT's token charges custom fees (for example artist royalties). \
+             Sending it is disabled. You can allow such transfers in Settings."
+                .to_string(),
+        );
+    }
+    let nft = mirror
+        .nft_info(token_id, serial_number)
+        .await?
+        .ok_or_else(|| "The mirror node does not know that serial number.".to_string())?;
+    if nft.deleted {
+        return Err("That NFT has been deleted.".to_string());
+    }
+    if nft.owner != sender {
+        return Err("This account does not own that NFT.".to_string());
+    }
+    let receiver_associated = mirror
+        .is_associated(recipient, token_id)
+        .await?
+        .ok_or_else(|| "The recipient was not found on Testnet.".to_string())?;
+    if !receiver_associated {
+        return Err(
+            "The recipient has not associated this token, so it cannot receive it yet.".to_string(),
+        );
+    }
+    Ok(())
+}
+
+/// Sends one NFT by token ID and serial number. The mirror node is checked
+/// first so a transfer that would fail (not an NFT, not owned, receiver not
+/// associated, custom fees not allowed) never costs a fee.
+#[tauri::command]
+async fn send_nft(
+    wallet_id: String,
+    from_account: String,
+    recipient: String,
+    token_id: String,
+    serial_number: String,
+    memo: String,
+    state: State<'_, AppState>,
+) -> Result<SendResult, String> {
+    let sender = testnet_account_of(&state, &wallet_id, &from_account)?;
+    let token_id = validate_account_id(&token_id)?;
+    let serial = parse_serial_number(&serial_number)?;
+    let recipient = parse_account_input(&recipient, Network::Testnet, true)?;
+    ensure_send_allowed(&state, &recipient)?;
+    let allow_custom_fees = lock_service(&state)?.allow_nft_custom_fees()?;
+    let mirror = MirrorClient::testnet()?;
+    check_nft_send(
+        &mirror,
+        &sender,
+        &recipient,
+        &token_id,
+        serial,
+        allow_custom_fees,
+    )
+    .await?;
+    let (key_type, secret) = lock_service(&state)?
+        .with_wallet_key(&wallet_id, |key_type, secret| {
+            Ok((key_type, Zeroizing::new(*secret)))
+        })?;
+    let receipt = hedera_tx::submit::send_testnet_nft(
+        (key_type, &secret),
+        &sender,
+        &recipient,
+        &token_id,
+        serial,
+        &memo,
+    )
+    .await?;
+    Ok(SendResult {
+        transaction_id: receipt.transaction_id,
+    })
+}
+
 /// Mirror checks shared by hot and watch-only associations.
 async fn check_associate(
     mirror: &MirrorClient,
@@ -827,13 +939,14 @@ async fn check_associate(
     if info.deleted {
         return Err("This token has been deleted.".to_string());
     }
-    if info.token_type != "FUNGIBLE_COMMON" {
-        return Err("Only fungible tokens are supported for now.".to_string());
+    if !matches!(
+        info.token_type.as_str(),
+        "FUNGIBLE_COMMON" | "NON_FUNGIBLE_UNIQUE"
+    ) {
+        return Err("Only fungible tokens and NFTs are supported.".to_string());
     }
-    if let Some(overview) = mirror.account_overview(account).await? {
-        if overview.tokens.iter().any(|t| t.token_id == token_id) {
-            return Err("This account is already associated with the token.".to_string());
-        }
+    if mirror.is_associated(account, token_id).await? == Some(true) {
+        return Err("This account is already associated with the token.".to_string());
     }
     Ok(())
 }
@@ -844,6 +957,35 @@ async fn check_dissociate(
     account: &str,
     token_id: &str,
 ) -> Result<(), String> {
+    let info = mirror.token_info(token_id).await?;
+    if let Some(info) = &info {
+        if info.token_type == "NON_FUNGIBLE_UNIQUE" {
+            let associated = mirror
+                .is_associated(account, token_id)
+                .await?
+                .ok_or_else(|| "This account was not found on Testnet.".to_string())?;
+            if !associated {
+                return Err("This account is not associated with that token.".to_string());
+            }
+            // NFTs of a deleted token are discarded by the network on dissociation.
+            if !info.deleted {
+                if !mirror
+                    .account_nfts_of_token(account, token_id)
+                    .await?
+                    .is_empty()
+                {
+                    return Err(
+                        "This account still owns serial numbers of that NFT. Send them away first."
+                            .to_string(),
+                    );
+                }
+                if info.treasury == account {
+                    return Err("The treasury account cannot remove its own token.".to_string());
+                }
+            }
+            return Ok(());
+        }
+    }
     let overview = mirror
         .account_overview(account)
         .await?
@@ -861,7 +1003,7 @@ async fn check_dissociate(
                 .to_string(),
         );
     }
-    if let Some(info) = mirror.token_info(token_id).await? {
+    if let Some(info) = &info {
         if !info.deleted && info.treasury == account {
             return Err("The treasury account cannot remove its own token.".to_string());
         }
@@ -876,7 +1018,8 @@ struct SigningRequest {
     qr_size: usize,
     /// One flag per module, row by row; true is dark.
     qr_modules: Vec<bool>,
-    /// "transfer", "delete", "create", "token-transfer", "token-associate" or "token-dissociate".
+    /// "transfer", "delete", "create", "token-transfer", "nft-transfer",
+    /// "token-associate" or "token-dissociate".
     action: String,
     /// The account that pays and whose key signs.
     sender: String,
@@ -893,6 +1036,8 @@ struct SigningRequest {
     /// The token amount in its smallest unit, as text.
     token_units: String,
     token_decimals: u32,
+    /// The serial number of an NFT transfer, as text; empty otherwise.
+    serial_number: String,
     memo: String,
     expires_at_seconds: i64,
 }
@@ -947,6 +1092,13 @@ fn signing_request(request: hedera_tx::offline::UnsignedRequest) -> Result<Signi
             String::new(),
             0,
         ),
+        Action::NftTransfer { receiver, .. } => (
+            "nft-transfer",
+            shown(receiver),
+            String::new(),
+            String::new(),
+            0,
+        ),
         Action::TokenAssociate { .. } => (
             "token-associate",
             String::new(),
@@ -976,10 +1128,15 @@ fn signing_request(request: hedera_tx::offline::UnsignedRequest) -> Result<Signi
             decimals,
             ..
         } => (token.clone(), amount.to_string(), *decimals),
+        Action::NftTransfer { token, .. } => (token.clone(), String::new(), 0),
         Action::TokenAssociate { token } | Action::TokenDissociate { token } => {
             (token.clone(), String::new(), 0)
         }
         _ => (String::new(), String::new(), 0),
+    };
+    let serial_number = match &d.action {
+        Action::NftTransfer { serial_number, .. } => serial_number.to_string(),
+        _ => String::new(),
     };
     Ok(SigningRequest {
         payload: request.payload,
@@ -998,6 +1155,7 @@ fn signing_request(request: hedera_tx::offline::UnsignedRequest) -> Result<Signi
         token_id,
         token_units,
         token_decimals,
+        serial_number,
         memo: d.memo,
         expires_at_seconds: d.expires_at_seconds,
     })
@@ -1046,6 +1204,40 @@ async fn prepare_unsigned_token_transfer(
     let units = i64::try_from(units).map_err(|_| "The amount is too large.".to_string())?;
     signing_request(hedera_tx::offline::build_token_transfer_request(
         &sender, &recipient, &token_id, units, decimals, &memo,
+    )?)
+}
+
+/// Builds an unsigned NFT transfer for a watch-only wallet, after the same
+/// mirror checks as a hot-wallet send.
+#[tauri::command]
+async fn prepare_unsigned_nft_transfer(
+    wallet_id: String,
+    from_account: String,
+    recipient: String,
+    token_id: String,
+    serial_number: String,
+    memo: String,
+    state: State<'_, AppState>,
+) -> Result<SigningRequest, String> {
+    require_watch_only(&state, &wallet_id)?;
+    let sender = testnet_account_of(&state, &wallet_id, &from_account)?;
+    let token_id = validate_account_id(&token_id)?;
+    let serial = parse_serial_number(&serial_number)?;
+    let recipient = parse_account_input(&recipient, Network::Testnet, true)?;
+    ensure_send_allowed(&state, &recipient)?;
+    let allow_custom_fees = lock_service(&state)?.allow_nft_custom_fees()?;
+    let mirror = MirrorClient::testnet()?;
+    check_nft_send(
+        &mirror,
+        &sender,
+        &recipient,
+        &token_id,
+        serial,
+        allow_custom_fees,
+    )
+    .await?;
+    signing_request(hedera_tx::offline::build_nft_transfer_request(
+        &sender, &recipient, &token_id, serial, &memo,
     )?)
 }
 
@@ -1165,6 +1357,13 @@ async fn submit_signed_request(
     match &verified.description.action {
         Action::Transfer { receiver, .. } | Action::TokenTransfer { receiver, .. } => {
             ensure_send_allowed(&state, receiver)?
+        }
+        Action::NftTransfer {
+            token, receiver, ..
+        } => {
+            ensure_send_allowed(&state, receiver)?;
+            // The Settings policy also covers requests built outside this app.
+            ensure_nft_custom_fees_allowed(&state, token).await?;
         }
         Action::TokenAssociate { .. } | Action::TokenDissociate { .. } => {}
         Action::DeleteAccount { account, recipient } => {
@@ -1494,6 +1693,39 @@ fn ensure_send_allowed(state: &AppState, recipient: &str) -> Result<(), String> 
                 .to_string(),
         )
     }
+}
+
+/// Rejects an NFT transfer whose token carries custom fees (or whose fee
+/// schedule cannot be read) unless Settings allow such transfers.
+async fn ensure_nft_custom_fees_allowed(state: &AppState, token_id: &str) -> Result<(), String> {
+    if lock_service(state)?.allow_nft_custom_fees()? {
+        return Ok(());
+    }
+    let has_fees = MirrorClient::testnet()?
+        .token_info(token_id)
+        .await?
+        .is_none_or(|info| !info.custom_fees.is_empty());
+    if has_fees {
+        Err(
+            "This NFT's token charges custom fees (for example artist royalties). \
+             Sending it is disabled. You can allow such transfers in Settings."
+                .to_string(),
+        )
+    } else {
+        Ok(())
+    }
+}
+
+#[tauri::command]
+fn get_allow_nft_custom_fees(state: State<'_, AppState>) -> Result<bool, String> {
+    lock_service(&state)?.allow_nft_custom_fees()
+}
+
+#[tauri::command]
+fn set_allow_nft_custom_fees(allowed: bool, state: State<'_, AppState>) -> Result<bool, String> {
+    lock_service(&state)?
+        .set_allow_nft_custom_fees(allowed, &state.store_path.to_string_lossy())?;
+    lock_service(&state)?.allow_nft_custom_fees()
 }
 
 #[tauri::command]
@@ -1882,6 +2114,7 @@ fn main() {
             prepare_unsigned_delete,
             prepare_unsigned_create,
             prepare_unsigned_token_transfer,
+            prepare_unsigned_nft_transfer,
             prepare_unsigned_token_association,
             prepare_unsigned_move,
             submit_signed_request,
@@ -1895,9 +2128,12 @@ fn main() {
             get_supply_tokens,
             associate_token,
             send_token,
+            send_nft,
             dissociate_token,
             get_hidden_tokens,
             set_token_hidden,
+            get_allow_nft_custom_fees,
+            set_allow_nft_custom_fees,
             get_transaction_result,
             get_account_overview,
             send_hbar,

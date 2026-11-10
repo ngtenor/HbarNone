@@ -13,11 +13,12 @@ use wallet_core::wallet_service::validate_account_id;
 
 use crate::{
     ChangeKeyParams, CreateAccountParams, CreateTokenParams, DeleteAccountParams,
-    DeleteTokenParams, MAX_TOKEN_DECIMALS, TokenAssociationParams, TokenSupplyParams,
-    TokenTransferParams, Transaction, TransactionResponse, TransferParams, change_key_body_bytes,
-    create_account_body_bytes, create_token_body_bytes, delete_account_body_bytes,
-    delete_token_body_bytes, sign_body, sign_body_multi, token_association_body_bytes,
-    token_supply_body_bytes, token_transfer_body_bytes, transfer_body_bytes,
+    DeleteTokenParams, MAX_TOKEN_DECIMALS, NftTransferParams, TokenAssociationParams,
+    TokenSupplyParams, TokenTransferParams, Transaction, TransactionResponse, TransferParams,
+    change_key_body_bytes, create_account_body_bytes, create_token_body_bytes,
+    delete_account_body_bytes, delete_token_body_bytes, nft_transfer_body_bytes, sign_body,
+    sign_body_multi, token_association_body_bytes, token_supply_body_bytes,
+    token_transfer_body_bytes, transfer_body_bytes,
 };
 
 /// Testnet node account 0.0.3 and its plain-gRPC endpoint.
@@ -485,6 +486,48 @@ pub async fn send_testnet_token(
     if response.precheck_code != 0 {
         return Err(format!(
             "The node rejected the token transfer: {}",
+            precheck_message(response.precheck_code)
+        ));
+    }
+    Ok(SendReceipt {
+        transaction_id: format!("0.0.{}-{}-{:09}", sender_id.2, seconds, nanos),
+    })
+}
+
+/// Sends one NFT (`token`, `serial_number`) from the sender's own account.
+/// The sender's key signs and pays the fee.
+pub async fn send_testnet_nft(
+    key: (KeyType, &[u8; 32]),
+    sender: &str,
+    receiver: &str,
+    token: &str,
+    serial_number: i64,
+    memo: &str,
+) -> Result<SendReceipt, String> {
+    if memo.len() > MAX_MEMO_BYTES {
+        return Err("The memo is too long (100 bytes at most).".to_string());
+    }
+    let sender_id = parse_account(sender)?;
+    let (seconds, nanos) = start_time()?;
+    let params = NftTransferParams {
+        sender: sender_id,
+        receiver: parse_account(receiver)?,
+        token: parse_account(token)?,
+        serial_number,
+        node: TESTNET_NODE_ACCOUNT,
+        valid_start_seconds: seconds,
+        valid_start_nanos: nanos,
+        max_fee_tinybars: MAX_FEE_TINYBARS,
+        memo: memo.to_string(),
+    };
+    let body = nft_transfer_body_bytes(&params)?;
+    let encoded = sign_body(&body, key.0, key.1)?;
+    let transaction =
+        <Transaction as prost::Message>::decode(encoded.as_slice()).map_err(|e| e.to_string())?;
+    let response = submit(transaction, TRANSFER_PATH).await?;
+    if response.precheck_code != 0 {
+        return Err(format!(
+            "The node rejected the NFT transfer: {}",
             precheck_message(response.precheck_code)
         ));
     }

@@ -21,10 +21,11 @@ use crate::submit::{
     parse_account, submit,
 };
 use crate::{
-    ChangeKeyParams, CreateAccountParams, DeleteAccountParams, SignatureMap, SignaturePair,
-    SignedTransaction, TokenAssociationParams, TokenTransferParams, Transaction, TransactionBody,
-    TransferParams, change_key_body_bytes_valid_for, create_account_body_bytes_valid_for,
-    delete_account_body_bytes_valid_for, signature_pair, token_association_body_bytes_valid_for,
+    ChangeKeyParams, CreateAccountParams, DeleteAccountParams, NftTransferParams, SignatureMap,
+    SignaturePair, SignedTransaction, TokenAssociationParams, TokenTransferParams, Transaction,
+    TransactionBody, TransferParams, change_key_body_bytes_valid_for,
+    create_account_body_bytes_valid_for, delete_account_body_bytes_valid_for,
+    nft_transfer_body_bytes_valid_for, signature_pair, token_association_body_bytes_valid_for,
     token_transfer_body_bytes_valid_for, transfer_body_bytes_valid_for,
 };
 
@@ -59,6 +60,12 @@ pub enum Action {
         receiver: String,
         amount: i64,
         decimals: u32,
+    },
+    /// Sends one NFT of `token`, identified by its serial number.
+    NftTransfer {
+        token: String,
+        serial_number: i64,
+        receiver: String,
     },
     /// Lets the payer's account hold `token`.
     TokenAssociate {
@@ -112,6 +119,13 @@ impl RequestDescription {
                 decimals,
             } => {
                 format!("send {amount} units of token {token} ({decimals} decimals) to {receiver}")
+            }
+            Action::NftTransfer {
+                token,
+                serial_number,
+                receiver,
+            } => {
+                format!("send NFT {token} serial {serial_number} to {receiver}")
             }
             Action::TokenAssociate { token } => format!("associate token {token}"),
             Action::TokenDissociate { token } => format!("dissociate token {token}"),
@@ -260,6 +274,32 @@ pub fn build_token_transfer_request(
     finish(token_transfer_body_bytes_valid_for(&params, VALID_SECONDS)?)
 }
 
+/// Builds an unsigned NFT transfer of one serial number.
+pub fn build_nft_transfer_request(
+    sender: &str,
+    receiver: &str,
+    token: &str,
+    serial_number: i64,
+    memo: &str,
+) -> Result<UnsignedRequest, String> {
+    if memo.len() > MAX_MEMO_BYTES {
+        return Err("The memo is too long (100 bytes at most).".to_string());
+    }
+    let (seconds, nanos) = start_time()?;
+    let params = NftTransferParams {
+        sender: parse_account(sender)?,
+        receiver: parse_account(receiver)?,
+        token: parse_account(token)?,
+        serial_number,
+        node: TESTNET_NODE_ACCOUNT,
+        valid_start_seconds: seconds,
+        valid_start_nanos: nanos,
+        max_fee_tinybars: MAX_FEE_TINYBARS,
+        memo: memo.to_string(),
+    };
+    finish(nft_transfer_body_bytes_valid_for(&params, VALID_SECONDS)?)
+}
+
 /// Builds an unsigned association (or dissociation) of `token` with `payer`'s own account.
 pub fn build_token_association_request(
     payer: &str,
@@ -402,31 +442,58 @@ pub fn describe_body(body_bytes: &[u8]) -> Result<RequestDescription, String> {
             return Err(bad());
         };
         let token = list.token.as_ref().ok_or_else(bad)?;
-        let decimals = list.expected_decimals.as_ref().ok_or_else(bad)?.value;
-        let [debit, credit] = list.transfers.as_slice() else {
-            return Err(bad());
-        };
-        let debit_account = debit.account.as_ref().ok_or_else(bad)?;
-        let credit_account = credit.account.as_ref().ok_or_else(bad)?;
-        if transfer.transfers.is_some()
-            || !token_ok(token)
-            || debit_account != payer
-            || credit_account == payer
-            || !on_main(credit_account)
-            || debit.amount >= 0
-            || debit.amount.checked_neg() != Some(credit.amount)
-        {
+        if transfer.transfers.is_some() || !token_ok(token) {
             return Err(bad());
         }
-        (
-            Action::TokenTransfer {
-                token: token_text(token),
-                receiver: account_text(credit_account),
-                amount: credit.amount,
-                decimals,
-            },
-            body.memo.clone(),
-        )
+        if !list.nft_transfers.is_empty() {
+            // An NFT transfer: exactly one serial number, nothing fungible.
+            let [nft] = list.nft_transfers.as_slice() else {
+                return Err(bad());
+            };
+            let sender = nft.sender.as_ref().ok_or_else(bad)?;
+            let receiver = nft.receiver.as_ref().ok_or_else(bad)?;
+            if !list.transfers.is_empty()
+                || list.expected_decimals.is_some()
+                || sender != payer
+                || receiver == payer
+                || !on_main(receiver)
+                || nft.serial_number <= 0
+            {
+                return Err(bad());
+            }
+            (
+                Action::NftTransfer {
+                    token: token_text(token),
+                    serial_number: nft.serial_number,
+                    receiver: account_text(receiver),
+                },
+                body.memo.clone(),
+            )
+        } else {
+            let decimals = list.expected_decimals.as_ref().ok_or_else(bad)?.value;
+            let [debit, credit] = list.transfers.as_slice() else {
+                return Err(bad());
+            };
+            let debit_account = debit.account.as_ref().ok_or_else(bad)?;
+            let credit_account = credit.account.as_ref().ok_or_else(bad)?;
+            if debit_account != payer
+                || credit_account == payer
+                || !on_main(credit_account)
+                || debit.amount >= 0
+                || debit.amount.checked_neg() != Some(credit.amount)
+            {
+                return Err(bad());
+            }
+            (
+                Action::TokenTransfer {
+                    token: token_text(token),
+                    receiver: account_text(credit_account),
+                    amount: credit.amount,
+                    decimals,
+                },
+                body.memo.clone(),
+            )
+        }
     } else if let Some(transfer) = &body.crypto_transfer {
         let amounts = &transfer.transfers.as_ref().ok_or_else(bad)?.amounts;
         let [debit, credit] = amounts.as_slice() else {
@@ -696,6 +763,7 @@ async fn submit_action(
         Action::DeleteAccount { .. } => (DELETE_PATH, "account deletion"),
         Action::CreateAccount { .. } => (CREATE_PATH, "account creation"),
         Action::TokenTransfer { .. } => (TRANSFER_PATH, "token transfer"),
+        Action::NftTransfer { .. } => (TRANSFER_PATH, "NFT transfer"),
         Action::TokenAssociate { .. } => (TOKEN_ASSOCIATE_PATH, "token association"),
         Action::TokenDissociate { .. } => (TOKEN_DISSOCIATE_PATH, "token dissociation"),
         Action::KeyUpdate { .. } => (UPDATE_PATH, "key change"),
@@ -1000,5 +1068,99 @@ mod tests {
 
     fn request_body() -> TransactionBody {
         TransactionBody::decode(decode_request(&request().payload).unwrap().0.as_slice()).unwrap()
+    }
+
+    #[test]
+    fn nft_requests_describe_and_sign() {
+        let r = build_nft_transfer_request("0.0.1001", "0.0.1002", "0.0.5005", 7, "art").unwrap();
+        assert_eq!(r.description.payer, "0.0.1001");
+        assert_eq!(r.description.memo, "art");
+        assert_eq!(
+            r.description.action,
+            Action::NftTransfer {
+                token: "0.0.5005".to_string(),
+                serial_number: 7,
+                receiver: "0.0.1002".to_string(),
+            }
+        );
+        assert_eq!(
+            r.description.expires_at_seconds - r.description.valid_start_seconds,
+            VALID_SECONDS
+        );
+        assert_eq!(decode_request(&r.payload).unwrap().1, r.description);
+        let sig = sign_request(&r.payload, KeyType::Ed25519, &[7u8; 32]).unwrap();
+        assert!(assemble(&r.payload, &sig).is_ok());
+        assert!(build_nft_transfer_request("0.0.1001", "0.0.1001", "0.0.5", 1, "").is_err());
+        assert!(build_nft_transfer_request("0.0.1001", "0.0.1002", "0.0.5", 0, "").is_err());
+        assert!(build_nft_transfer_request("0.0.1001", "0.0.1002", "0.0.5", -3, "").is_err());
+        assert!(build_nft_transfer_request("0.0.1001", "0.0.1002", "1.2.5", 1, "").is_err());
+    }
+
+    #[test]
+    fn rejects_tampered_nft_bodies() {
+        let r = build_nft_transfer_request("0.0.1001", "0.0.1002", "0.0.5005", 7, "").unwrap();
+        let (body, _) = decode_request(&r.payload).unwrap();
+        let edit = |change: fn(&mut TransactionBody)| {
+            let mut decoded = TransactionBody::decode(body.as_slice()).unwrap();
+            change(&mut decoded);
+            decoded.encode_to_vec()
+        };
+        // Fungible amounts hidden alongside the NFT transfer.
+        let with_amounts = edit(|b| {
+            b.crypto_transfer.as_mut().unwrap().token_transfers[0].transfers =
+                vec![crate::AccountAmount {
+                    account: Some(crate::AccountId {
+                        shard: 0,
+                        realm: 0,
+                        num: 1001,
+                    }),
+                    amount: -1,
+                }]
+        });
+        assert!(describe_body(&with_amounts).is_err());
+        // A second serial number.
+        let two_serials = edit(|b| {
+            let list = &mut b.crypto_transfer.as_mut().unwrap().token_transfers[0];
+            let extra = list.nft_transfers[0].clone();
+            list.nft_transfers.push(extra);
+        });
+        assert!(describe_body(&two_serials).is_err());
+        // A sender other than the payer.
+        let other_sender = edit(|b| {
+            b.crypto_transfer.as_mut().unwrap().token_transfers[0].nft_transfers[0]
+                .sender
+                .as_mut()
+                .unwrap()
+                .num = 9
+        });
+        assert!(describe_body(&other_sender).is_err());
+        // The payer sending to itself.
+        let to_self = edit(|b| {
+            b.crypto_transfer.as_mut().unwrap().token_transfers[0].nft_transfers[0]
+                .receiver
+                .as_mut()
+                .unwrap()
+                .num = 1001
+        });
+        assert!(describe_body(&to_self).is_err());
+        // A zero serial number.
+        let zero_serial = edit(|b| {
+            b.crypto_transfer.as_mut().unwrap().token_transfers[0].nft_transfers[0].serial_number =
+                0
+        });
+        assert!(describe_body(&zero_serial).is_err());
+        // Decimals do not belong on an NFT transfer.
+        let with_decimals = edit(|b| {
+            b.crypto_transfer.as_mut().unwrap().token_transfers[0].expected_decimals =
+                Some(crate::UInt32Value { value: 2 })
+        });
+        assert!(describe_body(&with_decimals).is_err());
+        // An HBAR transfer hidden alongside the NFT transfer.
+        let with_hbar = edit(|b| {
+            b.crypto_transfer.as_mut().unwrap().transfers = Some(crate::TransferList {
+                amounts: Vec::new(),
+            })
+        });
+        assert!(describe_body(&with_hbar).is_err());
     }
 }

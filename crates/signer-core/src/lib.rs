@@ -98,8 +98,20 @@ struct TokenTransferList {
     token: Option<TokenId>,
     #[prost(message, repeated, tag = "2")]
     transfers: Vec<AccountAmount>,
+    #[prost(message, repeated, tag = "3")]
+    nft_transfers: Vec<NftTransfer>,
     #[prost(message, optional, tag = "4")]
     expected_decimals: Option<UInt32Value>,
+}
+
+#[derive(Clone, PartialEq, Message)]
+struct NftTransfer {
+    #[prost(message, optional, tag = "1")]
+    sender: Option<AccountId>,
+    #[prost(message, optional, tag = "2")]
+    receiver: Option<AccountId>,
+    #[prost(int64, tag = "3")]
+    serial_number: i64,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -207,6 +219,13 @@ pub enum Action {
         recipient: String,
         amount: i64,
         decimals: u32,
+    },
+    /// Sends one NFT of `token`, identified by its serial number. The token's
+    /// name and metadata cannot be checked offline.
+    NftTransfer {
+        token: String,
+        serial_number: i64,
+        recipient: String,
     },
     /// Lets the payer's account hold `token`.
     TokenAssociate {
@@ -410,34 +429,61 @@ fn summarise(bytes: &[u8]) -> Result<Summary, Reject> {
             return Err(No("a token transfer cannot also move HBAR"));
         }
         let token = list.token.as_ref().ok_or(No("no token"))?;
-        let decimals = list
-            .expected_decimals
-            .as_ref()
-            .ok_or(No("no decimals"))?
-            .value;
-        let [debit, credit] = list.transfers.as_slice() else {
-            return Err(No("must be exactly one payer and one recipient"));
-        };
-        let from = debit.account.as_ref().ok_or(No("missing account"))?;
-        let to = credit.account.as_ref().ok_or(No("missing account"))?;
-        if !token_ok(token)
-            || from != payer
-            || to == payer
-            || !on_main(to)
-            || debit.amount >= 0
-            || debit.amount.checked_neg() != Some(credit.amount)
-        {
-            return Err(No("amounts do not form a simple token payment"));
+        if !token_ok(token) {
+            return Err(No("the token is not a shard 0 realm 0 token"));
         }
-        (
-            Action::TokenTransfer {
-                token: token_text(token),
-                recipient: id_text(to),
-                amount: credit.amount,
-                decimals,
-            },
-            body.memo.clone(),
-        )
+        if !list.nft_transfers.is_empty() {
+            let [nft] = list.nft_transfers.as_slice() else {
+                return Err(No("must move exactly one NFT"));
+            };
+            if !list.transfers.is_empty() {
+                return Err(No("an NFT transfer cannot also move token amounts"));
+            }
+            if list.expected_decimals.is_some() {
+                return Err(No("an NFT transfer has no decimals"));
+            }
+            let from = nft.sender.as_ref().ok_or(No("missing account"))?;
+            let to = nft.receiver.as_ref().ok_or(No("missing account"))?;
+            if from != payer || to == payer || !on_main(to) || nft.serial_number <= 0 {
+                return Err(No("not a simple NFT payment from the payer"));
+            }
+            (
+                Action::NftTransfer {
+                    token: token_text(token),
+                    serial_number: nft.serial_number,
+                    recipient: id_text(to),
+                },
+                body.memo.clone(),
+            )
+        } else {
+            let decimals = list
+                .expected_decimals
+                .as_ref()
+                .ok_or(No("no decimals"))?
+                .value;
+            let [debit, credit] = list.transfers.as_slice() else {
+                return Err(No("must be exactly one payer and one recipient"));
+            };
+            let from = debit.account.as_ref().ok_or(No("missing account"))?;
+            let to = credit.account.as_ref().ok_or(No("missing account"))?;
+            if from != payer
+                || to == payer
+                || !on_main(to)
+                || debit.amount >= 0
+                || debit.amount.checked_neg() != Some(credit.amount)
+            {
+                return Err(No("amounts do not form a simple token payment"));
+            }
+            (
+                Action::TokenTransfer {
+                    token: token_text(token),
+                    recipient: id_text(to),
+                    amount: credit.amount,
+                    decimals,
+                },
+                body.memo.clone(),
+            )
+        }
     } else if let Some(transfer) = &body.crypto_transfer {
         let list = transfer.transfers.as_ref().ok_or(No("no transfer"))?;
         let [debit, credit] = list.amounts.as_slice() else {
@@ -703,8 +749,8 @@ pub fn with_checksum(account: &str) -> String {
 mod tests {
     use super::*;
     use hedera_tx::offline::{
-        assemble, build_create_request, build_delete_request, build_request,
-        build_token_association_request, build_token_transfer_request,
+        assemble, build_create_request, build_delete_request, build_nft_transfer_request,
+        build_request, build_token_association_request, build_token_transfer_request,
     };
 
     const NOW: i64 = 1_700_000_000;
@@ -1047,6 +1093,69 @@ mod tests {
         ] {
             assert!(parse_request(&bad).is_err(), "should reject {bad}");
         }
+    }
+
+    #[test]
+    fn shows_nft_requests_and_rejects_unsafe_ones() {
+        let send = build_nft_transfer_request("0.0.1001", "0.0.1002", "0.0.5005", 7, "art")
+            .unwrap()
+            .payload;
+        let (_, s) = parse_request(&send).unwrap();
+        assert_eq!(s.payer, "0.0.1001");
+        assert_eq!(
+            s.action,
+            Action::NftTransfer {
+                token: "0.0.5005".to_string(),
+                serial_number: 7,
+                recipient: "0.0.1002".to_string(),
+            }
+        );
+        assert_eq!(s.memo, "art");
+
+        fn nft(b: &mut TransactionBody) -> &mut NftTransfer {
+            &mut b.crypto_transfer.as_mut().unwrap().token_transfers[0].nft_transfers[0]
+        }
+        let with_amounts = edit_body(&send, |b| {
+            b.crypto_transfer.as_mut().unwrap().token_transfers[0].transfers = vec![AccountAmount {
+                account: None,
+                amount: -1,
+            }]
+        });
+        let with_decimals = edit_body(&send, |b| {
+            b.crypto_transfer.as_mut().unwrap().token_transfers[0].expected_decimals =
+                Some(UInt32Value { value: 2 })
+        });
+        let two_serials = edit_body(&send, |b| {
+            let extra =
+                b.crypto_transfer.as_ref().unwrap().token_transfers[0].nft_transfers[0].clone();
+            b.crypto_transfer.as_mut().unwrap().token_transfers[0]
+                .nft_transfers
+                .push(extra)
+        });
+        let other_sender = edit_body(&send, |b| nft(b).sender.as_mut().unwrap().num = 9);
+        let to_self = edit_body(&send, |b| nft(b).receiver.as_mut().unwrap().num = 1001);
+        let zero_serial = edit_body(&send, |b| nft(b).serial_number = 0);
+        let hbar_too = edit_body(&send, |b| {
+            b.crypto_transfer.as_mut().unwrap().transfers = Some(TransferList {
+                amounts: Vec::new(),
+            })
+        });
+        for bad in [
+            with_amounts,
+            with_decimals,
+            two_serials,
+            other_sender,
+            to_self,
+            zero_serial,
+            hbar_too,
+        ] {
+            assert!(parse_request(&bad).is_err(), "should reject {bad}");
+        }
+
+        // The signed reply is accepted by the app's verifier.
+        let key = SigningKey::new(KeyKind::Ed25519, [7u8; 32]).unwrap();
+        let reply = sign(&send, &key, now()).unwrap();
+        assert!(assemble(&send, &reply).is_ok());
     }
 
     #[test]
