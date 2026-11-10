@@ -132,14 +132,17 @@ pub struct TransactionBody {
     pub token_dissociation: Option<TokenAssociationBody>,
 }
 
-/// The body of both `TokenMint` and `TokenBurn` for a fungible token. The
-/// amount is in the token's smallest unit.
+/// The body of both `TokenMint` and `TokenBurn`. For a fungible token the
+/// amount is in the token's smallest unit; an NFT mint instead carries one
+/// metadata entry per new serial number.
 #[derive(Clone, PartialEq, Message)]
 pub struct TokenSupplyBody {
     #[prost(message, optional, tag = "1")]
     pub token: Option<TokenId>,
     #[prost(uint64, tag = "2")]
     pub amount: u64,
+    #[prost(bytes = "vec", repeated, tag = "3")]
+    pub metadata: Vec<Vec<u8>>,
 }
 
 /// The body of both `TokenAssociate` and `TokenDissociate`.
@@ -161,7 +164,7 @@ pub struct TokenId {
     pub num: i64,
 }
 
-/// A fungible token whose treasury, admin key and supply key are all one key.
+/// A token whose treasury, admin key and supply key are all one key.
 #[derive(Clone, PartialEq, Message)]
 pub struct TokenCreateBody {
     #[prost(string, tag = "1")]
@@ -182,6 +185,9 @@ pub struct TokenCreateBody {
     pub auto_renew_account: Option<AccountId>,
     #[prost(message, optional, tag = "15")]
     pub auto_renew_period: Option<Duration>,
+    /// 0 = FUNGIBLE_COMMON (the protobuf default), 1 = NON_FUNGIBLE_UNIQUE.
+    #[prost(int32, tag = "17")]
+    pub token_type: i32,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -712,6 +718,10 @@ pub struct CreateTokenParams {
 
 pub const MAX_TOKEN_DECIMALS: u32 = 18;
 pub const MAX_TOKEN_TEXT_BYTES: usize = 100;
+/// `TokenType.NON_FUNGIBLE_UNIQUE` in the Hedera protobufs.
+pub const TOKEN_TYPE_NFT: i32 = 1;
+/// Longest metadata of one NFT serial number that the network accepts.
+pub const MAX_NFT_METADATA_BYTES: usize = 100;
 
 pub fn check_token_text(label: &str, value: &str) -> Result<(), String> {
     if value.trim().is_empty() || value.len() > MAX_TOKEN_TEXT_BYTES {
@@ -726,11 +736,27 @@ pub fn check_token_text(label: &str, value: &str) -> Result<(), String> {
 }
 
 pub fn create_token_body_bytes(p: &CreateTokenParams) -> Result<Vec<u8>, String> {
-    check_token_text("name", &p.name)?;
-    check_token_text("symbol", &p.symbol)?;
     if p.decimals > MAX_TOKEN_DECIMALS {
         return Err("Decimals can be 18 at most.".into());
     }
+    create_token_body_bytes_of_type(p, 0)
+}
+
+/// Serialised `TokenCreate` of an NFT collection: no decimals or initial
+/// supply, and the payer's key is the supply key used to mint serial numbers.
+pub fn create_nft_collection_body_bytes(p: &CreateTokenParams) -> Result<Vec<u8>, String> {
+    if p.decimals != 0 || p.initial_supply != 0 {
+        return Err("An NFT collection has no decimals or initial supply.".into());
+    }
+    create_token_body_bytes_of_type(p, TOKEN_TYPE_NFT)
+}
+
+fn create_token_body_bytes_of_type(
+    p: &CreateTokenParams,
+    token_type: i32,
+) -> Result<Vec<u8>, String> {
+    check_token_text("name", &p.name)?;
+    check_token_text("symbol", &p.symbol)?;
     if p.initial_supply > i64::MAX as u64 {
         return Err("The initial supply is too large.".into());
     }
@@ -768,6 +794,7 @@ pub fn create_token_body_bytes(p: &CreateTokenParams) -> Result<Vec<u8>, String>
             auto_renew_period: Some(Duration {
                 seconds: AUTO_RENEW_SECONDS,
             }),
+            token_type,
         }),
     };
     Ok(body.encode_to_vec())
@@ -910,6 +937,7 @@ pub fn token_supply_body_bytes(p: &TokenSupplyParams, mint: bool) -> Result<Vec<
             num: p.token.2,
         }),
         amount: p.amount,
+        metadata: Vec::new(),
     };
     let (token_mint, token_burn) = if mint {
         (Some(change), None)
@@ -938,6 +966,60 @@ pub fn token_supply_body_bytes(p: &TokenSupplyParams, mint: bool) -> Result<Vec<
         token_dissociation: None,
         token_mint,
         token_burn,
+    };
+    Ok(body.encode_to_vec())
+}
+
+/// Parameters of a `TokenMint` of one new NFT serial number. The payer signs
+/// along with the token's supply key; the treasury account receives the serial.
+pub struct NftMintParams {
+    pub payer: (i64, i64, i64),
+    pub token: (i64, i64, i64),
+    /// Metadata of the new serial number (1 to 100 bytes, often a URI).
+    pub metadata: Vec<u8>,
+    pub node: (i64, i64, i64),
+    pub valid_start_seconds: i64,
+    pub valid_start_nanos: i32,
+    pub max_fee_tinybars: u64,
+}
+
+pub fn nft_mint_body_bytes(p: &NftMintParams) -> Result<Vec<u8>, String> {
+    if p.token.0 != 0 || p.token.1 != 0 || p.token.2 <= 0 {
+        return Err("Invalid token ID.".into());
+    }
+    if p.metadata.is_empty() || p.metadata.len() > MAX_NFT_METADATA_BYTES {
+        return Err("The NFT metadata must be 1 to 100 bytes.".into());
+    }
+    let body = TransactionBody {
+        transaction_id: Some(TransactionId {
+            valid_start: Some(Timestamp {
+                seconds: p.valid_start_seconds,
+                nanos: p.valid_start_nanos,
+            }),
+            account: Some(account(p.payer)),
+        }),
+        node_account: Some(account(p.node)),
+        fee: p.max_fee_tinybars,
+        valid_duration: Some(Duration { seconds: 120 }),
+        memo: String::new(),
+        crypto_create: None,
+        crypto_delete: None,
+        crypto_transfer: None,
+        crypto_update: None,
+        token_creation: None,
+        token_deletion: None,
+        token_association: None,
+        token_dissociation: None,
+        token_mint: Some(TokenSupplyBody {
+            token: Some(TokenId {
+                shard: p.token.0,
+                realm: p.token.1,
+                num: p.token.2,
+            }),
+            amount: 0,
+            metadata: vec![p.metadata.clone()],
+        }),
+        token_burn: None,
     };
     Ok(body.encode_to_vec())
 }
@@ -1205,6 +1287,88 @@ mod tests {
         assert!(burn.token_mint.is_none());
         let zero = TokenSupplyParams { amount: 0, ..p };
         assert!(token_supply_body_bytes(&zero, true).is_err());
+    }
+
+    #[test]
+    fn nft_collection_body_sets_the_token_type_and_no_supply() {
+        let p = CreateTokenParams {
+            payer: (0, 0, 1001),
+            name: "Art".into(),
+            symbol: "ART".into(),
+            decimals: 0,
+            initial_supply: 0,
+            key_type: KeyType::Ed25519,
+            public_key: vec![7u8; 32],
+            node: (0, 0, 3),
+            valid_start_seconds: 1_700_000_000,
+            valid_start_nanos: 5,
+            max_fee_tinybars: 2_000_000_000,
+        };
+        let body =
+            TransactionBody::decode(create_nft_collection_body_bytes(&p).unwrap().as_slice())
+                .unwrap();
+        let create = body.token_creation.unwrap();
+        assert_eq!(create.token_type, TOKEN_TYPE_NFT);
+        assert_eq!(create.decimals, 0);
+        assert_eq!(create.initial_supply, 0);
+        assert_eq!(create.treasury.unwrap().num, 1001);
+        assert_eq!(create.admin_key, create.supply_key);
+        assert!(create.supply_key.is_some());
+        // A fungible creation still encodes the default type (absent on the wire).
+        let fungible =
+            TransactionBody::decode(create_token_body_bytes(&p).unwrap().as_slice()).unwrap();
+        assert_eq!(fungible.token_creation.unwrap().token_type, 0);
+
+        let with_decimals = CreateTokenParams { decimals: 2, ..p };
+        assert!(create_nft_collection_body_bytes(&with_decimals).is_err());
+        let mut with_supply = CreateTokenParams {
+            decimals: 0,
+            ..with_decimals
+        };
+        with_supply.initial_supply = 5;
+        assert!(create_nft_collection_body_bytes(&with_supply).is_err());
+        let mut unnamed = with_supply;
+        unnamed.initial_supply = 0;
+        unnamed.name = String::new();
+        assert!(create_nft_collection_body_bytes(&unnamed).is_err());
+    }
+
+    #[test]
+    fn nft_mint_body_carries_one_metadata_entry_and_no_amount() {
+        let p = NftMintParams {
+            payer: (0, 0, 1001),
+            token: (0, 0, 4242),
+            metadata: b"ipfs://example".to_vec(),
+            node: (0, 0, 3),
+            valid_start_seconds: 1_700_000_000,
+            valid_start_nanos: 5,
+            max_fee_tinybars: 100_000_000,
+        };
+        let body = TransactionBody::decode(nft_mint_body_bytes(&p).unwrap().as_slice()).unwrap();
+        let mint = body.token_mint.unwrap();
+        assert_eq!(mint.token.unwrap().num, 4242);
+        assert_eq!(mint.amount, 0);
+        assert_eq!(mint.metadata, vec![b"ipfs://example".to_vec()]);
+        assert!(body.token_burn.is_none() && body.crypto_transfer.is_none());
+        // The offline signer must never sign a mint.
+        assert!(crate::offline::describe_body(&nft_mint_body_bytes(&p).unwrap()).is_err());
+
+        let empty = NftMintParams {
+            metadata: Vec::new(),
+            ..p
+        };
+        assert!(nft_mint_body_bytes(&empty).is_err());
+        let huge = NftMintParams {
+            metadata: vec![b'a'; 101],
+            ..empty
+        };
+        assert!(nft_mint_body_bytes(&huge).is_err());
+        let bad_token = NftMintParams {
+            token: (0, 0, 0),
+            metadata: b"x".to_vec(),
+            ..huge
+        };
+        assert!(nft_mint_body_bytes(&bad_token).is_err());
     }
 
     #[test]

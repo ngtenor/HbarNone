@@ -35,6 +35,7 @@ type Backend = {
   transactionResult?: string
   hidden: string[]
   supplyTokens?: string[]
+  nftSupplyTokens?: string[]
   detection: { keyType: string | null; accounts: string[] }
   allowExternalSends: boolean
   allowExternalDeletes: boolean
@@ -230,6 +231,14 @@ function installBackend(overrides: Partial<Backend> = {}) {
         return [...backend.hidden]
       case 'get_supply_tokens':
         return backend.supplyTokens ?? args?.tokenIds ?? []
+      case 'get_nft_supply_tokens':
+        return backend.nftSupplyTokens ?? args?.tokenIds ?? []
+      case 'create_nft_collection':
+        if (backend.sendError) throw new Error(backend.sendError)
+        return { transactionId: '0.0.1001-1700000000-000000014' }
+      case 'mint_nft':
+        if (backend.sendError) throw new Error(backend.sendError)
+        return { transactionId: '0.0.1001-1700000000-000000015' }
       case 'set_token_hidden':
         backend.hidden = args?.hidden
           ? [...backend.hidden.filter((id) => id !== args.tokenId), String(args.tokenId)]
@@ -2870,6 +2879,67 @@ describe('NFT support', () => {
     await user.click(screen.getByRole('button', { name: 'Submit signed transfer' }))
     await screen.findByText('SUCCESS!')
     expect(commandsCalled('submit_signed_request')).toHaveLength(1)
+  })
+
+  it('creates an NFT collection and mints a serial after review', async () => {
+    const user = userEvent.setup()
+    installBackend({
+      wallets: [wallet('w1', 'Savings', '0.0.1001')],
+      overview: nftOverview,
+      tokenInfo: nftTokenInfo,
+      nftSupplyTokens: ['0.0.21'],
+    })
+    render(<App />)
+    await unlock(user)
+    await openAccount(user, 'Savings')
+    await chooseMenu(user, 'Token management', 'Create NFT collection')
+    await user.click(screen.getByRole('button', { name: 'Review collection' }))
+    expect(screen.getByRole('alert')).toHaveTextContent('Enter a collection name and symbol.')
+    await user.type(screen.getByLabelText('Collection name'), 'Art')
+    await user.type(screen.getByLabelText('Symbol'), 'ART')
+    await user.click(screen.getByRole('button', { name: 'Review collection' }))
+    const review = screen.getByRole('group', { name: 'Confirm NFT collection creation' })
+    expect(review).toHaveTextContent('NFT (non-fungible)')
+    expect(review).toHaveTextContent('supply key')
+    await user.click(screen.getByRole('button', { name: 'Sign and create collection' }))
+    await screen.findByText('SUCCESS!')
+    expect(commandsCalled('create_nft_collection')[0].args).toMatchObject({
+      walletId: 'w1',
+      fromAccount: '0.0.1001',
+      name: 'Art',
+      symbol: 'ART',
+    })
+
+    await chooseMenu(user, 'Token management', 'Mint NFT')
+    await user.click(screen.getByRole('button', { name: 'Sign and mint NFT' }))
+    expect(screen.getByRole('alert')).toHaveTextContent('Choose a collection.')
+    await user.selectOptions(screen.getByLabelText('Collection'), '0.0.21')
+    await user.click(screen.getByRole('button', { name: 'Sign and mint NFT' }))
+    expect(screen.getByRole('alert')).toHaveTextContent('Enter the NFT metadata')
+    await user.type(screen.getByLabelText(/Metadata/), 'ipfs://three')
+    await user.click(screen.getByRole('button', { name: 'Sign and mint NFT' }))
+    await screen.findByText('SUCCESS!')
+    expect(commandsCalled('mint_nft')[0].args).toMatchObject({
+      walletId: 'w1',
+      accountId: '0.0.1001',
+      tokenId: '0.0.21',
+      metadata: 'ipfs://three',
+    })
+  })
+
+  it('disables NFT creation and minting for watch-only wallets', async () => {
+    const user = userEvent.setup()
+    installBackend({
+      wallets: [{ ...wallet('w1', 'Watcher', '0.0.1001'), secret_kind: 'watchonly', key_type: 'ed25519' }],
+      overview: nftOverview,
+    })
+    render(<App />)
+    await unlock(user)
+    await openAccount(user, 'Watcher')
+    await screen.findByRole('button', { name: 'Refresh transactions' })
+    await user.click(screen.getByRole('button', { name: 'Token management' }))
+    expect(screen.getByRole('menuitem', { name: /Create NFT collection/ })).toBeDisabled()
+    expect(screen.getByRole('menuitem', { name: /Mint NFT/ })).toBeDisabled()
   })
 
   it('offers NFT tokens for dissociation only once no serials are owned', async () => {

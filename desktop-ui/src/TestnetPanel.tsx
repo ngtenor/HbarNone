@@ -99,6 +99,8 @@ type TokenSection =
   | 'token-delete'
   | 'token-mint'
   | 'token-burn'
+  | 'nft-create'
+  | 'nft-mint'
 const TINYBARS_PER_HBAR = 100_000_000
 
 function formatHbar(tinybars: number, maxDecimals = 8) {
@@ -285,6 +287,12 @@ export function TestnetPanel({
   const [supplyToken, setSupplyToken] = useState('')
   const [supplyTokenIds, setSupplyTokenIds] = useState<string[]>([])
   const [supplyAmount, setSupplyAmount] = useState('')
+  const [newNftName, setNewNftName] = useState('')
+  const [newNftSymbol, setNewNftSymbol] = useState('')
+  const [confirmingNftCreate, setConfirmingNftCreate] = useState(false)
+  const [mintTokenId, setMintTokenId] = useState('')
+  const [mintMetadata, setMintMetadata] = useState('')
+  const [nftSupplyTokenIds, setNftSupplyTokenIds] = useState<string[]>([])
   const [tokenDeleteAcknowledged, setTokenDeleteAcknowledged] = useState(false)
   const [sendTokenId, setSendTokenId] = useState('')
   const [sendNftKey, setSendNftKey] = useState('')
@@ -293,6 +301,7 @@ export function TestnetPanel({
   // Mainnet wallets are read-only: balances and history, no transactions.
   const readOnly = wallet.network === 'mainnet'
   const noSupplyTokens = supplyTokenIds.length === 0
+  const noNftSupplyTokens = nftSupplyTokenIds.length === 0
   const [signing, setSigning] = useState<SigningRequest | null>(null)
   const [signatureText, setSignatureText] = useState('')
   const [signatureText2, setSignatureText2] = useState('')
@@ -355,6 +364,11 @@ export function TestnetPanel({
     setSupplyAmount('')
     setTokenToRemove('')
     setTokenDeleteAcknowledged(false)
+    setNewNftName('')
+    setNewNftSymbol('')
+    setConfirmingNftCreate(false)
+    setMintTokenId('')
+    setMintMetadata('')
     setSendTokenId('')
     setSendNftKey('')
     setNftFeeInfo(null)
@@ -485,6 +499,51 @@ export function TestnetPanel({
         await retry(loadOverview, 2)
       })
     })
+  const handleReviewNftCreate = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    setError('')
+    if (!newNftName.trim() || !newNftSymbol.trim()) {
+      setError('Enter a collection name and symbol.')
+    } else {
+      setConfirmingNftCreate(true)
+    }
+  }
+  const handleCreateNftCollection = () =>
+    run(async () => {
+      const result = await invoke<{ transactionId: string }>('create_nft_collection', {
+        walletId: wallet.id,
+        fromAccount: account,
+        name: newNftName.trim(),
+        symbol: newNftSymbol.trim(),
+      })
+      toggleSection('nft-create')
+      void watchTransaction(result.transactionId, 'Creating NFT collection', async () => {
+        await retry(loadOverview, 2)
+      })
+    })
+  const handleMintNft = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    setError('')
+    const metadata = mintMetadata.trim()
+    if (!mintTokenId) {
+      setError('Choose a collection.')
+    } else if (!metadata || new TextEncoder().encode(metadata).length > 100) {
+      setError('Enter the NFT metadata (1 to 100 bytes, usually a link).')
+    } else {
+      void run(async () => {
+        const result = await invoke<{ transactionId: string }>('mint_nft', {
+          walletId: wallet.id,
+          accountId: account,
+          tokenId: mintTokenId,
+          metadata,
+        })
+        toggleSection('nft-mint')
+        void watchTransaction(result.transactionId, 'Minting NFT', async () => {
+          await retry(loadOverview, 2)
+        })
+      })
+    }
+  }
   const handleDeleteToken = () =>
     run(async () => {
       const result = await invoke<{ transactionId: string }>('delete_token', {
@@ -585,6 +644,33 @@ export function TestnetPanel({
       current = false
     }
   }, [wallet.id, account, heldTokenKey, isWatchOnly])
+
+  // Minting NFTs is only offered for collections this account is the supply-key treasury of.
+  const nftTokenKey = (overview?.tokens ?? [])
+    .filter((token) => !token.deleted && token.is_nft)
+    .map((token) => token.token_id)
+    .join(',')
+  useEffect(() => {
+    let current = true
+    if (isWatchOnly || !account || !nftTokenKey) {
+      setNftSupplyTokenIds([])
+      return
+    }
+    invoke<string[]>('get_nft_supply_tokens', {
+      walletId: wallet.id,
+      accountId: account,
+      tokenIds: nftTokenKey.split(','),
+    })
+      .then((ids) => {
+        if (current) setNftSupplyTokenIds(ids ?? [])
+      })
+      .catch(() => {
+        if (current) setNftSupplyTokenIds([])
+      })
+    return () => {
+      current = false
+    }
+  }, [wallet.id, account, nftTokenKey, isWatchOnly])
 
   const refreshButton = (label: string) => (
     <button
@@ -1380,6 +1466,18 @@ export function TestnetPanel({
                   disabled: isWatchOnly,
                 },
                 {
+                  id: 'nft-create',
+                  label: 'Create NFT collection',
+                  detail: isWatchOnly ? 'needs a signer' : undefined,
+                  disabled: isWatchOnly,
+                },
+                {
+                  id: 'nft-mint',
+                  label: 'Mint NFT',
+                  detail: isWatchOnly ? 'needs a signer' : noNftSupplyTokens ? 'no supply key' : undefined,
+                  disabled: isWatchOnly || noNftSupplyTokens,
+                },
+                {
                   id: 'token-mint',
                   label: 'Mint token',
                   detail: isWatchOnly ? 'needs a signer' : noSupplyTokens ? 'no supply key' : undefined,
@@ -1883,6 +1981,116 @@ export function TestnetPanel({
                 disabled={isBusy}
                 onClick={() => toggleSection(section === 'token-mint' ? 'token-mint' : 'token-burn')}
               >
+                Cancel
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {account && !isWatchOnly && section === 'nft-create' && (
+        <div className="testnet-send">
+          <h3 className="section-title">Create NFT collection</h3>
+          {confirmingNftCreate ? (
+            <div className="testnet-confirm" role="group" aria-label="Confirm NFT collection creation">
+              <p>Please check the details. A collection&apos;s name and symbol cannot be changed later.</p>
+              <dl>
+                <dt>Network</dt>
+                <dd>Hedera Testnet (no real value)</dd>
+                <dt>Name</dt>
+                <dd>{newNftName.trim()}</dd>
+                <dt>Symbol</dt>
+                <dd>{newNftSymbol.trim()}</dd>
+                <dt>Type</dt>
+                <dd>NFT (non-fungible); serial numbers are minted separately</dd>
+                <dt>Treasury</dt>
+                <dd>{accountLabel}</dd>
+                <dt>Keys</dt>
+                <dd>This wallet's key is the admin and supply key, so it can mint serial numbers and later delete the collection.</dd>
+                <dt>Fee</dt>
+                <dd>About 1 USD in HBAR (at most 20 ℏ is allowed)</dd>
+              </dl>
+              <div className="button-pair">
+                <button className="primary-button" type="button" disabled={isBusy} onClick={handleCreateNftCollection}>
+                  Sign and create collection
+                </button>
+                <button className="secondary-button" type="button" disabled={isBusy} onClick={() => setConfirmingNftCreate(false)}>
+                  Back
+                </button>
+                <button className="secondary-button" type="button" disabled={isBusy} onClick={() => toggleSection('nft-create')}>
+                  Cancel
+                </button>
+              </div>
+            </div>
+          ) : (
+            <form className="testnet-link-form" onSubmit={handleReviewNftCreate} noValidate>
+              <label htmlFor={`nft-name-${wallet.id}`}>Collection name</label>
+              <input
+                id={`nft-name-${wallet.id}`}
+                autoComplete="off"
+                maxLength={100}
+                value={newNftName}
+                onChange={(event) => setNewNftName(event.target.value)}
+              />
+              <label htmlFor={`nft-symbol-${wallet.id}`}>Symbol</label>
+              <input
+                id={`nft-symbol-${wallet.id}`}
+                autoComplete="off"
+                maxLength={100}
+                value={newNftSymbol}
+                onChange={(event) => setNewNftSymbol(event.target.value)}
+              />
+              <div className="button-pair">
+                <button className="primary-button" type="submit" disabled={isBusy}>
+                  Review collection
+                </button>
+                <button className="secondary-button" type="button" disabled={isBusy} onClick={() => toggleSection('nft-create')}>
+                  Cancel
+                </button>
+              </div>
+            </form>
+          )}
+        </div>
+      )}
+
+      {account && !isWatchOnly && section === 'nft-mint' && (
+        <div className="testnet-send">
+          <h3 className="section-title">Mint NFT</h3>
+          <form className="testnet-link-form" onSubmit={handleMintNft} noValidate>
+            <label htmlFor={`nft-mint-token-${wallet.id}`}>Collection</label>
+            <select
+              id={`nft-mint-token-${wallet.id}`}
+              value={mintTokenId}
+              onChange={(event) => setMintTokenId(event.target.value)}
+            >
+              <option value="">Choose a collection</option>
+              {allTokens
+                .filter((token) => nftSupplyTokenIds.includes(token.token_id))
+                .map((token) => (
+                  <option key={token.token_id} value={token.token_id}>
+                    {tokenLabel(token)} ({token.token_id})
+                  </option>
+                ))}
+            </select>
+            <label htmlFor={`nft-mint-metadata-${wallet.id}`}>Metadata (1 to 100 bytes, usually a link)</label>
+            <input
+              id={`nft-mint-metadata-${wallet.id}`}
+              autoComplete="off"
+              maxLength={100}
+              placeholder="ipfs://..."
+              value={mintMetadata}
+              onChange={(event) => setMintMetadata(event.target.value)}
+            />
+            <p className="field-hint">
+              Each mint creates one new serial number in the treasury account. Only the collection's supply key can
+              do this, and the app checks that this wallet holds it and that this account is the treasury before it
+              signs. The fee is paid in HBAR.
+            </p>
+            <div className="button-pair">
+              <button className="primary-button" type="submit" disabled={isBusy}>
+                Sign and mint NFT
+              </button>
+              <button className="secondary-button" type="button" disabled={isBusy} onClick={() => toggleSection('nft-mint')}>
                 Cancel
               </button>
             </div>

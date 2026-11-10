@@ -473,6 +473,129 @@ async fn create_token(
     })
 }
 
+/// Creates an NFT collection owned by the wallet's key. The account is the
+/// treasury, and its key is the admin and supply key used to mint serials.
+#[tauri::command]
+async fn create_nft_collection(
+    wallet_id: String,
+    from_account: String,
+    name: String,
+    symbol: String,
+    state: State<'_, AppState>,
+) -> Result<SendResult, String> {
+    hedera_tx::check_token_text("name", &name)?;
+    hedera_tx::check_token_text("symbol", &symbol)?;
+    let payer = testnet_account_of(&state, &wallet_id, &from_account)?;
+    let (key_type, secret) = lock_service(&state)?
+        .with_wallet_key(&wallet_id, |key_type, secret| {
+            Ok((key_type, Zeroizing::new(*secret)))
+        })?;
+    let receipt = hedera_tx::submit::create_testnet_nft_collection(
+        &payer,
+        (key_type, &secret),
+        &name,
+        &symbol,
+    )
+    .await?;
+    Ok(SendResult {
+        transaction_id: receipt.transaction_id,
+    })
+}
+
+/// NFT collections (by ID) this account can mint into: the token is a live
+/// NFT, this wallet's key is the supply key and this account is the treasury.
+#[tauri::command]
+async fn get_nft_supply_tokens(
+    wallet_id: String,
+    account_id: String,
+    token_ids: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<Vec<String>, String> {
+    let account = testnet_account_of(&state, &wallet_id, &account_id)?;
+    let wallet_key = lock_service(&state)?
+        .wallet_public_key(&wallet_id)?
+        .to_ascii_lowercase();
+    let mirror = MirrorClient::testnet()?;
+    let mut found = Vec::new();
+    for token_id in token_ids.iter().take(50) {
+        let Ok(token_id) = validate_account_id(token_id) else {
+            continue;
+        };
+        let Ok(Some(info)) = mirror.token_info(&token_id).await else {
+            continue;
+        };
+        if !info.deleted
+            && info.token_type == "NON_FUNGIBLE_UNIQUE"
+            && info.treasury == account
+            && info.supply_key.as_deref() == Some(wallet_key.as_str())
+        {
+            found.push(token_id);
+        }
+    }
+    Ok(found)
+}
+
+/// Mints one new NFT serial number into the treasury account after checking on
+/// the mirror node that this wallet's key is the supply key and this account is
+/// the treasury, so a doomed transaction never costs a fee.
+#[tauri::command]
+async fn mint_nft(
+    wallet_id: String,
+    account_id: String,
+    token_id: String,
+    metadata: String,
+    state: State<'_, AppState>,
+) -> Result<SendResult, String> {
+    let payer = testnet_account_of(&state, &wallet_id, &account_id)?;
+    let token_id = validate_account_id(&token_id)?;
+    let metadata = metadata.trim().to_string();
+    if metadata.is_empty() || metadata.len() > hedera_tx::MAX_NFT_METADATA_BYTES {
+        return Err("The NFT metadata must be 1 to 100 bytes.".to_string());
+    }
+    if metadata.chars().any(char::is_control) {
+        return Err("The NFT metadata cannot contain control characters.".to_string());
+    }
+    let mirror = MirrorClient::testnet()?;
+    let info = mirror
+        .token_info(&token_id)
+        .await?
+        .ok_or_else(|| "The mirror node does not know this token.".to_string())?;
+    if info.deleted {
+        return Err("This token has been deleted.".to_string());
+    }
+    if info.token_type != "NON_FUNGIBLE_UNIQUE" {
+        return Err("This token is not an NFT collection.".to_string());
+    }
+    let wallet_key = lock_service(&state)?
+        .wallet_public_key(&wallet_id)?
+        .to_ascii_lowercase();
+    match info.supply_key.as_deref() {
+        Some(key) if key == wallet_key => {}
+        Some(_) => return Err("This wallet's key is not the collection's supply key.".to_string()),
+        None if info.has_supply_key => {
+            return Err(
+                "This collection's supply key is not one this wallet can sign with.".to_string(),
+            );
+        }
+        None => {
+            return Err("This collection has no supply key, so nothing can be minted.".to_string());
+        }
+    }
+    if info.treasury != payer {
+        return Err("Only the collection's treasury account can mint here.".to_string());
+    }
+    let (key_type, secret) = lock_service(&state)?
+        .with_wallet_key(&wallet_id, |key_type, secret| {
+            Ok((key_type, Zeroizing::new(*secret)))
+        })?;
+    let receipt =
+        hedera_tx::submit::mint_testnet_nft(&payer, (key_type, &secret), &token_id, &metadata)
+            .await?;
+    Ok(SendResult {
+        transaction_id: receipt.transaction_id,
+    })
+}
+
 /// Associates this wallet's account with a fungible token so it can hold it.
 #[tauri::command]
 async fn associate_token(
@@ -2123,6 +2246,9 @@ fn main() {
             get_account_balance,
             get_token_info,
             create_token,
+            create_nft_collection,
+            mint_nft,
+            get_nft_supply_tokens,
             delete_token,
             change_token_supply,
             get_supply_tokens,

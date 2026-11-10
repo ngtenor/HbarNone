@@ -13,10 +13,11 @@ use wallet_core::wallet_service::validate_account_id;
 
 use crate::{
     ChangeKeyParams, CreateAccountParams, CreateTokenParams, DeleteAccountParams,
-    DeleteTokenParams, MAX_TOKEN_DECIMALS, NftTransferParams, TokenAssociationParams,
-    TokenSupplyParams, TokenTransferParams, Transaction, TransactionResponse, TransferParams,
-    change_key_body_bytes, create_account_body_bytes, create_token_body_bytes,
-    delete_account_body_bytes, delete_token_body_bytes, nft_transfer_body_bytes, sign_body,
+    DeleteTokenParams, MAX_NFT_METADATA_BYTES, MAX_TOKEN_DECIMALS, NftMintParams,
+    NftTransferParams, TokenAssociationParams, TokenSupplyParams, TokenTransferParams, Transaction,
+    TransactionResponse, TransferParams, change_key_body_bytes, create_account_body_bytes,
+    create_nft_collection_body_bytes, create_token_body_bytes, delete_account_body_bytes,
+    delete_token_body_bytes, nft_mint_body_bytes, nft_transfer_body_bytes, sign_body,
     sign_body_multi, token_association_body_bytes, token_supply_body_bytes,
     token_transfer_body_bytes, transfer_body_bytes,
 };
@@ -400,6 +401,83 @@ pub async fn create_testnet_token(
     if response.precheck_code != 0 {
         return Err(format!(
             "The node rejected the token creation: {}",
+            precheck_message(response.precheck_code)
+        ));
+    }
+    Ok(SendReceipt {
+        transaction_id: format!("0.0.{}-{}-{:09}", payer_id.2, seconds, nanos),
+    })
+}
+
+/// Creates an NFT collection whose treasury is `payer`, and whose admin and
+/// supply keys are the payer's key. Serial numbers are minted separately.
+pub async fn create_testnet_nft_collection(
+    payer: &str,
+    key: (KeyType, &[u8; 32]),
+    name: &str,
+    symbol: &str,
+) -> Result<SendReceipt, String> {
+    let payer_id = parse_account(payer)?;
+    let (seconds, nanos) = start_time()?;
+    let params = CreateTokenParams {
+        payer: payer_id,
+        name: name.trim().to_string(),
+        symbol: symbol.trim().to_string(),
+        decimals: 0,
+        initial_supply: 0,
+        key_type: key.0,
+        public_key: wallet_core::key_import::public_key_bytes(key.0, key.1)?,
+        node: TESTNET_NODE_ACCOUNT,
+        valid_start_seconds: seconds,
+        valid_start_nanos: nanos,
+        max_fee_tinybars: MAX_TOKEN_CREATE_FEE_TINYBARS,
+    };
+    let body = create_nft_collection_body_bytes(&params)?;
+    let encoded = sign_body(&body, key.0, key.1)?;
+    let transaction =
+        <Transaction as prost::Message>::decode(encoded.as_slice()).map_err(|e| e.to_string())?;
+    let response = submit(transaction, TOKEN_CREATE_PATH).await?;
+    if response.precheck_code != 0 {
+        return Err(format!(
+            "The node rejected the collection creation: {}",
+            precheck_message(response.precheck_code)
+        ));
+    }
+    Ok(SendReceipt {
+        transaction_id: format!("0.0.{}-{}-{:09}", payer_id.2, seconds, nanos),
+    })
+}
+
+/// Mints one new serial number of an NFT collection into the treasury account.
+/// `payer` pays the fee; the key must be the collection's supply key.
+pub async fn mint_testnet_nft(
+    payer: &str,
+    key: (KeyType, &[u8; 32]),
+    token: &str,
+    metadata: &str,
+) -> Result<SendReceipt, String> {
+    if metadata.trim().is_empty() || metadata.len() > MAX_NFT_METADATA_BYTES {
+        return Err("The NFT metadata must be 1 to 100 bytes.".to_string());
+    }
+    let payer_id = parse_account(payer)?;
+    let (seconds, nanos) = start_time()?;
+    let params = NftMintParams {
+        payer: payer_id,
+        token: parse_account(token)?,
+        metadata: metadata.as_bytes().to_vec(),
+        node: TESTNET_NODE_ACCOUNT,
+        valid_start_seconds: seconds,
+        valid_start_nanos: nanos,
+        max_fee_tinybars: MAX_FEE_TINYBARS,
+    };
+    let body = nft_mint_body_bytes(&params)?;
+    let encoded = sign_body(&body, key.0, key.1)?;
+    let transaction =
+        <Transaction as prost::Message>::decode(encoded.as_slice()).map_err(|e| e.to_string())?;
+    let response = submit(transaction, TOKEN_MINT_PATH).await?;
+    if response.precheck_code != 0 {
+        return Err(format!(
+            "The node rejected the NFT mint: {}",
             precheck_message(response.precheck_code)
         ));
     }

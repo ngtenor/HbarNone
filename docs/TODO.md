@@ -147,7 +147,10 @@ Testnet verification and CI before moving to the next stage.
   (Implemented 10 Nov: ownership checked against `/tokens/{id}/nfts/{serial}`,
   receiver association checked, Settings toggle stored in the vault payload
   and also enforced when a signed watch-only request is submitted.)
-- [ ] Out of scope: NFT minting, NFT creation and marketplace features;
+- [x] Scope extension (agreed 10 Nov): create an NFT collection (no custom
+  fees at creation) and mint serial numbers with metadata, hot wallets only —
+  the signer keeps rejecting token creation and minting by design. The app can
+  now produce its own NFT test data. Marketplace features remain out of scope;
   Testnet only.
 - [ ] Test successful and failure paths with disposable Testnet accounts,
   document the workflow and pass CI. (Automated tests added for the mirror
@@ -299,9 +302,11 @@ together.
   air-gapped device with live camera scanning)
 - [x] Add NFT support (implemented 10 Nov for the agreed scope: owned-NFT
   display, associate/dissociate, hot-wallet and watch-only transfers by
-  serial number, the custom-fee Settings toggle and fee-schedule warnings;
-  manual Testnet verification with disposable accounts is still to be done;
-  smart-contract calls stay rejected by the signer by design)
+  serial number, the custom-fee Settings toggle and fee-schedule warnings,
+  plus collection creation and minting for hot wallets (scope extension
+  agreed 10 Nov); manual Testnet verification with disposable accounts is
+  still to be done; smart-contract calls stay rejected by the signer by
+  design)
 - [ ] Design a reproducible hardware prototype
 
 ## Validation status
@@ -317,7 +322,7 @@ Linux app-data permissions are hardened to `0700`/`0600`.
 The current release is the x64 Windows build of `main` at commit `3140ed9`
 (confirmed 9 Nov 2026); no version tags exist yet. A release app is rebuilt
 after each change (`--no-bundle`); the last full installer build produced both
-NSIS and MSI installers. The frontend suite stands at 116 passing UI tests, and
+NSIS and MSI installers. The frontend suite stands at 118 passing UI tests, and
 the Rust tests, formatting and workspace check pass on Windows and Ubuntu CI.
 All manual Testnet token tests through stage 6 are complete with disposable
 accounts, and the latest Linux check run passed on the Ubuntu desktop
