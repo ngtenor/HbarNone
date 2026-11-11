@@ -730,6 +730,23 @@ impl PartiallySigned {
         Ok(())
     }
 
+    /// True when the collected signatures satisfy the account's key
+    /// structure. The signatures were each verified against the exact body
+    /// bytes when collected; this only evaluates the threshold.
+    pub fn satisfies(&self, tree: &crate::key_tree::KeyTree) -> bool {
+        tree.is_satisfied_by(&self.signer_keys)
+    }
+
+    /// Leaf keys of the account's key structure that have not signed yet
+    /// (lowercase hex), for progress messages.
+    pub fn missing_keys(&self, tree: &crate::key_tree::KeyTree) -> Vec<String> {
+        tree.leaf_keys()
+            .into_iter()
+            .map(|(_, hex)| hex)
+            .filter(|hex| !self.signer_keys.contains(hex))
+            .collect()
+    }
+
     /// Submits the fully signed request and returns its transaction ID.
     pub async fn submit(self) -> Result<String, String> {
         if seconds_remaining(&self.description)? <= 0 {
@@ -859,6 +876,51 @@ mod tests {
         // A signature for a different request is refused.
         let other = build_key_update_request("0.0.1002", KeyType::Ed25519, &new_public).unwrap();
         assert!(collect_signatures(&other.payload, &[sig_new]).is_err());
+    }
+
+    #[test]
+    fn collected_signatures_are_checked_against_a_key_tree() {
+        use crate::key_tree::KeyTree;
+        let secrets = [[1u8; 32], [2u8; 32], [3u8; 32]];
+        let keys = secrets
+            .iter()
+            .map(|secret| {
+                let hex =
+                    wallet_core::key_import::public_key_hex(KeyType::Ed25519, secret).unwrap();
+                KeyTree::single(KeyType::Ed25519, &hex).unwrap()
+            })
+            .collect::<Vec<_>>();
+        let tree = KeyTree::Threshold {
+            required: 2,
+            keys: keys.clone(),
+        };
+
+        let r = request();
+        let sign = |secret| sign_request(&r.payload, KeyType::Ed25519, secret).unwrap();
+
+        // One signature of three: verified, but below the threshold.
+        let one = collect_signatures(&r.payload, &[sign(&secrets[0])]).unwrap();
+        assert!(!one.satisfies(&tree));
+        assert_eq!(one.missing_keys(&tree).len(), 2);
+
+        // The same signature twice is kept once and stays below the threshold.
+        let dup = collect_signatures(&r.payload, &[sign(&secrets[0]), sign(&secrets[0])]).unwrap();
+        assert!(!dup.satisfies(&tree));
+
+        // A verified signature from a key outside the structure never counts.
+        let outsider = [9u8; 32];
+        let unrelated =
+            collect_signatures(&r.payload, &[sign(&secrets[0]), sign(&outsider)]).unwrap();
+        assert!(!unrelated.satisfies(&tree));
+        let outsider_hex = wallet_core::key_import::public_key_hex(KeyType::Ed25519, &outsider)
+            .unwrap()
+            .to_lowercase();
+        assert!(!tree.contains_key(&outsider_hex));
+
+        // Any two of the three listed keys satisfy the threshold.
+        let two = collect_signatures(&r.payload, &[sign(&secrets[1]), sign(&secrets[2])]).unwrap();
+        assert!(two.satisfies(&tree));
+        assert_eq!(two.missing_keys(&tree).len(), 1);
     }
 
     #[test]

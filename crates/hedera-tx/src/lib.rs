@@ -9,6 +9,7 @@ use prost::Message;
 use sha3::{Digest, Keccak256};
 use wallet_core::key_import::{KeyType, public_key_bytes};
 
+pub mod key_tree;
 pub mod offline;
 pub mod submit;
 
@@ -212,13 +213,34 @@ pub struct CryptoUpdateBody {
     pub key: Option<Key>,
 }
 
-/// `Key` with only the single-key variants we need (ed25519 = 2, ECDSA secp256k1 = 7).
+/// `Key` with the variants we need: single keys (ed25519 = 2,
+/// ECDSA secp256k1 = 7) and key structures (threshold = 5, list = 6).
 #[derive(Clone, PartialEq, Message)]
 pub struct Key {
     #[prost(bytes = "vec", optional, tag = "2")]
     pub ed25519: Option<Vec<u8>>,
+    #[prost(message, optional, tag = "5")]
+    pub threshold_key: Option<ThresholdKey>,
+    #[prost(message, optional, tag = "6")]
+    pub key_list: Option<KeyList>,
     #[prost(bytes = "vec", optional, tag = "7")]
     pub ecdsa_secp256k1: Option<Vec<u8>>,
+}
+
+/// M-of-N structure: `threshold` of the listed keys must sign.
+#[derive(Clone, PartialEq, Message)]
+pub struct ThresholdKey {
+    #[prost(uint32, tag = "1")]
+    pub threshold: u32,
+    #[prost(message, optional, tag = "2")]
+    pub keys: Option<KeyList>,
+}
+
+/// N-of-N structure: every listed key must sign.
+#[derive(Clone, PartialEq, Message)]
+pub struct KeyList {
+    #[prost(message, repeated, tag = "1")]
+    pub keys: Vec<Key>,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -647,11 +669,11 @@ fn key_message(key_type: KeyType, public_key: &[u8]) -> Result<Key, String> {
     match (key_type, public_key.len()) {
         (KeyType::Ed25519, 32) => Ok(Key {
             ed25519: Some(public_key.to_vec()),
-            ecdsa_secp256k1: None,
+            ..Key::default()
         }),
         (KeyType::Ecdsa, 33) => Ok(Key {
-            ed25519: None,
             ecdsa_secp256k1: Some(public_key.to_vec()),
+            ..Key::default()
         }),
         _ => Err("The public key has an unexpected length.".into()),
     }

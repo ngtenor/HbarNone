@@ -44,6 +44,10 @@ here.
 
 ## Stage 1: key tree in `hedera-tx` (foundation, no UI)
 
+**Status: done 11 Nov** — `hedera_tx::key_tree::KeyTree`, the protobuf
+`ThresholdKey`/`KeyList` variants on `Key`, and
+`PartiallySigned::satisfies`/`missing_keys`, all unit-tested.
+
 - Extend the protobuf `Key` message with `threshold_key` (tag 5:
   `ThresholdKey { threshold: u32 (tag 1), keys: KeyList (tag 2) }`) and
   `key_list` (tag 6: `KeyList { keys: repeated Key (tag 1) }`). Prost handles
