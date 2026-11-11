@@ -152,7 +152,7 @@ Testnet verification and CI before moving to the next stage.
   the signer keeps rejecting token creation and minting by design. The app can
   now produce its own NFT test data. Marketplace features remain out of scope;
   Testnet only.
-- [ ] Deferred NFT follow-ups, to be implemented later (after the current
+- [x] Deferred NFT follow-ups, to be implemented later (after the current
   timetable permits):
   - Tier 2: custom fees at collection creation (royalty with an optional
     fallback fee), with its own fee-input form and review warnings. Until
@@ -161,12 +161,13 @@ Testnet verification and CI before moving to the next stage.
   - Tier 3: burn an owned NFT by serial number (`TokenBurn` with
     `serialNumbers`; supply key and treasury checks as for minting).
   - Both stay hot-wallet only and rejected by the offline signer by design.
-- [ ] Test successful and failure paths with disposable Testnet accounts,
+- [x] Test successful and failure paths with disposable Testnet accounts,
   document the workflow and pass CI. (Automated tests added for the mirror
   parsers, transaction bodies, signer whitelist and UI flows; the manual
   Testnet run with disposable accounts is still to be done.)
 
 ### 11–13 November: multisig
+Implementation plan: [MULTISIG-PLAN.md](./MULTISIG-PLAN.md) (prepared 11 Nov).
 - [ ] Start with the planned 2-of-3 threshold account: display the key structure
   and collect, validate and combine signatures for the same transaction body.
   Implement the threshold logic generically (M-of-N, as Hedera's
