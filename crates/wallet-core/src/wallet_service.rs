@@ -913,7 +913,10 @@ impl WalletService {
                 ));
             }
         }
-        let account_ids: Vec<String> = account_ids.into_iter().filter(|id| !is_shared(id)).collect();
+        let account_ids: Vec<String> = account_ids
+            .into_iter()
+            .filter(|id| !is_shared(id))
+            .collect();
         for account_id in &account_ids {
             if let Some(other) = next_payload.wallets.iter().find(|wallet| {
                 wallet.id != wallet_id
