@@ -24,6 +24,9 @@ const MAX_TOKENS: usize = 50;
 const MAX_NFTS: usize = 50;
 const MAX_DECIMALS: u32 = 18;
 const MAX_METADATA_CHARS: usize = 100;
+/// Longest account-key hex accepted: enough for a protobuf-encoded structure
+/// of ten keys, far below any plausible single key.
+const MAX_KEY_HEX_CHARS: usize = 2_000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TransactionSummary {
@@ -139,6 +142,17 @@ pub struct AccountOverview {
     pub transactions: Vec<TransactionSummary>,
     pub tokens: Vec<AccountToken>,
     pub nfts: Vec<AccountNft>,
+}
+
+/// An account's key as the mirror node reports it: a single key
+/// (`ED25519` or `ECDSA_SECP256K1`, hex of the raw key) or a key structure
+/// (`ProtobufEncoded`, hex of the protobuf `Key` message). This crate does
+/// not interpret the structure; `hedera-tx` does.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RawAccountKey {
+    pub kind: String,
+    /// Lowercase hexadecimal, length-capped.
+    pub hex: String,
 }
 
 /// The mirror node sends some integers as JSON numbers and some as strings.
@@ -329,6 +343,44 @@ pub fn parse_balance(body: &[u8], expected_account: &str) -> Result<u64, String>
         return Err("the mirror node returned a different account".to_string());
     }
     Ok(response.balance.map(|entry| entry.balance).unwrap_or(0))
+}
+
+/// The account's key as reported, or `None` when the mirror omits it. An
+/// unsupported key type or malformed hex is an error, never a partial answer.
+pub fn parse_account_key(
+    body: &[u8],
+    expected_account: &str,
+) -> Result<Option<RawAccountKey>, String> {
+    #[derive(Deserialize)]
+    struct AccountKeyEntry {
+        account: String,
+        key: Option<serde_json::Value>,
+    }
+    let response: AccountKeyEntry = serde_json::from_slice(body)
+        .map_err(|_| "unexpected response from the mirror node".to_string())?;
+    if validate_account_id(&response.account)? != expected_account {
+        return Err("the mirror node returned a different account".to_string());
+    }
+    let Some(key) = response.key.filter(|key| !key.is_null()) else {
+        return Ok(None);
+    };
+    let bad = || "the mirror node reported a key the app cannot read".to_string();
+    let kind = key.get("_type").and_then(|k| k.as_str()).ok_or_else(bad)?;
+    let hex = key.get("key").and_then(|k| k.as_str()).ok_or_else(bad)?;
+    if !matches!(kind, "ED25519" | "ECDSA_SECP256K1" | "ProtobufEncoded") {
+        return Err("this account uses a key type the app does not support".to_string());
+    }
+    let well_formed = !hex.is_empty()
+        && hex.len() % 2 == 0
+        && hex.len() <= MAX_KEY_HEX_CHARS
+        && hex.bytes().all(|b| b.is_ascii_hexdigit());
+    if !well_formed {
+        return Err(bad());
+    }
+    Ok(Some(RawAccountKey {
+        kind: kind.to_string(),
+        hex: hex.to_ascii_lowercase(),
+    }))
 }
 
 /// Token IDs and balances held by the account, in smallest units. Malformed
@@ -754,6 +806,16 @@ impl MirrorClient {
         }
     }
 
+    /// The account's key (single or protobuf-encoded structure), or `None`
+    /// if the account is unknown on this network.
+    pub async fn account_key(&self, account_id: &str) -> Result<Option<RawAccountKey>, String> {
+        let account_id = validate_account_id(account_id)?;
+        match self.get(&format!("/api/v1/accounts/{account_id}")).await? {
+            Some(body) => parse_account_key(&body, &account_id),
+            None => Ok(None),
+        }
+    }
+
     /// Balance and recent transactions, or `None` if the account is unknown on Testnet.
     pub async fn account_overview(
         &self,
@@ -944,6 +1006,55 @@ mod tests {
         .unwrap();
         assert!(listed.has_admin_key && listed.admin_key.is_none());
         assert_eq!(bare.decimals, 18);
+    }
+
+    #[test]
+    fn parses_account_keys_of_each_kind() {
+        let single = br#"{"account":"0.0.5","key":{"_type":"ED25519","key":"AB12"}}"#;
+        assert_eq!(
+            parse_account_key(single, "0.0.5").unwrap(),
+            Some(RawAccountKey {
+                kind: "ED25519".to_string(),
+                hex: "ab12".to_string(),
+            })
+        );
+        let encoded =
+            br#"{"account":"0.0.5","key":{"_type":"ProtobufEncoded","key":"2a0408011200"}}"#;
+        assert_eq!(
+            parse_account_key(encoded, "0.0.5").unwrap(),
+            Some(RawAccountKey {
+                kind: "ProtobufEncoded".to_string(),
+                hex: "2a0408011200".to_string(),
+            })
+        );
+        assert_eq!(
+            parse_account_key(br#"{"account":"0.0.5"}"#, "0.0.5").unwrap(),
+            None
+        );
+        assert_eq!(
+            parse_account_key(br#"{"account":"0.0.5","key":null}"#, "0.0.5").unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn rejects_unreadable_account_keys() {
+        // A different account, an unknown type, bad hex, odd length, oversized.
+        let single = br#"{"account":"0.0.6","key":{"_type":"ED25519","key":"ab"}}"#;
+        assert!(parse_account_key(single, "0.0.5").is_err());
+        let rsa = br#"{"account":"0.0.5","key":{"_type":"RSA_3072","key":"ab"}}"#;
+        assert!(parse_account_key(rsa, "0.0.5").is_err());
+        let bad = br#"{"account":"0.0.5","key":{"_type":"ED25519","key":"zz"}}"#;
+        assert!(parse_account_key(bad, "0.0.5").is_err());
+        let odd = br#"{"account":"0.0.5","key":{"_type":"ED25519","key":"abc"}}"#;
+        assert!(parse_account_key(odd, "0.0.5").is_err());
+        let long = format!(
+            r#"{{"account":"0.0.5","key":{{"_type":"ProtobufEncoded","key":"{}"}}}}"#,
+            "ab".repeat(1_001)
+        );
+        assert!(parse_account_key(long.as_bytes(), "0.0.5").is_err());
+        let no_type = br#"{"account":"0.0.5","key":{"key":"ab"}}"#;
+        assert!(parse_account_key(no_type, "0.0.5").is_err());
     }
 
     #[test]

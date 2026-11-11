@@ -168,6 +168,29 @@ impl KeyTree {
         Self::from_key(&key)
     }
 
+    /// Reads an account key as the mirror node reports it: `kind` is the
+    /// mirror's `_type` and `hex` the key field. Single keys and
+    /// protobuf-encoded structures are accepted; anything else is rejected.
+    pub fn from_mirror(kind: &str, hex: &str) -> Result<KeyTree, String> {
+        match kind {
+            "ED25519" => KeyTree::single(KeyType::Ed25519, hex),
+            "ECDSA_SECP256K1" => KeyTree::single(KeyType::Ecdsa, hex),
+            "ProtobufEncoded" => {
+                let cleaned = hex.trim().to_ascii_lowercase();
+                if cleaned.is_empty() || cleaned.len() % 2 != 0 {
+                    return Err("This is not a valid key structure.".into());
+                }
+                let bytes = (0..cleaned.len())
+                    .step_by(2)
+                    .map(|i| u8::from_str_radix(&cleaned[i..i + 2], 16).ok())
+                    .collect::<Option<Vec<u8>>>()
+                    .ok_or("This is not a valid key structure.")?;
+                Self::from_bytes(&bytes)
+            }
+            _ => Err("This account uses a key type the app does not support.".into()),
+        }
+    }
+
     fn from_key_node(key: &Key) -> Result<KeyTree, String> {
         let set = [
             key.ed25519.is_some(),
@@ -441,6 +464,33 @@ mod tests {
         assert!(!nested.is_satisfied_by(&[hex(9), hex(1)]));
         assert!(nested.is_satisfied_by(&[hex(9), hex(1), hex(2)]));
         assert!(!nested.is_satisfied_by(&[hex(1), hex(2)]));
+    }
+
+    #[test]
+    fn reads_mirror_keys_of_each_kind() {
+        let single = KeyTree::from_mirror("ED25519", &hex(1).to_uppercase()).unwrap();
+        assert_eq!(single, ed(1));
+        let ecdsa_hex = format!("02{}", "ab".repeat(32));
+        assert_eq!(
+            KeyTree::from_mirror("ECDSA_SECP256K1", &ecdsa_hex).unwrap(),
+            KeyTree::single(KeyType::Ecdsa, &ecdsa_hex).unwrap()
+        );
+        let tree = two_of_three();
+        let encoded: String = tree
+            .to_key()
+            .unwrap()
+            .encode_to_vec()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        assert_eq!(
+            KeyTree::from_mirror("ProtobufEncoded", &encoded).unwrap(),
+            tree
+        );
+        assert!(KeyTree::from_mirror("RSA_3072", &hex(1)).is_err());
+        assert!(KeyTree::from_mirror("ProtobufEncoded", "zz").is_err());
+        assert!(KeyTree::from_mirror("ProtobufEncoded", "abc").is_err());
+        assert!(KeyTree::from_mirror("ProtobufEncoded", "").is_err());
     }
 
     #[test]

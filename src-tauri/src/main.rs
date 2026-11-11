@@ -411,6 +411,37 @@ async fn get_token_info(token_id: String) -> Result<Option<TokenInfo>, String> {
     MirrorClient::testnet()?.token_info(&token_id).await
 }
 
+/// The key structure of a Testnet account, shown in full before the account
+/// is trusted: the threshold, the total and every leaf key. `None` when the
+/// account is unknown; an unreadable or unsupported key is an error.
+#[derive(Serialize)]
+struct AccountKeyStructure {
+    /// One line per node, for example `2 of 3:` and one key per line.
+    description: String,
+    required: u32,
+    total: usize,
+    /// Lowercase hex leaf keys in display order.
+    keys: Vec<String>,
+}
+
+#[tauri::command]
+async fn get_account_key_structure(
+    account_id: String,
+) -> Result<Option<AccountKeyStructure>, String> {
+    let account_id = parse_account_input(&account_id, Network::Testnet, false)?;
+    let Some(raw) = MirrorClient::testnet()?.account_key(&account_id).await? else {
+        return Ok(None);
+    };
+    let tree = hedera_tx::key_tree::KeyTree::from_mirror(&raw.kind, &raw.hex)?;
+    let (required, total) = tree.required_and_total();
+    Ok(Some(AccountKeyStructure {
+        description: tree.describe(),
+        required,
+        total,
+        keys: tree.leaf_keys().into_iter().map(|(_, hex)| hex).collect(),
+    }))
+}
+
 #[tauri::command]
 async fn get_transaction_result(transaction_id: String) -> Result<Option<String>, String> {
     MirrorClient::testnet()?
@@ -2245,6 +2276,7 @@ fn main() {
             find_wallet_accounts,
             get_account_balance,
             get_token_info,
+            get_account_key_structure,
             create_token,
             create_nft_collection,
             mint_nft,

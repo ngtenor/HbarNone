@@ -83,6 +83,14 @@ here.
 
 ## Stage 2: mirror-node key structures
 
+**Status: done 11 Nov** — `hedera-mirror` fetches the raw account key
+(`parse_account_key`, `MirrorClient::account_key`), `KeyTree::from_mirror`
+reads it, and the desktop exposes `get_account_key_structure` for linking.
+Checked against the live Testnet mirror: account `0.0.50`'s large
+`ProtobufEncoded` structure decodes and is cleanly rejected by the caps
+(`parse_mirror_key` example). Lifting the single-key import restriction
+awaits the stage-5 Testnet run.
+
 - Parse an account's `"_type": "ProtobufEncoded"` key (hex of the protobuf
   `Key`) into the stage-1 tree; expose it on the account lookup used when
   linking by ID. Single keys keep the existing path.
