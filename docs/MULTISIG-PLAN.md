@@ -185,6 +185,11 @@ unrelated ones are refused with specific messages.
 
 ## Stage 5: Testnet verification, docs, CI
 
+Manual run instructions: [MULTISIG-TESTING.md](./MULTISIG-TESTING.md)
+(prepared 11 Nov). A guard was added with them: a mirror key search that
+lists a shared account (the `account.publickey` filter matches keys inside
+threshold structures) never links it to a wallet.
+
 - Automated tests:
   - stage-1 tree tests in `hedera-tx`;
   - `collect_signatures` + `satisfies` threshold paths, including duplicate /

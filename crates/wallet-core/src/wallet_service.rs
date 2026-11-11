@@ -883,7 +883,10 @@ impl WalletService {
     /// be linked to one wallet only, to avoid confusing balances.
     /// Links accounts to a wallet on one network. Accounts already on this
     /// wallet are skipped; one linked to another wallet is an error and
-    /// nothing is saved.
+    /// nothing is saved. A shared (multisig) account is skipped — the mirror
+    /// node's key search also matches keys inside a threshold structure, so a
+    /// participant's import may list one — and is an error when it is the
+    /// only account asked for.
     pub fn add_wallet_accounts_and_save(
         &mut self,
         wallet_id: &str,
@@ -897,6 +900,20 @@ impl WalletService {
             .map(|id| validate_account_id(id))
             .collect::<Result<Vec<_>, _>>()?;
         let mut next_payload = self.payload.as_ref().expect("checked unlocked").clone();
+        let is_shared = |id: &String| {
+            next_payload
+                .shared_accounts
+                .iter()
+                .any(|account| account.network == network && &account.id == id)
+        };
+        if let Some(shared) = account_ids.iter().find(|id| is_shared(id)) {
+            if account_ids.iter().all(is_shared) {
+                return Err(format!(
+                    "account {shared} is a shared account; it is not controlled by one wallet's key"
+                ));
+            }
+        }
+        let account_ids: Vec<String> = account_ids.into_iter().filter(|id| !is_shared(id)).collect();
         for account_id in &account_ids {
             if let Some(other) = next_payload.wallets.iter().find(|wallet| {
                 wallet.id != wallet_id
@@ -1768,6 +1785,30 @@ mod tests {
                     .is_err()
             );
         }
+
+        // Linking the shared account to a wallet is refused, and a mirror
+        // import that happens to list it (a participant key matches inside
+        // the structure) skips it while linking the rest.
+        assert!(
+            service
+                .add_wallet_accounts_and_save(
+                    &wallet.id,
+                    Network::Testnet,
+                    &["0.0.5005".into()],
+                    path
+                )
+                .is_err()
+        );
+        let imported = service
+            .add_wallet_accounts_and_save(
+                &wallet.id,
+                Network::Testnet,
+                &["0.0.5005".into(), "0.0.8".into()],
+                path,
+            )
+            .unwrap();
+        assert!(imported.accounts.iter().any(|a| a.id == "0.0.8"));
+        assert!(!imported.accounts.iter().any(|a| a.id == "0.0.5005"));
 
         // Removal forgets the account; removing twice fails.
         service
