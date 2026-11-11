@@ -11,13 +11,14 @@ use tonic::transport::Endpoint;
 use wallet_core::key_import::KeyType;
 use wallet_core::wallet_service::validate_account_id;
 
+use crate::key_tree::KeyTree;
 use crate::{
     ChangeKeyParams, CreateAccountParams, CreateTokenParams, DeleteAccountParams,
     DeleteTokenParams, MAX_NFT_METADATA_BYTES, MAX_TOKEN_DECIMALS, NftMintParams,
     NftTransferParams, TokenAssociationParams, TokenSupplyParams, TokenTransferParams, Transaction,
     TransactionResponse, TransferParams, change_key_body_bytes, create_account_body_bytes,
     create_nft_collection_body_bytes, create_token_body_bytes, delete_account_body_bytes,
-    delete_token_body_bytes, nft_mint_body_bytes, nft_transfer_body_bytes, sign_body,
+    delete_token_body_bytes, key_message, nft_mint_body_bytes, nft_transfer_body_bytes, sign_body,
     sign_body_multi, token_association_body_bytes, token_supply_body_bytes,
     token_transfer_body_bytes, transfer_body_bytes,
 };
@@ -170,6 +171,31 @@ pub async fn create_testnet_account(
     payer_key: (KeyType, &[u8; 32]),
     initial_tinybars: i64,
 ) -> Result<SendReceipt, String> {
+    let key = key_message(
+        new_key.0,
+        &wallet_core::key_import::public_key_bytes(new_key.0, new_key.1)?,
+    )?;
+    create_testnet_account_with_key(key, payer, payer_key, initial_tinybars).await
+}
+
+/// Creates a new Testnet account controlled by a key structure (for example a
+/// 2-of-3 threshold), funded and signed by the payer. The network does not
+/// require the new keys to sign a creation.
+pub async fn create_testnet_shared_account(
+    tree: &KeyTree,
+    payer: &str,
+    payer_key: (KeyType, &[u8; 32]),
+    initial_tinybars: i64,
+) -> Result<SendReceipt, String> {
+    create_testnet_account_with_key(tree.to_key()?, payer, payer_key, initial_tinybars).await
+}
+
+async fn create_testnet_account_with_key(
+    key: crate::Key,
+    payer: &str,
+    payer_key: (KeyType, &[u8; 32]),
+    initial_tinybars: i64,
+) -> Result<SendReceipt, String> {
     if !(0..=MAX_INITIAL_TINYBARS).contains(&initial_tinybars) {
         return Err("The opening balance is out of range.".to_string());
     }
@@ -180,8 +206,7 @@ pub async fn create_testnet_account(
     let start = now.saturating_sub(Duration::from_secs(10));
     let params = CreateAccountParams {
         payer: payer_id,
-        key_type: new_key.0,
-        public_key: wallet_core::key_import::public_key_bytes(new_key.0, new_key.1)?,
+        key,
         initial_tinybars: initial_tinybars as u64,
         node: TESTNET_NODE_ACCOUNT,
         valid_start_seconds: start.as_secs() as i64,
@@ -228,8 +253,7 @@ pub async fn change_testnet_account_key(
     let start = now.saturating_sub(Duration::from_secs(10));
     let params = ChangeKeyParams {
         account: account_id,
-        new_key_type: new.0,
-        new_public_key,
+        new_key: key_message(new.0, &new_public_key)?,
         node: TESTNET_NODE_ACCOUNT,
         valid_start_seconds: start.as_secs() as i64,
         valid_start_nanos: start.subsec_nanos() as i32,

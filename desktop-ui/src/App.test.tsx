@@ -43,6 +43,7 @@ type Backend = {
   tokenInfo?: Record<string, unknown>
   outside: { id: string; name: string }[]
   deletedOnNetwork?: string[]
+  sharedAccounts?: ReturnType<typeof sharedAccountView>[]
   calls: { cmd: string; args?: Record<string, unknown> }[]
 }
 
@@ -63,6 +64,21 @@ function wallet(id: string, name: string, accounts: string | string[] = []): Wal
     network: 'testnet',
     accounts: [accounts].flat().map(testnetAccount),
     secret_kind: 'mnemonic',
+  }
+}
+
+const SHARED_KEYS = ['aa'.repeat(32), 'bb'.repeat(32), 'cc'.repeat(32)]
+
+function sharedAccountView(id: string, name?: unknown) {
+  return {
+    id,
+    displayId: `${id}-abcde`,
+    name: name ? String(name) : 'NONAME',
+    named: Boolean(name),
+    required: 2,
+    total: 3,
+    keys: SHARED_KEYS,
+    description: `2 of 3:\n${SHARED_KEYS.map((key) => `  Ed25519 ${key}`).join('\n')}`,
   }
 }
 
@@ -389,6 +405,104 @@ function installBackend(overrides: Partial<Backend> = {}) {
         return { transactionId: '0.0.1001-1700000000-000000009' }
       case 'submit_signed_request':
         return { transactionId: '0.0.1001-1700000000-000000008' }
+      case 'list_shared_accounts':
+        return [...(backend.sharedAccounts ?? [])]
+      case 'get_account_key_structure':
+        return {
+          description: `2 of 3:\n${SHARED_KEYS.map((key) => `  Ed25519 ${key}`).join('\n')}`,
+          required: 2,
+          total: 3,
+          keys: SHARED_KEYS,
+        }
+      case 'add_shared_account': {
+        const added = sharedAccountView(String(args?.accountId).split('-')[0], args?.name)
+        backend.sharedAccounts = [...(backend.sharedAccounts ?? []), added]
+        return added
+      }
+      case 'remove_shared_account':
+        backend.sharedAccounts = (backend.sharedAccounts ?? []).filter(
+          (item) => item.id !== args?.accountId,
+        )
+        return undefined
+      case 'get_shared_overview':
+        return backend.overview ?? {
+          account_id: args?.accountId,
+          balance_tinybars: 500_000_000,
+          transactions: [],
+        }
+      case 'prepare_shared_transfer':
+        return {
+          payload: 'HVTX1-REQ:10',
+          qrSize: 2,
+          qrModules: [true, false, false, true],
+          action: 'transfer',
+          sender: String(args?.accountId),
+          receiver: String(args?.recipient),
+          deleteAccount: '',
+          newKey: '',
+          keyStructure: [],
+          tinybars: 150_000_000,
+          tokenId: '',
+          tokenUnits: '',
+          tokenDecimals: 0,
+          serialNumber: '',
+          memo: String(args?.memo ?? ''),
+          expiresAtSeconds: Math.floor(Date.now() / 1000) + 170,
+        }
+      case 'check_shared_signatures': {
+        const responses = (args?.responses as string[]) ?? []
+        if (responses.some((item) => !item.startsWith('HVTX1-SIG:') || item.endsWith('BAD'))) {
+          throw new Error('This is not a valid signature from a signer.')
+        }
+        const unique = [...new Set(responses)]
+        return {
+          signedKeys: unique,
+          required: 2,
+          total: 3,
+          matched: Math.min(unique.length, 3),
+          satisfied: unique.length >= 2,
+        }
+      }
+      case 'submit_shared_transfer':
+        if (backend.sendError) throw new Error(backend.sendError)
+        return { transactionId: '0.0.5005-1700000000-000000021' }
+      case 'create_shared_account':
+        if (backend.sendError) throw new Error(backend.sendError)
+        return { transactionId: '0.0.1001-1700000000-000000022' }
+      case 'finish_shared_create': {
+        const added = sharedAccountView('0.0.9001', args?.name)
+        backend.sharedAccounts = [...(backend.sharedAccounts ?? []), added]
+        return added
+      }
+      case 'prepare_shared_key_change':
+        return {
+          payload: 'HVTX1-REQ:11',
+          qrSize: 2,
+          qrModules: [true, false, false, true],
+          action: 'key-update',
+          sender: String(args?.accountId),
+          receiver: '',
+          deleteAccount: '',
+          newKey: '',
+          keyStructure: ['2 of 3:', ...SHARED_KEYS.map((key) => `  Ed25519 ${key}`)],
+          tinybars: 0,
+          tokenId: '',
+          tokenUnits: '',
+          tokenDecimals: 0,
+          serialNumber: '',
+          memo: '',
+          expiresAtSeconds: Math.floor(Date.now() / 1000) + 170,
+        }
+      case 'submit_shared_key_change':
+        if (backend.sendError) throw new Error(backend.sendError)
+        return { transactionId: '0.0.1001-1700000000-000000023' }
+      case 'finish_shared_convert': {
+        const owner = backend.wallets.find((item) => item.id === args?.walletId)!
+        owner.accounts = owner.accounts.filter((item) => item.id !== args?.accountId)
+        const added = sharedAccountView(String(args?.accountId), args?.name)
+        backend.sharedAccounts = [...(backend.sharedAccounts ?? []), added]
+        return added
+      }
       case 'create_account':
         if (backend.sendError) throw new Error(backend.sendError)
         return { transactionId: '0.0.1001-1700000000-000000006' }
@@ -3141,5 +3255,163 @@ describe('offline key rotation', () => {
       expect(screen.queryByText(/does not allow camera access/)).not.toBeInTheDocument())
     expect(screen.getByRole('button', { name: "Scan new key's signature" })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Stop scanning' })).not.toBeInTheDocument()
+  })
+})
+
+describe('shared accounts (multisig)', () => {
+  it('links a shared account after showing its key structure in full', async () => {
+    const user = userEvent.setup()
+    installBackend({ status: 'unlocked' })
+    render(<App />)
+    await user.click(await screen.findByRole('button', { name: 'Link a shared account' }))
+    await user.type(screen.getByLabelText('Account ID'), '0.0.5005')
+    await user.click(screen.getByRole('button', { name: 'Fetch key structure' }))
+
+    // Every key is shown before the user confirms the link.
+    expect(await screen.findByText(/controlled by 2 of 3 keys/)).toBeInTheDocument()
+    const structure = screen.getByLabelText('Key structure')
+    expect(structure).toHaveTextContent('2 of 3:')
+    expect(structure).toHaveTextContent('aa'.repeat(32))
+    expect(structure).toHaveTextContent('cc'.repeat(32))
+
+    await user.click(screen.getByRole('button', { name: 'Link this account' }))
+    expect(await screen.findByText(/Linked shared account 0\.0\.5005-abcde/)).toBeInTheDocument()
+    expect(commandsCalled('add_shared_account')[0].args).toMatchObject({ accountId: '0.0.5005' })
+    expect(screen.getByText('2 of 3 keys')).toBeInTheDocument()
+  })
+
+  it('sends HBAR only once the threshold is satisfied', async () => {
+    const user = userEvent.setup()
+    installBackend({ status: 'unlocked', sharedAccounts: [sharedAccountView('0.0.5005')] })
+    render(<App />)
+    await user.click(await screen.findByRole('button', { name: 'Send HBAR' }))
+    await user.type(screen.getByLabelText('Recipient account ID'), '0.0.2002-abcde')
+    await user.type(screen.getByLabelText('Amount (HBAR)'), '1.5')
+    await user.click(screen.getByRole('button', { name: 'Create signing request' }))
+
+    await screen.findByRole('group', { name: 'Shared signing request' })
+    const submit = screen.getByRole('button', { name: 'Submit' })
+    expect(submit).toBeDisabled()
+
+    // The first reply is below the threshold; submit stays disabled.
+    await user.type(screen.getByLabelText('Signer reply'), 'HVTX1-SIG:AA')
+    await user.click(screen.getByRole('button', { name: 'Add signature' }))
+    expect(
+      await screen.findByText(/1 reply collected; 1 of the required 2 keys have signed/),
+    ).toBeInTheDocument()
+    expect(submit).toBeDisabled()
+
+    // The second reply satisfies 2-of-3 and the transfer can be submitted.
+    await user.type(screen.getByLabelText('Signer reply'), 'HVTX1-SIG:BB')
+    await user.click(screen.getByRole('button', { name: 'Add signature' }))
+    expect(
+      await screen.findByText('The threshold is satisfied. The transfer can be submitted.'),
+    ).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Submit' }))
+    await waitFor(() =>
+      expect(commandsCalled('submit_shared_transfer')[0].args).toMatchObject({
+        request: 'HVTX1-REQ:10',
+        responses: ['HVTX1-SIG:AA', 'HVTX1-SIG:BB'],
+      }))
+    expect(await screen.findByText(/Transfer submitted/)).toBeInTheDocument()
+  })
+
+  it('refuses an invalid reply and does not keep it', async () => {
+    const user = userEvent.setup()
+    installBackend({ status: 'unlocked', sharedAccounts: [sharedAccountView('0.0.5005')] })
+    render(<App />)
+    await user.click(await screen.findByRole('button', { name: 'Send HBAR' }))
+    await user.type(screen.getByLabelText('Recipient account ID'), '0.0.2002-abcde')
+    await user.type(screen.getByLabelText('Amount (HBAR)'), '1')
+    await user.click(screen.getByRole('button', { name: 'Create signing request' }))
+    await screen.findByRole('group', { name: 'Shared signing request' })
+
+    await user.type(screen.getByLabelText('Signer reply'), 'HVTX1-SIG:BAD')
+    await user.click(screen.getByRole('button', { name: 'Add signature' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'This is not a valid signature from a signer.',
+    )
+    expect(screen.queryByText(/reply collected|replies collected/)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Submit' })).toBeDisabled()
+  })
+
+  it('creates a shared account funded by a hot-wallet account', async () => {
+    const user = userEvent.setup()
+    installBackend({ status: 'unlocked', wallets: [wallet('w1', 'Savings', '0.0.1001')] })
+    render(<App />)
+    await user.click(await screen.findByRole('button', { name: 'Create a shared account' }))
+    await user.selectOptions(
+      screen.getByLabelText('Funding account (signs and pays)'),
+      '0.0.1001',
+    )
+    await user.type(screen.getByLabelText('Opening balance (HBAR)'), '10')
+    await user.type(
+      screen.getByLabelText('Participant public keys (one per line)'),
+      `${'aa'.repeat(32)}\n${'bb'.repeat(32)}\n${'cc'.repeat(32)}`,
+    )
+    await user.click(screen.getByRole('button', { name: 'Create account' }))
+
+    await waitFor(() =>
+      expect(commandsCalled('create_shared_account')[0].args).toMatchObject({
+        fromAccount: '0.0.1001',
+        initialHbar: '10',
+        required: 2,
+        keys: ['aa'.repeat(32), 'bb'.repeat(32), 'cc'.repeat(32)],
+      }))
+    expect(await screen.findByText(/Created shared account 0\.0\.9001-abcde/)).toBeInTheDocument()
+    expect(commandsCalled('finish_shared_create')).toHaveLength(1)
+    expect(screen.getByText('2 of 3 keys')).toBeInTheDocument()
+  })
+
+  it('converts a wallet account into a shared account', async () => {
+    const user = userEvent.setup()
+    installBackend({ status: 'unlocked', wallets: [wallet('w1', 'Savings', '0.0.1001')] })
+    render(<App />)
+    await user.click(await screen.findByRole('button', { name: 'Convert an account' }))
+    await user.selectOptions(screen.getByLabelText('Account to convert'), 'w1/0.0.1001')
+    await user.type(
+      screen.getByLabelText('Participant public keys (one per line)'),
+      `${'aa'.repeat(32)}\n${'bb'.repeat(32)}\n${'cc'.repeat(32)}`,
+    )
+    await user.click(screen.getByRole('button', { name: 'Review key change' }))
+
+    // The whole new key structure is shown before anything is signed.
+    await screen.findByRole('group', { name: 'Shared signing request' })
+    expect(commandsCalled('prepare_shared_key_change')[0].args).toMatchObject({
+      walletId: 'w1',
+      accountId: '0.0.1001',
+      required: 2,
+    })
+    const structure = screen.getByLabelText('Key structure')
+    expect(structure).toHaveTextContent('2 of 3:')
+    expect(structure).toHaveTextContent('bb'.repeat(32))
+
+    // The vault holds the current key, so it can submit without replies here.
+    await user.click(screen.getByRole('button', { name: 'Submit' }))
+    await waitFor(() =>
+      expect(commandsCalled('submit_shared_key_change')[0].args).toMatchObject({
+        walletId: 'w1',
+        request: 'HVTX1-REQ:11',
+        responses: [],
+      }))
+    expect(await screen.findByText(/is now a shared account/)).toBeInTheDocument()
+    expect(commandsCalled('finish_shared_convert')[0].args).toMatchObject({
+      walletId: 'w1',
+      accountId: '0.0.1001',
+    })
+    expect(screen.getByText('2 of 3 keys')).toBeInTheDocument()
+  })
+
+  it('forgets a shared account without touching the network', async () => {
+    const user = userEvent.setup()
+    installBackend({ status: 'unlocked', sharedAccounts: [sharedAccountView('0.0.5005', 'Ours')] })
+    render(<App />)
+    expect(await screen.findByText(/Ours - 0\.0\.5005-abcde/)).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Forget' }))
+    expect(await screen.findByText(/Stopped watching 0\.0\.5005-abcde/)).toBeInTheDocument()
+    expect(screen.queryByText(/Ours - 0\.0\.5005-abcde/)).not.toBeInTheDocument()
+    expect(commandsCalled('remove_shared_account')[0].args).toMatchObject({
+      accountId: '0.0.5005',
+    })
   })
 })

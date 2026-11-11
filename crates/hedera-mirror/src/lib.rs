@@ -276,6 +276,7 @@ struct TransactionEntry {
     name: Option<String>,
     result: Option<String>,
     consensus_timestamp: Option<String>,
+    entity_id: Option<String>,
     #[serde(default)]
     transfers: Vec<TransferEntry>,
 }
@@ -696,6 +697,29 @@ pub fn parse_transaction_result(body: &[u8], expected_id: &str) -> Result<Option
         .map(clean_text))
 }
 
+/// The consensus result and the entity a transaction created (for example the
+/// new account of a `CryptoCreate`), or `None` until the network has it.
+pub fn parse_transaction_outcome(
+    body: &[u8],
+    expected_id: &str,
+) -> Result<Option<(String, Option<String>)>, String> {
+    let response: TransactionsResponse = serde_json::from_slice(body)
+        .map_err(|_| "unexpected response from the mirror node".to_string())?;
+    Ok(response
+        .transactions
+        .iter()
+        .find(|entry| entry.transaction_id == expected_id)
+        .and_then(|entry| {
+            entry.result.as_deref().map(clean_text).map(|result| {
+                let entity = entry
+                    .entity_id
+                    .as_deref()
+                    .and_then(|id| validate_account_id(id).ok());
+                (result, entity)
+            })
+        }))
+}
+
 pub struct MirrorClient {
     http: reqwest::Client,
     base_url: &'static str,
@@ -793,6 +817,19 @@ impl MirrorClient {
         let id = validate_transaction_id(transaction_id)?;
         match self.get(&format!("/api/v1/transactions/{id}")).await? {
             Some(body) => parse_transaction_result(&body, &id),
+            None => Ok(None),
+        }
+    }
+
+    /// Consensus result and created entity of a submitted transaction;
+    /// `None` until Testnet has it.
+    pub async fn transaction_outcome(
+        &self,
+        transaction_id: &str,
+    ) -> Result<Option<(String, Option<String>)>, String> {
+        let id = validate_transaction_id(transaction_id)?;
+        match self.get(&format!("/api/v1/transactions/{id}")).await? {
+            Some(body) => parse_transaction_outcome(&body, &id),
             None => Ok(None),
         }
     }
@@ -1006,6 +1043,23 @@ mod tests {
         .unwrap();
         assert!(listed.has_admin_key && listed.admin_key.is_none());
         assert_eq!(bare.decimals, 18);
+    }
+
+    #[test]
+    fn transaction_outcome_names_the_created_entity() {
+        let body = br#"{"transactions":[
+            {"transaction_id":"0.0.5-1-2","result":"SUCCESS","entity_id":"0.0.9001"},
+            {"transaction_id":"0.0.5-1-3","result":"SUCCESS"}
+        ]}"#;
+        assert_eq!(
+            parse_transaction_outcome(body, "0.0.5-1-2").unwrap(),
+            Some(("SUCCESS".to_string(), Some("0.0.9001".to_string())))
+        );
+        assert_eq!(
+            parse_transaction_outcome(body, "0.0.5-1-3").unwrap(),
+            Some(("SUCCESS".to_string(), None))
+        );
+        assert_eq!(parse_transaction_outcome(body, "0.0.5-1-4").unwrap(), None);
     }
 
     #[test]

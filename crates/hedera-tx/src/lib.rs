@@ -533,9 +533,8 @@ pub fn nft_transfer_body_bytes_valid_for(
 /// Parameters of a `CryptoCreate` that funds a new account from the payer.
 pub struct CreateAccountParams {
     pub payer: (i64, i64, i64),
-    pub key_type: KeyType,
-    /// Public key of the new account (32-byte Ed25519 or 33-byte compressed secp256k1).
-    pub public_key: Vec<u8>,
+    /// The new account's key: a single key or a key structure.
+    pub key: Key,
     pub initial_tinybars: u64,
     pub node: (i64, i64, i64),
     pub valid_start_seconds: i64,
@@ -557,7 +556,6 @@ pub fn create_account_body_bytes_valid_for(
     p: &CreateAccountParams,
     valid_seconds: i64,
 ) -> Result<Vec<u8>, String> {
-    let key = key_message(p.key_type, &p.public_key)?;
     let body = TransactionBody {
         transaction_id: Some(TransactionId {
             valid_start: Some(Timestamp {
@@ -573,7 +571,7 @@ pub fn create_account_body_bytes_valid_for(
         }),
         memo: String::new(),
         crypto_create: Some(CryptoCreateBody {
-            key: Some(key),
+            key: Some(p.key.clone()),
             initial_balance: p.initial_tinybars,
             auto_renew_period: Some(Duration {
                 seconds: AUTO_RENEW_SECONDS,
@@ -657,15 +655,17 @@ pub fn delete_account_body_bytes_valid_for(
 /// pays for the transaction itself.
 pub struct ChangeKeyParams {
     pub account: (i64, i64, i64),
-    pub new_key_type: KeyType,
-    pub new_public_key: Vec<u8>,
+    /// The new key: a single key or a key structure.
+    pub new_key: Key,
     pub node: (i64, i64, i64),
     pub valid_start_seconds: i64,
     pub valid_start_nanos: i32,
     pub max_fee_tinybars: u64,
 }
 
-fn key_message(key_type: KeyType, public_key: &[u8]) -> Result<Key, String> {
+/// The protobuf `Key` message of one single public key (32-byte Ed25519 or
+/// 33-byte compressed secp256k1).
+pub fn key_message(key_type: KeyType, public_key: &[u8]) -> Result<Key, String> {
     match (key_type, public_key.len()) {
         (KeyType::Ed25519, 32) => Ok(Key {
             ed25519: Some(public_key.to_vec()),
@@ -715,7 +715,7 @@ pub fn change_key_body_bytes_valid_for(
         token_burn: None,
         crypto_update: Some(CryptoUpdateBody {
             account_to_update: Some(account(p.account)),
-            key: Some(key_message(p.new_key_type, &p.new_public_key)?),
+            key: Some(p.new_key.clone()),
         }),
     };
     Ok(body.encode_to_vec())
@@ -1128,8 +1128,7 @@ mod tests {
     fn create_account_body_carries_key_balance_and_renewal() {
         let p = CreateAccountParams {
             payer: (0, 0, 1001),
-            key_type: KeyType::Ecdsa,
-            public_key: vec![2u8; 33],
+            key: key_message(KeyType::Ecdsa, &[2u8; 33]).unwrap(),
             initial_tinybars: 50_000_000,
             node: (0, 0, 3),
             valid_start_seconds: 1_700_000_000,
@@ -1147,9 +1146,8 @@ mod tests {
         assert_eq!(key.ecdsa_secp256k1.unwrap(), vec![2u8; 33]);
         assert!(key.ed25519.is_none());
 
-        let mut bad = p;
-        bad.public_key = vec![2u8; 32];
-        assert!(create_account_body_bytes(&bad).is_err());
+        // A key of the wrong length never becomes a key message.
+        assert!(key_message(KeyType::Ecdsa, &[2u8; 32]).is_err());
     }
 
     #[test]
@@ -1159,8 +1157,7 @@ mod tests {
         let new_public = public_key_bytes(KeyType::Ecdsa, &new).unwrap();
         let p = ChangeKeyParams {
             account: (0, 0, 1001),
-            new_key_type: KeyType::Ecdsa,
-            new_public_key: new_public.clone(),
+            new_key: key_message(KeyType::Ecdsa, &new_public).unwrap(),
             node: (0, 0, 3),
             valid_start_seconds: 1_700_000_000,
             valid_start_nanos: 5,
@@ -1183,9 +1180,8 @@ mod tests {
         assert!(pairs[0].ed25519.is_some());
         assert!(pairs[1].ecdsa_secp256k1.is_some());
 
-        let mut bad = p;
-        bad.new_public_key = vec![1u8; 10];
-        assert!(change_key_body_bytes(&bad).is_err());
+        // A key of the wrong length never becomes a key message.
+        assert!(key_message(KeyType::Ed25519, &[1u8; 10]).is_err());
     }
 
     #[test]

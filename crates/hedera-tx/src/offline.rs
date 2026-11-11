@@ -15,6 +15,7 @@ use sha3::{Digest, Keccak256};
 use wallet_core::key_import::KeyType;
 
 use crate::AUTO_RENEW_SECONDS;
+use crate::key_tree::KeyTree;
 use crate::submit::{
     CREATE_PATH, DELETE_PATH, MAX_FEE_TINYBARS, MAX_INITIAL_TINYBARS, MAX_MEMO_BYTES,
     TESTNET_NODE_ACCOUNT, TOKEN_ASSOCIATE_PATH, TOKEN_DISSOCIATE_PATH, TRANSFER_PATH, UPDATE_PATH,
@@ -47,10 +48,9 @@ pub enum Action {
         account: String,
         recipient: String,
     },
-    /// Creates an account controlled by the public key `key_hex`.
+    /// Creates an account controlled by `key` (a single key or a structure).
     CreateAccount {
-        key_type: KeyType,
-        key_hex: String,
+        key: KeyTree,
         initial_tinybars: i64,
     },
     /// Sends `amount` (smallest unit) of a fungible token. `decimals` is the sender's
@@ -75,12 +75,23 @@ pub enum Action {
     TokenDissociate {
         token: String,
     },
-    /// Replaces the payer's account key with `key_hex`. The network requires
-    /// signatures from both the current key and the new key.
+    /// Replaces the payer's account key with `key` (a single key or a
+    /// structure). The network requires signatures from both the current key
+    /// and the new key; a structure must be satisfied to its threshold.
     KeyUpdate {
-        key_type: KeyType,
-        key_hex: String,
+        key: KeyTree,
     },
+}
+
+/// A short name for a key in one line of text: the hex of a single key, or
+/// the shape of a structure.
+fn key_summary(key: &KeyTree) -> String {
+    match key {
+        KeyTree::Single { public_key_hex, .. } => public_key_hex.clone(),
+        KeyTree::Threshold { required, keys } => {
+            format!("a {required}-of-{} key structure", keys.len())
+        }
+    }
 }
 
 /// What a request will do, decoded from the transaction body itself.
@@ -108,10 +119,12 @@ impl RequestDescription {
                 format!("delete {account} and send its HBAR to {recipient}")
             }
             Action::CreateAccount {
-                key_hex,
+                key,
                 initial_tinybars,
-                ..
-            } => format!("create an account with key {key_hex} and {initial_tinybars} tinybars"),
+            } => format!(
+                "create an account with key {} and {initial_tinybars} tinybars",
+                key_summary(key)
+            ),
             Action::TokenTransfer {
                 token,
                 receiver,
@@ -129,8 +142,8 @@ impl RequestDescription {
             }
             Action::TokenAssociate { token } => format!("associate token {token}"),
             Action::TokenDissociate { token } => format!("dissociate token {token}"),
-            Action::KeyUpdate { key_hex, .. } => {
-                format!("replace the account's key with {key_hex}")
+            Action::KeyUpdate { key } => {
+                format!("replace the account's key with {}", key_summary(key))
             }
         }
     }
@@ -216,12 +229,11 @@ pub fn build_delete_request(account: &str, recipient: &str) -> Result<UnsignedRe
     finish(delete_account_body_bytes_valid_for(&params, VALID_SECONDS)?)
 }
 
-/// Builds an unsigned creation of an account controlled by `public_key`,
-/// funded and paid for by `payer`.
+/// Builds an unsigned creation of an account controlled by `key` (a single
+/// key or a key structure), funded and paid for by `payer`.
 pub fn build_create_request(
     payer: &str,
-    key_type: KeyType,
-    public_key: &[u8],
+    key: &KeyTree,
     initial_tinybars: i64,
     memo: &str,
 ) -> Result<UnsignedRequest, String> {
@@ -234,8 +246,7 @@ pub fn build_create_request(
     let (seconds, nanos) = start_time()?;
     let params = CreateAccountParams {
         payer: parse_account(payer)?,
-        key_type,
-        public_key: public_key.to_vec(),
+        key: key.to_key()?,
         initial_tinybars: initial_tinybars as u64,
         node: TESTNET_NODE_ACCOUNT,
         valid_start_seconds: seconds,
@@ -323,17 +334,13 @@ pub fn build_token_association_request(
 }
 
 /// Builds an unsigned key change: `account` pays and its key is replaced by
-/// `public_key`. Both the current key and the new key must sign.
-pub fn build_key_update_request(
-    account: &str,
-    key_type: KeyType,
-    public_key: &[u8],
-) -> Result<UnsignedRequest, String> {
+/// `key` (a single key or a key structure). The current key must sign, and
+/// the new key must be satisfied: the single key, or a structure's threshold.
+pub fn build_key_update_request(account: &str, key: &KeyTree) -> Result<UnsignedRequest, String> {
     let (seconds, nanos) = start_time()?;
     let params = ChangeKeyParams {
         account: parse_account(account)?,
-        new_key_type: key_type,
-        new_public_key: public_key.to_vec(),
+        new_key: key.to_key()?,
         node: TESTNET_NODE_ACCOUNT,
         valid_start_seconds: seconds,
         valid_start_nanos: nanos,
@@ -400,21 +407,11 @@ pub fn describe_body(body_bytes: &[u8]) -> Result<RequestDescription, String> {
     let (action, memo) = if let Some(update) = body.crypto_update.as_ref() {
         let account = update.account_to_update.as_ref().ok_or_else(bad)?;
         let key = update.key.as_ref().ok_or_else(bad)?;
-        let (key_type, key_bytes) = match (&key.ed25519, &key.ecdsa_secp256k1) {
-            (Some(k), None) if k.len() == 32 => (KeyType::Ed25519, k),
-            (None, Some(k)) if k.len() == 33 => (KeyType::Ecdsa, k),
-            _ => return Err(bad()),
-        };
+        let key = KeyTree::from_key(key).map_err(|_| bad())?;
         if account != payer || !body.memo.is_empty() {
             return Err(bad());
         }
-        (
-            Action::KeyUpdate {
-                key_type,
-                key_hex: key_bytes.iter().map(|b| format!("{b:02x}")).collect(),
-            },
-            String::new(),
-        )
+        (Action::KeyUpdate { key }, String::new())
     } else if let Some(change) = body
         .token_association
         .as_ref()
@@ -537,11 +534,7 @@ pub fn describe_body(body_bytes: &[u8]) -> Result<RequestDescription, String> {
     } else {
         let create = body.crypto_create.as_ref().ok_or_else(bad)?;
         let key = create.key.as_ref().ok_or_else(bad)?;
-        let (key_type, key_bytes) = match (&key.ed25519, &key.ecdsa_secp256k1) {
-            (Some(k), None) if k.len() == 32 => (KeyType::Ed25519, k),
-            (None, Some(k)) if k.len() == 33 => (KeyType::Ecdsa, k),
-            _ => return Err(bad()),
-        };
+        let key = KeyTree::from_key(key).map_err(|_| bad())?;
         let renew = create.auto_renew_period.as_ref().ok_or_else(bad)?.seconds;
         let initial = i64::try_from(create.initial_balance).map_err(|_| bad())?;
         if !body.memo.is_empty()
@@ -553,8 +546,7 @@ pub fn describe_body(body_bytes: &[u8]) -> Result<RequestDescription, String> {
         }
         (
             Action::CreateAccount {
-                key_type,
-                key_hex: key_bytes.iter().map(|b| format!("{b:02x}")).collect(),
+                key,
                 initial_tinybars: initial,
             },
             create.memo.clone(),
@@ -673,19 +665,37 @@ pub struct PartiallySigned {
     pub signer_keys: Vec<String>,
 }
 
-/// Checks each response against the request. A duplicate signature (the same
-/// public key twice) is kept once. Used for actions that need more than one
-/// key, such as a key change signed by the current and the new key.
-pub fn collect_signatures(request: &str, responses: &[String]) -> Result<PartiallySigned, String> {
+/// Starts a collection with no signatures yet. Signatures are then added
+/// from signer replies (`add_response`) or vault keys (`sign_locally`).
+pub fn begin_collect(request: &str) -> Result<PartiallySigned, String> {
     let (body, description) = decode_request(request)?;
-    let mut collected = PartiallySigned {
+    Ok(PartiallySigned {
         body,
         description,
         pairs: Vec::new(),
         signer_keys: Vec::new(),
-    };
-    let bad = || "This is not a valid signature from a signer.".to_string();
+    })
+}
+
+/// Checks each response against the request. A duplicate signature (the same
+/// public key twice) is kept once. Used for actions that need more than one
+/// key, such as a key change signed by the current and the new key.
+pub fn collect_signatures(request: &str, responses: &[String]) -> Result<PartiallySigned, String> {
+    let mut collected = begin_collect(request)?;
     for response in responses {
+        collected.add_response(response)?;
+    }
+    if collected.pairs.is_empty() {
+        return Err("No valid signature was provided.".to_string());
+    }
+    Ok(collected)
+}
+
+impl PartiallySigned {
+    /// Verifies one signer reply against the request and adds it. A key that
+    /// has already signed is kept once.
+    pub fn add_response(&mut self, response: &str) -> Result<(), String> {
+        let bad = || "This is not a valid signature from a signer.".to_string();
         let raw = from_hex(strip(response, RESPONSE_PREFIX, "signature")?)?;
         let (&tag, rest) = raw.split_first().ok_or_else(bad)?;
         let (key_type, key_len) = match tag {
@@ -697,25 +707,20 @@ pub fn collect_signatures(request: &str, responses: &[String]) -> Result<Partial
             return Err(bad());
         }
         let (public, signature) = rest.split_at(key_len);
-        verify(&collected.body, key_type, public, signature)?;
+        verify(&self.body, key_type, public, signature)?;
         let key_hex: String = public.iter().map(|b| format!("{b:02x}")).collect();
-        if collected.signer_keys.contains(&key_hex) {
-            continue;
+        if self.signer_keys.contains(&key_hex) {
+            return Ok(());
         }
-        collected.pairs.push(SignaturePair {
+        self.pairs.push(SignaturePair {
             pub_key_prefix: public.to_vec(),
             ed25519: (key_type == KeyType::Ed25519).then(|| signature.to_vec()),
             ecdsa_secp256k1: (key_type == KeyType::Ecdsa).then(|| signature.to_vec()),
         });
-        collected.signer_keys.push(key_hex);
+        self.signer_keys.push(key_hex);
+        Ok(())
     }
-    if collected.pairs.is_empty() {
-        return Err("No valid signature was provided.".to_string());
-    }
-    Ok(collected)
-}
 
-impl PartiallySigned {
     /// Adds a signature from a key held in the vault (for example when the
     /// new key of a key change belongs to a hot wallet). A key that has
     /// already signed is not added twice.
@@ -842,16 +847,16 @@ mod tests {
     fn key_update_round_trip_with_two_signatures() {
         let old_secret = [7u8; 32];
         let new_secret = [8u8; 32];
-        let new_public =
-            wallet_core::key_import::public_key_bytes(KeyType::Ed25519, &new_secret).unwrap();
-        let r = build_key_update_request("0.0.1001", KeyType::Ed25519, &new_public).unwrap();
-        let new_hex: String = new_public.iter().map(|b| format!("{b:02x}")).collect();
+        let new_hex = wallet_core::key_import::public_key_hex(KeyType::Ed25519, &new_secret)
+            .unwrap()
+            .to_lowercase();
+        let new_key = KeyTree::single(KeyType::Ed25519, &new_hex).unwrap();
+        let r = build_key_update_request("0.0.1001", &new_key).unwrap();
         assert_eq!(r.description.payer, "0.0.1001");
         assert_eq!(
             r.description.action,
             Action::KeyUpdate {
-                key_type: KeyType::Ed25519,
-                key_hex: new_hex.clone(),
+                key: new_key.clone()
             }
         );
         assert_eq!(decode_request(&r.payload).unwrap().1, r.description);
@@ -874,8 +879,57 @@ mod tests {
         assert_eq!(partial.signer_keys.len(), 2);
 
         // A signature for a different request is refused.
-        let other = build_key_update_request("0.0.1002", KeyType::Ed25519, &new_public).unwrap();
+        let other = build_key_update_request("0.0.1002", &new_key).unwrap();
         assert!(collect_signatures(&other.payload, &[sig_new]).is_err());
+    }
+
+    #[test]
+    fn key_update_requests_carry_a_key_structure() {
+        let leaves: Vec<KeyTree> = [[1u8; 32], [2u8; 32], [3u8; 32]]
+            .iter()
+            .map(|secret| {
+                let hex =
+                    wallet_core::key_import::public_key_hex(KeyType::Ed25519, secret).unwrap();
+                KeyTree::single(KeyType::Ed25519, &hex).unwrap()
+            })
+            .collect();
+        let tree = KeyTree::Threshold {
+            required: 2,
+            keys: leaves,
+        };
+        let r = build_key_update_request("0.0.1001", &tree).unwrap();
+        assert_eq!(
+            r.description.action,
+            Action::KeyUpdate { key: tree.clone() }
+        );
+        assert!(r.description.action_text().contains("2-of-3"));
+        assert_eq!(decode_request(&r.payload).unwrap().1, r.description);
+        // The request stays well within the signer's size cap.
+        assert!(r.payload.len() < 2_000);
+
+        // A creation carrying the same structure also round-trips.
+        let c = build_create_request("0.0.1001", &tree, 250_000_000, "").unwrap();
+        assert_eq!(
+            c.description.action,
+            Action::CreateAccount {
+                key: tree,
+                initial_tinybars: 250_000_000
+            }
+        );
+        assert_eq!(decode_request(&c.payload).unwrap().1, c.description);
+        assert!(c.payload.len() < 2_000);
+
+        // An oversized structure is refused when building the request.
+        let too_many = KeyTree::Threshold {
+            required: 1,
+            keys: (0..11u8)
+                .map(|n| KeyTree::Single {
+                    key_type: KeyType::Ed25519,
+                    public_key_hex: format!("{n:02x}").repeat(32),
+                })
+                .collect(),
+        };
+        assert!(build_key_update_request("0.0.1001", &too_many).is_err());
     }
 
     #[test]
@@ -1013,21 +1067,23 @@ mod tests {
 
     #[test]
     fn create_request_shows_the_new_key_and_balance() {
-        let key = wallet_core::key_import::public_key_bytes(KeyType::Ecdsa, &[9u8; 32]).unwrap();
-        let r = build_create_request("0.0.1001", KeyType::Ecdsa, &key, 250_000_000, "n").unwrap();
+        let key_hex = wallet_core::key_import::public_key_hex(KeyType::Ecdsa, &[9u8; 32])
+            .unwrap()
+            .to_lowercase();
+        let key = KeyTree::single(KeyType::Ecdsa, &key_hex).unwrap();
+        let r = build_create_request("0.0.1001", &key, 250_000_000, "n").unwrap();
         assert_eq!(r.description.payer, "0.0.1001");
         assert_eq!(r.description.memo, "n");
         assert_eq!(
             r.description.action,
             Action::CreateAccount {
-                key_type: KeyType::Ecdsa,
-                key_hex: key.iter().map(|b| format!("{b:02x}")).collect(),
+                key: key.clone(),
                 initial_tinybars: 250_000_000
             }
         );
-        assert!(build_create_request("0.0.1001", KeyType::Ecdsa, &key[1..], 1, "").is_err());
-        assert!(build_create_request("0.0.1001", KeyType::Ecdsa, &key, -1, "").is_err());
-        assert!(build_create_request("0.0.1001", KeyType::Ecdsa, &key, i64::MAX, "").is_err());
+        assert!(KeyTree::single(KeyType::Ecdsa, &key_hex[2..]).is_err());
+        assert!(build_create_request("0.0.1001", &key, -1, "").is_err());
+        assert!(build_create_request("0.0.1001", &key, i64::MAX, "").is_err());
     }
 
     #[test]

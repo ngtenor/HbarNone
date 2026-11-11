@@ -142,8 +142,26 @@ struct CryptoDeleteBody {
 struct Key {
     #[prost(bytes = "vec", optional, tag = "2")]
     ed25519: Option<Vec<u8>>,
+    #[prost(message, optional, tag = "5")]
+    threshold_key: Option<ThresholdKey>,
+    #[prost(message, optional, tag = "6")]
+    key_list: Option<KeyList>,
     #[prost(bytes = "vec", optional, tag = "7")]
     ecdsa_secp256k1: Option<Vec<u8>>,
+}
+
+#[derive(Clone, PartialEq, Message)]
+struct ThresholdKey {
+    #[prost(uint32, tag = "1")]
+    threshold: u32,
+    #[prost(message, optional, tag = "2")]
+    keys: Option<KeyList>,
+}
+
+#[derive(Clone, PartialEq, Message)]
+struct KeyList {
+    #[prost(message, repeated, tag = "1")]
+    keys: Vec<Key>,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -206,10 +224,10 @@ pub enum Action {
         account: String,
         recipient: String,
     },
-    /// Creates an account controlled by the public key `key_hex` (lowercase hex).
+    /// Creates an account controlled by `key`: a single key, or a flat
+    /// threshold structure shown in full.
     CreateAccount {
-        key_kind: KeyKind,
-        key_hex: String,
+        key: KeyStructure,
         initial_tinybars: i64,
     },
     /// Sends `amount` in the token's smallest unit. Neither the token's name nor
@@ -235,12 +253,47 @@ pub enum Action {
     TokenDissociate {
         token: String,
     },
-    /// Replaces the key of the payer's own account with `key_hex` (lowercase
-    /// hex). Both the current key and the new key must sign.
+    /// Replaces the key of the payer's own account with `key`: a single key,
+    /// or a flat threshold structure shown in full. The current key must
+    /// sign, and the new key must be satisfied (a structure to its threshold).
     KeyUpdate {
-        key_kind: KeyKind,
-        key_hex: String,
+        key: KeyStructure,
     },
+}
+
+/// Most keys a structure may list; every key must fit on the device screen.
+pub const MAX_STRUCTURE_KEYS: usize = 10;
+
+/// The key set on a created or updated account. The device can show every
+/// part of it: one key, or a flat M-of-N threshold over single keys. Nested
+/// structures are rejected by design.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeyStructure {
+    Single {
+        kind: KeyKind,
+        /// Lowercase hex.
+        hex: String,
+    },
+    /// `required` of the listed keys must sign (a key list reads as N-of-N).
+    Threshold {
+        required: u32,
+        /// Lowercase hex, in the order the structure lists them.
+        keys: Vec<(KeyKind, String)>,
+    },
+}
+
+impl KeyStructure {
+    /// The 1-based position of this signing key among the listed keys, and
+    /// the total, for a "key N of M" message; `None` when it is not listed.
+    pub fn position_of(&self, signing_key_hex: &str) -> Option<(usize, usize)> {
+        match self {
+            KeyStructure::Single { hex, .. } => (hex == signing_key_hex).then_some((1, 1)),
+            KeyStructure::Threshold { keys, .. } => keys
+                .iter()
+                .position(|(_, hex)| hex == signing_key_hex)
+                .map(|index| (index + 1, keys.len())),
+        }
+    }
 }
 
 /// Every field the signer shows before signing.
@@ -300,6 +353,62 @@ fn to_hex(bytes: &[u8]) -> String {
 
 fn id_text(id: &AccountId) -> String {
     format!("{}.{}.{}", id.shard, id.realm, id.num)
+}
+
+fn single_key(key: &Key) -> Option<(KeyKind, String)> {
+    let hex = |bytes: &[u8]| bytes.iter().map(|b| format!("{b:02x}")).collect();
+    match (
+        &key.ed25519,
+        &key.ecdsa_secp256k1,
+        &key.threshold_key,
+        &key.key_list,
+    ) {
+        (Some(k), None, None, None) if valid_ed25519(k) => Some((KeyKind::Ed25519, hex(k))),
+        (None, Some(k), None, None) if valid_secp256k1(k) => Some((KeyKind::Ecdsa, hex(k))),
+        _ => None,
+    }
+}
+
+/// Reads an account key the device can show in full: a single key, or a flat
+/// threshold or list of single keys. Anything else (a nested structure, an
+/// unknown key type, a bad threshold, a repeated key) is rejected.
+fn key_structure(key: &Key) -> Result<KeyStructure, Reject> {
+    use Reject::Unsupported as No;
+    if let Some((kind, hex)) = single_key(key) {
+        return Ok(KeyStructure::Single { kind, hex });
+    }
+    let (required, list) = match (
+        &key.ed25519,
+        &key.ecdsa_secp256k1,
+        &key.threshold_key,
+        &key.key_list,
+    ) {
+        (None, None, Some(threshold), None) => {
+            let list = threshold
+                .keys
+                .as_ref()
+                .ok_or(No("the key structure lists no keys"))?;
+            (threshold.threshold, list)
+        }
+        (None, None, None, Some(list)) => (list.keys.len() as u32, list),
+        _ => return Err(No("the key is not a valid single key or structure")),
+    };
+    if list.keys.is_empty() || list.keys.len() > MAX_STRUCTURE_KEYS {
+        return Err(No("the key structure must list 1 to 10 keys"));
+    }
+    if required < 1 || required as usize > list.keys.len() {
+        return Err(No("the threshold must be between 1 and the number of keys"));
+    }
+    let mut keys = Vec::with_capacity(list.keys.len());
+    for child in &list.keys {
+        let entry =
+            single_key(child).ok_or(No("the key structure may hold only valid single keys"))?;
+        if keys.contains(&entry) {
+            return Err(No("the key structure must not repeat a key"));
+        }
+        keys.push(entry);
+    }
+    Ok(KeyStructure::Threshold { required, keys })
 }
 
 /// Decodes and strictly validates the body. Returns the body bytes to sign
@@ -381,15 +490,9 @@ fn summarise(bytes: &[u8]) -> Result<Summary, Reject> {
             return Err(No("a key change has no memo"));
         }
         let key = update.key.as_ref().ok_or(No("no new key"))?;
-        let (key_kind, key_bytes) = match (&key.ed25519, &key.ecdsa_secp256k1) {
-            (Some(k), None) if valid_ed25519(k) => (KeyKind::Ed25519, k),
-            (None, Some(k)) if valid_secp256k1(k) => (KeyKind::Ecdsa, k),
-            _ => return Err(No("the new key is not a valid single key")),
-        };
         (
             Action::KeyUpdate {
-                key_kind,
-                key_hex: key_bytes.iter().map(|b| format!("{b:02x}")).collect(),
+                key: key_structure(key)?,
             },
             String::new(),
         )
@@ -537,11 +640,7 @@ fn summarise(bytes: &[u8]) -> Result<Summary, Reject> {
             return Err(No("a creation has no transaction memo"));
         }
         let key = create.key.as_ref().ok_or(No("no key"))?;
-        let (key_kind, key_bytes) = match (&key.ed25519, &key.ecdsa_secp256k1) {
-            (Some(k), None) if valid_ed25519(k) => (KeyKind::Ed25519, k),
-            (None, Some(k)) if valid_secp256k1(k) => (KeyKind::Ecdsa, k),
-            _ => return Err(No("the new account's key is not a valid single key")),
-        };
+        let key = key_structure(key)?;
         let renew = create
             .auto_renew_period
             .as_ref()
@@ -559,8 +658,7 @@ fn summarise(bytes: &[u8]) -> Result<Summary, Reject> {
         }
         (
             Action::CreateAccount {
-                key_kind,
-                key_hex: key_bytes.iter().map(|b| format!("{b:02x}")).collect(),
+                key,
                 initial_tinybars: initial,
             },
             create.memo.clone(),
@@ -840,16 +938,12 @@ mod tests {
             KeyKind::Ed25519 => wallet_core::key_import::KeyType::Ed25519,
             KeyKind::Ecdsa => wallet_core::key_import::KeyType::Ecdsa,
         };
-        let payload = build_create_request(
-            "0.0.1001",
-            kind,
-            &key.public_key().unwrap(),
-            250_000_000,
-            "savings",
-        )
-        .unwrap()
-        .payload;
-        (payload, key.public_key_hex().unwrap())
+        let hex = key.public_key_hex().unwrap();
+        let tree = hedera_tx::key_tree::KeyTree::single(kind, &hex).unwrap();
+        let payload = build_create_request("0.0.1001", &tree, 250_000_000, "savings")
+            .unwrap()
+            .payload;
+        (payload, hex)
     }
 
     fn edit_body(request: &str, edit: impl FnOnce(&mut TransactionBody)) -> String {
@@ -932,14 +1026,118 @@ mod tests {
             assert_eq!(
                 s.action,
                 Action::CreateAccount {
-                    key_kind: kind,
-                    key_hex,
+                    key: KeyStructure::Single { kind, hex: key_hex },
                     initial_tinybars: 250_000_000
                 }
             );
             let key = SigningKey::new(kind, secret).unwrap();
             let reply = sign(&payload, &key, now()).unwrap();
             assert!(assemble(&payload, &reply).is_ok());
+        }
+    }
+
+    fn threshold_tree(required: u32, count: u8) -> hedera_tx::key_tree::KeyTree {
+        use hedera_tx::key_tree::KeyTree;
+        use wallet_core::key_import::KeyType;
+        let keys = (1..=count)
+            .map(|n| {
+                let signer = SigningKey::new(KeyKind::Ed25519, [n; 32]).unwrap();
+                KeyTree::single(KeyType::Ed25519, &signer.public_key_hex().unwrap()).unwrap()
+            })
+            .collect();
+        KeyTree::Threshold { required, keys }
+    }
+
+    #[test]
+    fn shows_threshold_structures_in_full_for_create_and_key_change() {
+        use hedera_tx::offline::build_key_update_request;
+        let tree = threshold_tree(2, 3);
+        let payload = build_create_request("0.0.1001", &tree, 250_000_000, "")
+            .unwrap()
+            .payload;
+        let (_, s) = parse_request(&payload).unwrap();
+        let Action::CreateAccount {
+            key: KeyStructure::Threshold { required, keys },
+            initial_tinybars,
+        } = &s.action
+        else {
+            panic!("not a threshold creation");
+        };
+        assert_eq!((*required, keys.len()), (2, 3));
+        assert_eq!(*initial_tinybars, 250_000_000);
+        // "Key N of M" positions for each participant, none for a stranger.
+        let second = SigningKey::new(KeyKind::Ed25519, [2u8; 32]).unwrap();
+        let structure = KeyStructure::Threshold {
+            required: *required,
+            keys: keys.clone(),
+        };
+        assert_eq!(
+            structure.position_of(&second.public_key_hex().unwrap()),
+            Some((2, 3))
+        );
+        assert_eq!(structure.position_of("ab"), None);
+
+        // The same structure as a key change, signed by one participant.
+        let update = build_key_update_request("0.0.1001", &tree).unwrap().payload;
+        let (_, s) = parse_request(&update).unwrap();
+        assert_eq!(
+            s.action,
+            Action::KeyUpdate {
+                key: structure.clone()
+            }
+        );
+        let reply = sign(&update, &second, now()).unwrap();
+        assert!(assemble(&update, &reply).is_ok());
+    }
+
+    #[test]
+    fn rejects_structures_beyond_the_whitelist() {
+        let tree = threshold_tree(2, 3);
+        let base = build_create_request("0.0.1001", &tree, 250_000_000, "")
+            .unwrap()
+            .payload;
+        fn threshold(b: &mut TransactionBody) -> &mut ThresholdKey {
+            b.crypto_create
+                .as_mut()
+                .unwrap()
+                .key
+                .as_mut()
+                .unwrap()
+                .threshold_key
+                .as_mut()
+                .unwrap()
+        }
+        // A nested structure, a bad threshold, a repeated key, an oversized
+        // list and an empty list are all rejected.
+        let nested = edit_body(&base, |b| {
+            let t = threshold(b);
+            let child = t.keys.as_ref().unwrap().keys[0].clone();
+            t.keys.as_mut().unwrap().keys[0] = Key {
+                key_list: Some(KeyList { keys: vec![child] }),
+                ..Key::default()
+            };
+        });
+        let zero = edit_body(&base, |b| threshold(b).threshold = 0);
+        let too_high = edit_body(&base, |b| threshold(b).threshold = 4);
+        let repeated = edit_body(&base, |b| {
+            let t = threshold(b);
+            let first = t.keys.as_ref().unwrap().keys[0].clone();
+            t.keys.as_mut().unwrap().keys[1] = first;
+        });
+        let oversized = edit_body(&base, |b| {
+            let t = threshold(b);
+            let keys = &mut t.keys.as_mut().unwrap().keys;
+            for n in 4..=11u8 {
+                let signer = SigningKey::new(KeyKind::Ed25519, [n; 32]).unwrap();
+                keys.push(Key {
+                    ed25519: Some(signer.public_key().unwrap()),
+                    ..Key::default()
+                });
+            }
+        });
+        let empty = edit_body(&base, |b| threshold(b).keys.as_mut().unwrap().keys.clear());
+        for bad in [nested, zero, too_high, repeated, oversized, empty] {
+            assert!(parse_request(&bad).is_err(), "should reject {bad}");
         }
     }
 

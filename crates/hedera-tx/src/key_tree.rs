@@ -118,6 +118,16 @@ impl KeyTree {
         Ok(self.to_key_unchecked())
     }
 
+    /// Lowercase hex of the serialised protobuf `Key` message for this tree.
+    pub fn to_hex(&self) -> Result<String, String> {
+        Ok(self
+            .to_key()?
+            .encode_to_vec()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect())
+    }
+
     fn to_key_unchecked(&self) -> Key {
         match self {
             KeyTree::Single {

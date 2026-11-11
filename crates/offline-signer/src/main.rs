@@ -11,8 +11,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 mod scan;
 
 use signer_core::{
-    Action, KeyKind, SigningKey, Summary, check_time, format_hbar, parse_request, sign,
-    with_checksum,
+    Action, KeyKind, KeyStructure, SigningKey, Summary, check_time, format_hbar, parse_request,
+    sign, with_checksum,
 };
 use wallet_core::key_import::parse_private_key;
 use wallet_core::wallet::Wallet;
@@ -57,6 +57,37 @@ fn ask_secret(label: &str) -> Result<Zeroizing<String>, String> {
     Ok(Zeroizing::new(line.trim().to_string()))
 }
 
+fn kind_label(kind: &KeyKind) -> &'static str {
+    match kind {
+        KeyKind::Ed25519 => "(Ed25519)",
+        KeyKind::Ecdsa => "(ECDSA)",
+    }
+}
+
+/// Every key of the structure, in full: a single key on one line, or the
+/// threshold followed by one numbered line per key.
+fn show_key_structure(label: &str, key: &KeyStructure) {
+    match key {
+        KeyStructure::Single { kind, hex } => {
+            println!("  {label}  {} {hex}", kind_label(kind));
+        }
+        KeyStructure::Threshold { required, keys } => {
+            println!(
+                "  {label}  THRESHOLD: any {required} of these {} keys must sign",
+                keys.len()
+            );
+            for (index, (kind, hex)) in keys.iter().enumerate() {
+                println!(
+                    "    key {} of {}  {} {hex}",
+                    index + 1,
+                    keys.len(),
+                    kind_label(kind)
+                );
+            }
+        }
+    }
+}
+
 fn show(summary: &Summary) {
     println!();
     println!("  ====== PLEASE CHECK EVERY LINE ======");
@@ -83,8 +114,7 @@ fn show(summary: &Summary) {
             println!("  Fee paid by   {}", with_checksum(&summary.payer));
         }
         Action::CreateAccount {
-            key_kind,
-            key_hex,
+            key,
             initial_tinybars,
         } => {
             println!("  Action        CREATE AN ACCOUNT");
@@ -94,15 +124,17 @@ fn show(summary: &Summary) {
                 "  Opening balance  {} HBAR ({initial_tinybars} tinybars)",
                 format_hbar(*initial_tinybars)
             );
-            println!(
-                "  New account key  {} {key_hex}",
-                match key_kind {
-                    KeyKind::Ed25519 => "(Ed25519)",
-                    KeyKind::Ecdsa => "(ECDSA)",
-                }
-            );
+            show_key_structure("New account key", key);
             println!("  Account memo  {:?}", summary.memo);
-            println!("  Whoever holds that key controls the new account and its HBAR.");
+            match key {
+                KeyStructure::Single { .. } => {
+                    println!("  Whoever holds that key controls the new account and its HBAR.")
+                }
+                KeyStructure::Threshold { required, keys } => println!(
+                    "  Any {required} of those {} keys together control the new account and its HBAR.",
+                    keys.len()
+                ),
+            }
         }
         Action::TokenTransfer {
             token,
@@ -152,20 +184,34 @@ fn show(summary: &Summary) {
             println!("  Account       {}", with_checksum(&summary.payer));
             println!("  Token ID      {}", with_checksum(token));
         }
-        Action::KeyUpdate { key_kind, key_hex } => {
+        Action::KeyUpdate { key } => {
             println!("  Action        REPLACE THE ACCOUNT'S KEY (key rotation)");
             println!("  Network       Hedera Testnet (no real value)");
             println!("  Account       {}", with_checksum(&summary.payer));
-            println!(
-                "  New key       {} {key_hex}",
-                match key_kind {
-                    KeyKind::Ed25519 => "(Ed25519)",
-                    KeyKind::Ecdsa => "(ECDSA)",
+            show_key_structure("New key", key);
+            match key {
+                KeyStructure::Single { .. } => {
+                    println!("  After this, ONLY the new key controls the account and its funds.");
+                    println!(
+                        "  The network needs TWO signatures: the current key and the new key."
+                    );
+                    println!(
+                        "  Run this signer once with each key and give both replies to the app."
+                    );
                 }
-            );
-            println!("  After this, ONLY the new key controls the account and its funds.");
-            println!("  The network needs TWO signatures: the current key and the new key.");
-            println!("  Run this signer once with each key and give both replies to the app.");
+                KeyStructure::Threshold { required, keys } => {
+                    println!(
+                        "  After this, any {required} of those {} keys together control the account and its funds.",
+                        keys.len()
+                    );
+                    println!(
+                        "  The network needs the CURRENT key's signature plus {required} of the new keys'."
+                    );
+                    println!(
+                        "  Run this signer once with each key and give every reply to the app."
+                    );
+                }
+            }
         }
     }
     println!(
@@ -241,14 +287,15 @@ fn run() -> Result<(), String> {
         with_checksum(&summary.payer)
     );
     match &summary.action {
-        Action::CreateAccount { key_hex: new, .. } if *new == key_hex => {
-            println!("The new account will use this same key.");
-        }
-        Action::CreateAccount { .. } => {
-            println!(
-                "WARNING: the new account's key is DIFFERENT from the key you are signing with."
-            );
-        }
+        Action::CreateAccount { key: new, .. } => match new.position_of(&key_hex) {
+            Some((1, 1)) => println!("The new account will use this same key."),
+            Some((position, total)) => println!(
+                "This signing key is key {position} of {total} in the new account's structure."
+            ),
+            None => println!(
+                "WARNING: the key you are signing with is NOT part of the new account's key."
+            ),
+        },
         Action::DeleteAccount { .. } => {
             println!("A deletion needs this key to control both accounts shown above.");
         }
@@ -281,14 +328,20 @@ fn run_key_update(request: &str, summary: &Summary) -> Result<(), String> {
             with_checksum(&summary.payer)
         );
         match &summary.action {
-            Action::KeyUpdate { key_hex: new, .. } if *new == key_hex => {
-                println!("This signature is from the NEW key. The current key must also sign.");
-            }
-            _ => {
-                println!(
-                    "This signature should be from the account's CURRENT key. The new key must also sign."
-                );
-            }
+            Action::KeyUpdate { key: new } => match new.position_of(&key_hex) {
+                Some((1, 1)) => {
+                    println!("This signature is from the NEW key. The current key must also sign.")
+                }
+                Some((position, total)) => println!(
+                    "This signing key is key {position} of {total} of the NEW structure. \
+                     The current key must also sign."
+                ),
+                None => println!(
+                    "This signing key is not in the new structure, so it should be the \
+                     account's CURRENT key. The new key(s) must also sign."
+                ),
+            },
+            _ => {}
         }
         let as_qr = match ask("Type 1 to sign and show the signature as a QR code,\n\
              2 to show it in plain text, anything else to cancel: ")?

@@ -3,6 +3,7 @@
 use std::{path::PathBuf, sync::Mutex};
 
 use hedera_mirror::{AccountOverview, MirrorClient, TokenInfo};
+use hedera_tx::key_tree::KeyTree;
 use serde::{Deserialize, Serialize};
 use tauri::{Manager, State};
 use tauri_plugin_dialog::DialogExt;
@@ -11,8 +12,8 @@ use wallet_core::{
     key_import::{KeyType, SecretKind, is_valid_ecdsa_secret, parse_private_key, public_key_hex},
     vault_container::Network,
     wallet_service::{
-        AddressBookRow, LegacyWalletPassword, MAX_BACKUP_BYTES, WalletService, WalletSummary,
-        validate_account_id,
+        AddressBookRow, LegacyWalletPassword, MAX_BACKUP_BYTES, SharedAccountSummary,
+        WalletService, WalletSummary, validate_account_id,
     },
 };
 use zeroize::Zeroizing;
@@ -1181,8 +1182,12 @@ struct SigningRequest {
     receiver: String,
     /// The account a deletion removes.
     delete_account: String,
-    /// The public key of a new account, in hex.
+    /// The public key of a new account, in hex; empty when the key is a
+    /// structure (see `key_structure`).
     new_key: String,
+    /// The lines of a key structure being set (threshold first, then one key
+    /// per line); empty for a single key.
+    key_structure: Vec<String>,
     /// HBAR sent, or the opening balance of a new account.
     tinybars: i64,
     /// The token of a token request, or empty.
@@ -1217,33 +1222,53 @@ fn signing_request(request: hedera_tx::offline::UnsignedRequest) -> Result<Signi
             })?;
     let shown = |id: &str| with_checksum(Network::Testnet, id).unwrap_or_else(|_| id.to_string());
     let d = request.description;
-    let (action, receiver, delete_account, new_key, tinybars) = match &d.action {
+    // A single key shows as hex in `new_key`; a structure as `key_structure` lines.
+    let key_display = |key: &hedera_tx::key_tree::KeyTree| match key {
+        hedera_tx::key_tree::KeyTree::Single { public_key_hex, .. } => {
+            (public_key_hex.clone(), Vec::new())
+        }
+        tree => (
+            String::new(),
+            tree.describe().lines().map(str::to_string).collect(),
+        ),
+    };
+    let (action, receiver, delete_account, new_key, key_structure, tinybars) = match &d.action {
         Action::Transfer { receiver, tinybars } => (
             "transfer",
             shown(receiver),
             String::new(),
             String::new(),
+            Vec::new(),
             *tinybars,
         ),
-        Action::DeleteAccount { account, recipient } => {
-            ("delete", shown(recipient), shown(account), String::new(), 0)
-        }
-        Action::CreateAccount {
-            key_hex,
-            initial_tinybars,
-            ..
-        } => (
-            "create",
+        Action::DeleteAccount { account, recipient } => (
+            "delete",
+            shown(recipient),
+            shown(account),
             String::new(),
-            String::new(),
-            key_hex.clone(),
-            *initial_tinybars,
+            Vec::new(),
+            0,
         ),
+        Action::CreateAccount {
+            key,
+            initial_tinybars,
+        } => {
+            let (new_key, key_structure) = key_display(key);
+            (
+                "create",
+                String::new(),
+                String::new(),
+                new_key,
+                key_structure,
+                *initial_tinybars,
+            )
+        }
         Action::TokenTransfer { receiver, .. } => (
             "token-transfer",
             shown(receiver),
             String::new(),
             String::new(),
+            Vec::new(),
             0,
         ),
         Action::NftTransfer { receiver, .. } => (
@@ -1251,6 +1276,7 @@ fn signing_request(request: hedera_tx::offline::UnsignedRequest) -> Result<Signi
             shown(receiver),
             String::new(),
             String::new(),
+            Vec::new(),
             0,
         ),
         Action::TokenAssociate { .. } => (
@@ -1258,6 +1284,7 @@ fn signing_request(request: hedera_tx::offline::UnsignedRequest) -> Result<Signi
             String::new(),
             String::new(),
             String::new(),
+            Vec::new(),
             0,
         ),
         Action::TokenDissociate { .. } => (
@@ -1265,15 +1292,20 @@ fn signing_request(request: hedera_tx::offline::UnsignedRequest) -> Result<Signi
             String::new(),
             String::new(),
             String::new(),
+            Vec::new(),
             0,
         ),
-        Action::KeyUpdate { key_hex, .. } => (
-            "key-update",
-            String::new(),
-            String::new(),
-            key_hex.clone(),
-            0,
-        ),
+        Action::KeyUpdate { key } => {
+            let (new_key, key_structure) = key_display(key);
+            (
+                "key-update",
+                String::new(),
+                String::new(),
+                new_key,
+                key_structure,
+                0,
+            )
+        }
     };
     let (token_id, token_units, token_decimals) = match &d.action {
         Action::TokenTransfer {
@@ -1305,6 +1337,7 @@ fn signing_request(request: hedera_tx::offline::UnsignedRequest) -> Result<Signi
         receiver,
         delete_account,
         new_key,
+        key_structure,
         tinybars,
         token_id,
         token_units,
@@ -1457,21 +1490,9 @@ fn prepare_unsigned_create(
         .find(|w| w.id == wallet_id)
         .ok_or_else(|| format!("wallet not found: {wallet_id}"))?;
     let public_key = lock_service(&state)?.wallet_public_key(&wallet_id)?;
-    let key_bytes = (0..public_key.len())
-        .step_by(2)
-        .map(|i| {
-            public_key
-                .get(i..i + 2)
-                .and_then(|h| u8::from_str_radix(h, 16).ok())
-        })
-        .collect::<Option<Vec<u8>>>()
-        .ok_or_else(|| "The wallet key is damaged.".to_string())?;
+    let key = hedera_tx::key_tree::KeyTree::single(wallet.key_type, &public_key)?;
     signing_request(hedera_tx::offline::build_create_request(
-        &payer,
-        wallet.key_type,
-        &key_bytes,
-        tinybars,
-        "",
+        &payer, &key, tinybars, "",
     )?)
 }
 
@@ -1525,8 +1546,9 @@ async fn submit_signed_request(
                 return Err("Both accounts of a deletion must belong to this wallet.".to_string());
             }
         }
-        Action::CreateAccount { key_hex, .. } => {
-            if !wallet_key.eq_ignore_ascii_case(key_hex) {
+        Action::CreateAccount { key, .. } => {
+            let expected = hedera_tx::key_tree::KeyTree::single(wallet.key_type, &wallet_key)?;
+            if *key != expected {
                 return Err("The new account must use this wallet's own key.".to_string());
             }
         }
@@ -1563,19 +1585,9 @@ fn prepare_unsigned_move(
         .map(|wallet| wallet.key_type)
         .ok_or_else(|| format!("wallet not found: {target_wallet_id}"))?;
     let target_key = lock_service(&state)?.wallet_public_key(&target_wallet_id)?;
-    let key_bytes = (0..target_key.len())
-        .step_by(2)
-        .map(|i| {
-            target_key
-                .get(i..i + 2)
-                .and_then(|h| u8::from_str_radix(h, 16).ok())
-        })
-        .collect::<Option<Vec<u8>>>()
-        .ok_or_else(|| "The target wallet key is damaged.".to_string())?;
+    let key = hedera_tx::key_tree::KeyTree::single(target_type, &target_key)?;
     signing_request(hedera_tx::offline::build_key_update_request(
-        &account,
-        target_type,
-        &key_bytes,
+        &account, &key,
     )?)
 }
 
@@ -1601,8 +1613,15 @@ async fn submit_signed_move(
     let target_key = lock_service(&state)?
         .wallet_public_key(&target_wallet_id)?
         .to_lowercase();
+    let target_type = lock_service(&state)?
+        .list_wallets()?
+        .into_iter()
+        .find(|wallet| wallet.id == target_wallet_id)
+        .map(|wallet| wallet.key_type)
+        .ok_or_else(|| format!("wallet not found: {target_wallet_id}"))?;
+    let expected = hedera_tx::key_tree::KeyTree::single(target_type, &target_key)?;
     match &partial.description.action {
-        Action::KeyUpdate { key_hex, .. } if *key_hex == target_key => {}
+        Action::KeyUpdate { key } if *key == expected => {}
         Action::KeyUpdate { .. } => {
             return Err("The request does not move the account to the chosen wallet.".to_string());
         }
@@ -1624,6 +1643,429 @@ async fn submit_signed_move(
     }
     let transaction_id = partial.submit().await?;
     Ok(SendResult { transaction_id })
+}
+
+/// A shared (multisig) account as shown to the UI: the stored entry plus its
+/// parsed key structure.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SharedAccountView {
+    id: String,
+    display_id: String,
+    name: String,
+    named: bool,
+    /// How many of the listed keys must sign.
+    required: u32,
+    total: usize,
+    /// Lowercase hex leaf keys in display order.
+    keys: Vec<String>,
+    /// One line per node: the threshold, then one key per line.
+    description: String,
+}
+
+fn shared_view(summary: SharedAccountSummary) -> Result<SharedAccountView, String> {
+    let tree = KeyTree::from_mirror("ProtobufEncoded", &summary.key_hex)?;
+    let (required, total) = tree.required_and_total();
+    Ok(SharedAccountView {
+        id: summary.id,
+        display_id: summary.display_id,
+        name: summary.name,
+        named: summary.named,
+        required,
+        total,
+        keys: tree.leaf_keys().into_iter().map(|(_, hex)| hex).collect(),
+        description: tree.describe(),
+    })
+}
+
+/// The stored key structure of a shared account.
+fn shared_tree_of(state: &AppState, account_id: &str) -> Result<KeyTree, String> {
+    let key_hex = lock_service(state)?.shared_account_key_hex(Network::Testnet, account_id)?;
+    KeyTree::from_mirror("ProtobufEncoded", &key_hex)
+}
+
+/// A flat M-of-N structure from pasted or chosen public keys (64 hex
+/// characters Ed25519, 66 ECDSA).
+fn tree_from_inputs(required: u32, keys: &[String]) -> Result<KeyTree, String> {
+    let leaves = keys
+        .iter()
+        .map(|key| {
+            let hex = key.trim().to_ascii_lowercase();
+            let key_type = match hex.len() {
+                64 => KeyType::Ed25519,
+                66 => KeyType::Ecdsa,
+                _ => {
+                    return Err(
+                        "Each key must be 64 (Ed25519) or 66 (ECDSA) hexadecimal characters."
+                            .to_string(),
+                    );
+                }
+            };
+            KeyTree::single(key_type, &hex)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if leaves.len() < 2 {
+        return Err("A shared account needs at least two keys.".to_string());
+    }
+    let tree = KeyTree::Threshold {
+        required,
+        keys: leaves,
+    };
+    tree.validate()?;
+    Ok(tree)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SharedSignatureProgress {
+    /// Lowercase hex keys that have signed, in the order collected.
+    signed_keys: Vec<String>,
+    required: u32,
+    total: usize,
+    /// How many of the structure's keys have signed.
+    matched: usize,
+    satisfied: bool,
+}
+
+/// Progress of the collected signatures against the account's structure. A
+/// verified signature from a key outside the structure is an error, so an
+/// unrelated reply is caught the moment it is added.
+fn shared_progress(
+    partial: &hedera_tx::offline::PartiallySigned,
+    tree: &KeyTree,
+) -> Result<SharedSignatureProgress, String> {
+    for key in &partial.signer_keys {
+        if !tree.contains_key(key) {
+            return Err(format!(
+                "A signature was made with a key that is not part of this account: {key}"
+            ));
+        }
+    }
+    let (required, total) = tree.required_and_total();
+    Ok(SharedSignatureProgress {
+        signed_keys: partial.signer_keys.clone(),
+        required,
+        total,
+        matched: total - partial.missing_keys(tree).len(),
+        satisfied: partial.satisfies(tree),
+    })
+}
+
+/// Fetches the account's key structure from the mirror node and stores the
+/// account as a shared (multisig) account.
+async fn link_shared_account(
+    state: &AppState,
+    account_id: &str,
+    name: Option<String>,
+) -> Result<SharedAccountView, String> {
+    let raw = MirrorClient::testnet()?
+        .account_key(account_id)
+        .await?
+        .ok_or_else(|| "The account is unknown on Testnet.".to_string())?;
+    let tree = KeyTree::from_mirror(&raw.kind, &raw.hex)?;
+    if tree.required_and_total().1 < 2 {
+        return Err(
+            "This account uses a single key. Link it to a wallet on the home screen instead."
+                .to_string(),
+        );
+    }
+    let summary = lock_service(state)?.add_shared_account_and_save(
+        Network::Testnet,
+        account_id,
+        name.as_deref().map(str::trim).filter(|n| !n.is_empty()),
+        &tree.to_hex()?,
+        &state.store_path.to_string_lossy(),
+    )?;
+    shared_view(summary)
+}
+
+/// Every shared (multisig) account the vault watches.
+#[tauri::command]
+fn list_shared_accounts(state: State<'_, AppState>) -> Result<Vec<SharedAccountView>, String> {
+    lock_service(&state)?
+        .list_shared_accounts()?
+        .into_iter()
+        .map(shared_view)
+        .collect()
+}
+
+/// Links an existing Testnet account whose key is a structure. The structure
+/// is fetched from the mirror node and stored for display and for checking
+/// collected signatures.
+#[tauri::command]
+async fn add_shared_account(
+    account_id: String,
+    name: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<SharedAccountView, String> {
+    let account_id = parse_account_input(&account_id, Network::Testnet, false)?;
+    link_shared_account(&state, &account_id, name).await
+}
+
+/// Stops watching a shared account. Nothing changes on the network.
+#[tauri::command]
+fn remove_shared_account(account_id: String, state: State<'_, AppState>) -> Result<(), String> {
+    lock_service(&state)?.remove_shared_account_and_save(
+        Network::Testnet,
+        &account_id,
+        &state.store_path.to_string_lossy(),
+    )
+}
+
+/// Balance and recent transactions of a shared account.
+#[tauri::command]
+async fn get_shared_overview(
+    account_id: String,
+    state: State<'_, AppState>,
+) -> Result<Option<AccountOverview>, String> {
+    let account_id = validate_account_id(&account_id)?;
+    lock_service(&state)?.shared_account_key_hex(Network::Testnet, &account_id)?;
+    MirrorClient::testnet()?.account_overview(&account_id).await
+}
+
+/// Creates a new Testnet account controlled by an M-of-N key structure,
+/// funded by a hot-wallet account that signs and pays. The new account shows
+/// up on the mirror node once consensus is reached (`finish_shared_create`).
+#[tauri::command]
+async fn create_shared_account(
+    from_account: String,
+    initial_hbar: String,
+    required: u32,
+    keys: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<SendResult, String> {
+    let tinybars = hedera_tx::submit::parse_hbar(&initial_hbar)?;
+    let payer = parse_account_input(&from_account, Network::Testnet, false)?;
+    let tree = tree_from_inputs(required, &keys)?;
+    let payer_wallet_id = lock_service(&state)?
+        .list_wallets()?
+        .into_iter()
+        .find(|wallet| {
+            wallet
+                .accounts
+                .iter()
+                .any(|a| a.network == Network::Testnet && a.id == payer)
+        })
+        .map(|wallet| wallet.id)
+        .ok_or_else(|| "The funding account must belong to a wallet in this vault.".to_string())?;
+    let (payer_type, payer_secret) = lock_service(&state)?
+        .with_wallet_key(&payer_wallet_id, |key_type, secret| {
+            Ok((key_type, Zeroizing::new(*secret)))
+        })?;
+    let receipt = hedera_tx::submit::create_testnet_shared_account(
+        &tree,
+        &payer,
+        (payer_type, &payer_secret),
+        tinybars,
+    )
+    .await?;
+    Ok(SendResult {
+        transaction_id: receipt.transaction_id,
+    })
+}
+
+/// Links the account a `create_shared_account` transaction created, once the
+/// mirror node shows it.
+#[tauri::command]
+async fn finish_shared_create(
+    transaction_id: String,
+    name: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<SharedAccountView, String> {
+    let (result, entity) = MirrorClient::testnet()?
+        .transaction_outcome(&transaction_id)
+        .await?
+        .ok_or_else(|| "Testnet has not confirmed the creation yet.".to_string())?;
+    if result != "SUCCESS" {
+        return Err(format!("The account creation failed: {result}"));
+    }
+    let account_id =
+        entity.ok_or_else(|| "Testnet has not confirmed the creation yet.".to_string())?;
+    link_shared_account(&state, &account_id, name).await
+}
+
+/// Builds an unsigned HBAR transfer from a shared account. Each participant
+/// signs the same request; the app merges the replies and submits.
+#[tauri::command]
+fn prepare_shared_transfer(
+    account_id: String,
+    recipient: String,
+    amount_hbar: String,
+    memo: String,
+    state: State<'_, AppState>,
+) -> Result<SigningRequest, String> {
+    let tinybars = hedera_tx::submit::parse_hbar(&amount_hbar)?;
+    let sender = validate_account_id(&account_id)?;
+    lock_service(&state)?.shared_account_key_hex(Network::Testnet, &sender)?;
+    let recipient = parse_account_input(&recipient, Network::Testnet, true)?;
+    ensure_send_allowed(&state, &recipient)?;
+    signing_request(hedera_tx::offline::build_request(
+        &sender, &recipient, tinybars, &memo,
+    )?)
+}
+
+/// Verifies the collected replies against the request and reports progress
+/// towards the account's threshold. Duplicate signatures are kept once;
+/// invalid, mismatched or unrelated ones are errors.
+#[tauri::command]
+fn check_shared_signatures(
+    request: String,
+    responses: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<SharedSignatureProgress, String> {
+    let mut partial = hedera_tx::offline::begin_collect(&request)?;
+    for response in &responses {
+        partial.add_response(response)?;
+    }
+    let tree = shared_tree_of(&state, &partial.description.payer.clone())?;
+    shared_progress(&partial, &tree)
+}
+
+/// Submits a shared-account HBAR transfer once the collected signatures
+/// satisfy the account's threshold. A doomed transaction is never submitted.
+#[tauri::command]
+async fn submit_shared_transfer(
+    request: String,
+    responses: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<SendResult, String> {
+    use hedera_tx::offline::Action;
+    let partial = hedera_tx::offline::collect_signatures(&request, &responses)?;
+    let payer = partial.description.payer.clone();
+    let tree = shared_tree_of(&state, &payer)?;
+    match &partial.description.action {
+        Action::Transfer { receiver, .. } => ensure_send_allowed(&state, receiver)?,
+        _ => return Err("This request is not an HBAR transfer.".to_string()),
+    }
+    let progress = shared_progress(&partial, &tree)?;
+    if !progress.satisfied {
+        return Err(format!(
+            "Only {} of the required {} keys have signed. Collect the missing signatures within the time limit.",
+            progress.matched, progress.required
+        ));
+    }
+    let transaction_id = partial.submit().await?;
+    Ok(SendResult { transaction_id })
+}
+
+/// Builds an unsigned key change that puts one of the wallet's accounts under
+/// an M-of-N key structure. The current key must sign, plus enough of the new
+/// keys to satisfy the threshold.
+#[tauri::command]
+fn prepare_shared_key_change(
+    wallet_id: String,
+    account_id: String,
+    required: u32,
+    keys: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<SigningRequest, String> {
+    let account = testnet_account_of(&state, &wallet_id, &account_id)?;
+    let tree = tree_from_inputs(required, &keys)?;
+    signing_request(hedera_tx::offline::build_key_update_request(
+        &account, &tree,
+    )?)
+}
+
+/// Verifies the replies for a key change to a structure and submits it. The
+/// vault co-signs with the current key and any participant keys it holds;
+/// the rest must come as signer replies.
+#[tauri::command]
+async fn submit_shared_key_change(
+    wallet_id: String,
+    request: String,
+    responses: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<SendResult, String> {
+    use hedera_tx::offline::Action;
+    let mut partial = hedera_tx::offline::begin_collect(&request)?;
+    for response in &responses {
+        partial.add_response(response)?;
+    }
+    let payer = partial.description.payer.clone();
+    testnet_account_of(&state, &wallet_id, &payer)?;
+    let tree = match &partial.description.action {
+        Action::KeyUpdate {
+            key: key @ KeyTree::Threshold { .. },
+        } => key.clone(),
+        Action::KeyUpdate { .. } => {
+            return Err("Use Move account for a change to a single key.".to_string());
+        }
+        _ => return Err("This request is not a key change.".to_string()),
+    };
+    let old_key = lock_service(&state)?
+        .wallet_public_key(&wallet_id)?
+        .to_lowercase();
+    // The vault co-signs with the current key and any participant keys it holds.
+    if !partial.signer_keys.contains(&old_key) {
+        let local = lock_service(&state)?.with_wallet_key(&wallet_id, |key_type, secret| {
+            Ok((key_type, Zeroizing::new(*secret)))
+        });
+        match local {
+            Ok((key_type, secret)) => partial.sign_locally(key_type, &secret)?,
+            Err(_) => return Err("The current key's signature is missing.".to_string()),
+        }
+    }
+    for wallet in lock_service(&state)?.list_wallets()? {
+        if wallet.secret_kind == SecretKind::WatchOnly {
+            continue;
+        }
+        let Ok(key_hex) = lock_service(&state)?.wallet_public_key(&wallet.id) else {
+            continue;
+        };
+        let key_hex = key_hex.to_lowercase();
+        if tree.contains_key(&key_hex) && !partial.signer_keys.contains(&key_hex) {
+            let local = lock_service(&state)?.with_wallet_key(&wallet.id, |key_type, secret| {
+                Ok((key_type, Zeroizing::new(*secret)))
+            });
+            if let Ok((key_type, secret)) = local {
+                partial.sign_locally(key_type, &secret)?;
+            }
+        }
+    }
+    for key in &partial.signer_keys {
+        if *key != old_key && !tree.contains_key(key) {
+            return Err(format!(
+                "A signature was made with a key that is neither the current key nor part of the new structure: {key}"
+            ));
+        }
+    }
+    if !partial.satisfies(&tree) {
+        let (required, _) = tree.required_and_total();
+        return Err(format!(
+            "The new structure needs {required} of its keys to sign. Collect the missing signatures within the time limit."
+        ));
+    }
+    let transaction_id = partial.submit().await?;
+    Ok(SendResult { transaction_id })
+}
+
+/// Moves the account from its wallet to the shared-accounts list, but only
+/// once Testnet shows a key structure on it.
+#[tauri::command]
+async fn finish_shared_convert(
+    wallet_id: String,
+    account_id: String,
+    name: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<SharedAccountView, String> {
+    let account = testnet_account_of(&state, &wallet_id, &account_id)?;
+    let raw = MirrorClient::testnet()?
+        .account_key(&account)
+        .await?
+        .ok_or_else(|| "The account is unknown on Testnet.".to_string())?;
+    let tree = KeyTree::from_mirror(&raw.kind, &raw.hex)?;
+    if tree.required_and_total().1 < 2 {
+        return Err("Testnet has not confirmed the key change yet.".to_string());
+    }
+    let summary = lock_service(&state)?.convert_account_to_shared_and_save(
+        &wallet_id,
+        Network::Testnet,
+        &account,
+        name.as_deref().map(str::trim).filter(|n| !n.is_empty()),
+        &tree.to_hex()?,
+        &state.store_path.to_string_lossy(),
+    )?;
+    shared_view(summary)
 }
 
 /// Creates an account controlled by this wallet's key. The funding account must
@@ -2294,6 +2736,18 @@ fn main() {
             set_allow_nft_custom_fees,
             get_transaction_result,
             get_account_overview,
+            list_shared_accounts,
+            add_shared_account,
+            remove_shared_account,
+            get_shared_overview,
+            create_shared_account,
+            finish_shared_create,
+            prepare_shared_transfer,
+            check_shared_signatures,
+            submit_shared_transfer,
+            prepare_shared_key_change,
+            submit_shared_key_change,
+            finish_shared_convert,
             send_hbar,
             create_account,
             move_account,

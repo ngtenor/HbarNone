@@ -104,6 +104,18 @@ awaits the stage-5 Testnet run.
 
 ## Stage 3: account setup and key change (coordinator + signer)
 
+**Status: built 11 Nov, Testnet verification pending (stage 5)** —
+`CreateAccountParams`/`ChangeKeyParams` carry a protobuf `Key`, the offline
+builders take a `KeyTree`, `Action::CreateAccount`/`KeyUpdate` describe
+structures, `create_testnet_shared_account` funds a threshold account, and
+the signer shows flat threshold structures in full ("key N of M") while
+rejecting nested, oversized, repeated-key or bad-threshold shapes. Desktop:
+`create_shared_account`/`finish_shared_create` (hot funder; the mirror
+transaction's `entity_id` names the new account) and
+`prepare_shared_key_change`/`submit_shared_key_change`/`finish_shared_convert`
+(current key plus the new structure's threshold; the vault co-signs with keys
+it holds).
+
 - `hedera-tx`: let `CryptoCreateBody.key` and `CryptoUpdateBody.key` carry a
   full key tree (they already take a `Key`; the new variants make trees
   expressible). New builders or parameters: `build_create_request` /
@@ -132,6 +144,16 @@ awaits the stage-5 Testnet run.
   unrelated key — per the planned workflow).
 
 ## Stage 4: multisig account representation and transfer flow
+
+**Status: built 11 Nov, Testnet verification pending (stage 5)** — the vault
+payload gained `shared_accounts` (network, ID, optional name, key-structure
+hex; legacy vaults default to none), and the home tab a "Shared accounts"
+section: link with a full key-structure preview, create, convert, and an HBAR
+send flow that collects replies one at a time (paste or camera), verifies
+each against the exact body bytes as it is added, shows progress against the
+threshold, explains the 180-second window, and enables submit only when the
+threshold is satisfied. Duplicate replies count once; invalid, mismatched and
+unrelated ones are refused with specific messages.
 
 - Data model: a multisig account cannot belong to one wallet key. Store it as
   a watch-only-style entry that records the account ID, network and its key

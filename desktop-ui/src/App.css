@@ -1261,6 +1261,32 @@ h2.section-title,
   word-break: break-all;
 }
 
+/* Shared (multisig) accounts on the home tab. */
+.shared-accounts {
+  margin-top: 20px;
+}
+
+.shared-accounts form,
+.shared-accounts .testnet-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.shared-structure {
+  white-space: pre-wrap;
+  margin: 4px 0;
+  padding: 8px;
+  font-size: 12px;
+  background: rgba(127, 127, 127, 0.1);
+  border-radius: 6px;
+}
+
+.shared-account-list .button-pair {
+  margin: 6px 0 10px;
+}
+
 .testnet-transactions {
   display: grid;
   padding: 0;

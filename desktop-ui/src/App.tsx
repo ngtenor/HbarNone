@@ -11,6 +11,7 @@ import { HelpPanel } from './HelpPanel'
 import { DropdownMenu } from './DropdownMenu'
 import type { MenuEntry } from './DropdownMenu'
 import { AccountBadge, WalletBadge } from './WalletBadge'
+import { SharedAccounts } from './SharedAccounts'
 import type { AddressBookView, KeyDetection, WalletKeys, WalletSummary } from './types'
 import brandLockup from './assets/brand-lockup.png'
 import './App.css'
@@ -1649,6 +1650,18 @@ function App() {
                   </>
                 )}
               </section>
+              {networkView === 'testnet' && (
+                <SharedAccounts
+                  wallets={visibleWallets}
+                  onWalletsRefresh={() => {
+                    void invoke<VaultState>('get_vault_state')
+                      .then((state) => {
+                        if (state.status === 'unlocked') setWallets(state.wallets)
+                      })
+                      .catch(() => undefined)
+                  }}
+                />
+              )}
             </section>
           )}
 

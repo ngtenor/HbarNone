@@ -184,6 +184,7 @@ type SigningRequest = {
   receiver: string
   deleteAccount: string
   newKey: string
+  keyStructure: string[]
   tinybars: number
   tokenId: string
   tokenUnits: string
