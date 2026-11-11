@@ -178,16 +178,25 @@ Testnet verification and CI before moving to the next stage.
 - [ ] Reject duplicate, unrelated, invalid or mismatched signatures and explain
   the transaction signing time limit.
 - [ ] Test successful and insufficient-signature cases on Testnet, document
-  recovery and limitations, and pass CI. Defer broader threshold structures
-  and scheduled transactions unless time permits.
+  recovery and limitations, and pass CI. Keep this milestone focused on
+  ordinary transactions; schedule transactions are committed for the later
+  roadmap below.
+- [ ] Keep the key-tree representation and threshold evaluation generic and
+  independent of transaction type. Keep request validation, signature
+  verification and aggregation separable; bind each reply to the exact signing
+  bytes and signer key, and do not assume every signature arrives within one
+  180-second transaction window. Treat schedule signing as a distinct intent,
+  not as an ordinary transaction with a different label.
 
 ### 14 November: hardware readiness and consolidation
 - [ ] Prepare a wiring plan for the Pico 2, display, Arducam SPI camera and
   microSD reader; check pin, power and physical compatibility.
 - [ ] Specify first-use provisioning and signed SD-card updates without
   connecting the signer to a computer.
-- [ ] Prepare software-side QR transport tests and a non-secret sample CNC
-  toolpath; document the risks of exporting secret toolpaths.
+- [ ] Specify signer export of QR images to microSD and a separate,
+  network-disabled laptop app that converts imported QR images to GRBL G-code
+  for Universal Gcode Sender (UGS). Test with a non-secret sample and document
+  the risks of handling secret SeedQRs and toolpaths.
 - [ ] Run regression checks and prepare a hardware test handover checklist.
 - [ ] BIP39 passphrase support in the signer, to be implemented before the
   physical signer is developed (agreed 10 Nov). The device is stateless (the
@@ -244,7 +253,11 @@ Goal: a small, fully readable signer. It signs only what it can show in full and
 5. Account create, update (key change) and delete. Show the full key (or key structure) being set.
    - **Done:** create (key shown in full, warning if it differs from the signing key), delete (recipient must be another account of the same watch-only wallet, one signature), and key change (two signatures via the multi-signature reply format, built and verified on Testnet 9 Nov).
    - **Still to do:** delete to a recipient with a different key (uses the same multi-signature reply format).
-6. Optional later: approve/delete allowance, and `ScheduleCreate`/`ScheduleSign` (needed for multisig collection over days).
+6. Later signer roadmap: `ScheduleCreate`/`ScheduleSign` for multisig collection
+  over days. Schedule signing must not approve based only on a schedule ID and
+  a coordinator-supplied description; define how the signer authenticates the
+  scheduled contents before displaying and signing them. Allowance
+  approve/delete remains optional later work.
 
 **Rejected by default**
 - Smart-contract calls and creation, and EVM transactions (opaque call data cannot be displayed).
@@ -262,6 +275,7 @@ Goal: a small, fully readable signer. It signs only what it can show in full and
 - The device signs the same body bytes as for a single key, and returns one signature. The desktop app is the coordinator: it builds the body, collects signatures (QR transport), merges them and submits.
 - The device must show the whole key structure (threshold and every public key) when an account is created or its key is changed.
 - A transaction is valid for at most about 180 seconds from its start time, and the start time cannot be in the future. Signing across devices in different places therefore needs scheduled transactions, or all signers in one place within that window.
+- Design the coordinator and signature records so a later schedule workflow can retain pending approvals across sessions, while keeping schedule-content authentication separate from ordinary transaction validation. Do not implement schedule transactions in this milestone.
 
 **Planned workflow: three keys, two signatures, one device**
 - Three independent keys are kept in separate places (three separate seeds, never derived from one mnemonic), with a 2-of-3 threshold account.
@@ -280,8 +294,8 @@ Goal: a small, fully readable signer. It signs only what it can show in full and
 - Tests: a canary-key build that scans the framebuffer, QR output, SD writes and logs for key bytes; property tests; parser fuzzing; signed, reproducible firmware.
 
 **Exports and engraving (later)**
-- QR images to microSD, GRBL G-code (for UGS) to engrave QR codes in steel, and optional printing. A shared `no_std` Rust crate generates the QR and toolpaths and is tested on the PC first.
-- Secret backups are produced on the signer only; public engravings (addresses, watch-only keys) can come from the desktop app. Every export needs an explicit confirmation.
+- The signer exports QR images to microSD only; it does not generate toolpaths. A separate app on a network-disabled laptop imports those images and generates GRBL G-code for Universal Gcode Sender (UGS), which controls the CNC machine. Keep this tooling separate from the signer's small, auditable codebase.
+- Secret backups are produced on the signer only; public engravings (addresses, watch-only keys) can come from the desktop app. Every export needs an explicit confirmation. Secret SeedQR images and any derived toolpaths, media, laptop storage, or CNC system handling them must be treated as secret.
 - Print support comes last; writing a PBM/PNG/PDF to the SD card comes first.
 
 **Code size and readability**
@@ -291,10 +305,12 @@ Goal: a small, fully readable signer. It signs only what it can show in full and
 ## Hardware bill of materials (signer prototype)
 
 **The signer must never be connected to a computer** — no USB data connection
-at any point in its life. Firmware updates and CNC toolpath exports go through
-microSD cards only, with separate cards for updates and exports. Secret SeedQR
-toolpaths, and any card or CNC system handling them, must themselves be
-treated as secret.
+at any point in its life. Firmware updates and QR-image exports go through
+microSD cards only, with separate cards for updates and exports. A
+network-disabled laptop imports the QR images and runs the separate
+QR-to-toolpath app and UGS; the signer never creates G-code. Secret SeedQR
+images and any derived toolpaths, media, laptop storage, or CNC system handling
+them must themselves be treated as secret.
 
 | Part | Role | Status (9 Nov 2026) |
 | --- | --- | --- |
@@ -332,6 +348,9 @@ together.
   still to be done; deferred for later: custom fees at collection creation
   (tier 2) and burn by serial number (tier 3), see the NFT stage above;
   smart-contract calls stay rejected by the signer by design)
+- [ ] Add scheduled-transaction support for multisig collection over days:
+  `ScheduleCreate` and `ScheduleSign`, with strict signer-side validation of
+  the scheduled action and a documented schedule-content authentication model.
 - [ ] Design a reproducible hardware prototype
 
 ## Validation status
