@@ -2152,6 +2152,11 @@ h2 {
   font-size: 12px;
 }
 
+/* The wallet-key camera overlays the form, as on the move-signing screen. */
+.settings-panel.create-panel {
+  position: relative;
+}
+
 .erase-panel .erase-button {
   height: 42px;
   padding: 0 14px;

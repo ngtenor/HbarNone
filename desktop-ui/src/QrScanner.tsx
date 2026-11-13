@@ -9,10 +9,21 @@ type QrScannerProps = {
   onClose: () => void
   // Hidden when the button that opened the scanner already reads "Stop scanning".
   showStopButton?: boolean
+  // What the camera is looking for, in messages (default: "signer reply").
+  subject?: string
+  // Whether pasting the payload is an alternative when there is no camera.
+  pasteFallback?: boolean
 }
 
 // Reads QR codes from the camera. Frames are decoded in memory only and never stored or sent.
-export function QrScanner({ prefix, onScan, onClose, showStopButton = true }: QrScannerProps) {
+export function QrScanner({
+  prefix,
+  onScan,
+  onClose,
+  showStopButton = true,
+  subject = 'signer reply',
+  pasteFallback = true,
+}: QrScannerProps) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const onScanRef = useRef(onScan)
@@ -51,7 +62,7 @@ export function QrScanner({ prefix, onScan, onClose, showStopButton = true }: Qr
               onScanRef.current(text)
               return
             }
-            setMessage('That QR code is not a signer reply. Keep looking for the right one.')
+            setMessage(`That QR code is not a ${subject}. Keep looking for the right one.`)
           }
         }
       }
@@ -60,7 +71,11 @@ export function QrScanner({ prefix, onScan, onClose, showStopButton = true }: Qr
 
     const start = async () => {
       if (!navigator.mediaDevices?.getUserMedia) {
-        setMessage('This system does not allow camera access. Paste the reply instead.')
+        setMessage(
+          pasteFallback
+            ? 'This system does not allow camera access. Paste the reply instead.'
+            : 'This system does not allow camera access. A camera is required here.',
+        )
         return
       }
       try {
@@ -77,19 +92,23 @@ export function QrScanner({ prefix, onScan, onClose, showStopButton = true }: Qr
           videoRef.current.srcObject = opened
           await videoRef.current.play().catch(() => undefined)
         }
-        setMessage('Hold the signer reply QR code in front of the camera.')
+        setMessage(`Hold the ${subject} QR code in front of the camera.`)
         scan()
       } catch {
-        setMessage('The camera could not be used. Allow camera access, or paste the reply instead.')
+        setMessage(
+          pasteFallback
+            ? 'The camera could not be used. Allow camera access, or paste the reply instead.'
+            : 'The camera could not be used. Allow camera access and try again.',
+        )
       }
     }
 
     void start()
     return stop
-  }, [prefix])
+  }, [prefix, subject, pasteFallback])
 
   return (
-    <div className="qr-scanner" role="group" aria-label="Scan the signer reply">
+    <div className="qr-scanner" role="group" aria-label={`Scan the ${subject}`}>
       <video ref={videoRef} muted playsInline aria-label="Camera preview" />
       <canvas ref={canvasRef} hidden />
       <p className="field-hint" role="status">

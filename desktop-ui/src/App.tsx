@@ -10,6 +10,7 @@ import type { TxProgress } from './TransactionProgress'
 import { HelpPanel } from './HelpPanel'
 import { DropdownMenu } from './DropdownMenu'
 import type { MenuEntry } from './DropdownMenu'
+import { QrScanner } from './QrScanner'
 import { AccountBadge, WalletBadge } from './WalletBadge'
 import { SharedAccounts } from './SharedAccounts'
 import type { AddressBookView, KeyDetection, WalletKeys, WalletSummary } from './types'
@@ -183,6 +184,10 @@ function App() {
   const [importMnemonic, setImportMnemonic] = useState('')
   const [importKind, setImportKind] = useState<'phrase' | 'key' | 'watchonly'>('phrase')
   const [importKeyType, setImportKeyType] = useState<'auto' | 'ed25519' | 'ecdsa'>('auto')
+  // Watch-only wallets are created from a public key scanned off the signer
+  // device; the key is never typed or pasted.
+  const [scanningWalletKey, setScanningWalletKey] = useState(false)
+  const [scanError, setScanError] = useState('')
   const [walletKeys, setWalletKeys] = useState<{ id: string, keys: WalletKeys } | null>(null)
   const [balances, setBalances] = useState<Record<string, number>>({})
   const [selectedAccounts, setSelectedAccounts] = useState<Record<string, string>>({})
@@ -340,6 +345,27 @@ function App() {
     document.addEventListener('mousedown', closeOnOutsideClick)
     return () => document.removeEventListener('mousedown', closeOnOutsideClick)
   }, [renamingWalletId, isRenaming])
+
+  // The wallet-key camera closes on a click anywhere outside it, as on the
+  // move-signing screen.
+  useEffect(() => {
+    if (!scanningWalletKey) return
+    const closeOnOutsideClick = (event: MouseEvent) => {
+      const target = event.target as Element | null
+      if (target?.closest('.qr-scanner-overlay, .scan-wallet-key-button')) return
+      setScanningWalletKey(false)
+    }
+    document.addEventListener('mousedown', closeOnOutsideClick)
+    return () => document.removeEventListener('mousedown', closeOnOutsideClick)
+  }, [scanningWalletKey])
+
+  // A rejected scan disappears on the next click anywhere in the app.
+  useEffect(() => {
+    if (!scanError) return
+    const clear = () => setScanError('')
+    document.addEventListener('mousedown', clear)
+    return () => document.removeEventListener('mousedown', clear)
+  }, [scanError])
 
   useEffect(() => {
     if (!findNotice) return
@@ -741,20 +767,28 @@ function App() {
   async function handleSaveWallet(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     setError('')
+    // Watch-only wallets (all Mainnet wallets, and the Testnet watch-only
+    // import) are created from a scanned signer public key, never typed, so
+    // submitting the form only opens the camera. No secret is ever created
+    // or imported for Mainnet, so keys used on Testnet stay off Mainnet.
+    if (networkView === 'mainnet' || (walletMode === 'import' && importKind === 'watchonly')) {
+      if (name.trim()) {
+        setScanError('')
+        setScanningWalletKey(true)
+      }
+      return
+    }
     setIsSavingWallet(true)
-    // Mainnet wallets are watch-only: no secret is ever created or imported
-    // for Mainnet, so keys used on Testnet stay off Mainnet and vice versa.
-    const watchOnlyForced = networkView === 'mainnet'
     try {
       let wallet: WalletSummary
-      if (!watchOnlyForced && walletMode === 'create') {
+      if (walletMode === 'create') {
         wallet = await invoke<WalletSummary>('create_wallet', { name })
-      } else if (!watchOnlyForced && importKind === 'phrase') {
+      } else if (importKind === 'phrase') {
         wallet = await invoke<WalletSummary>('import_wallet', {
           name,
           mnemonic: importMnemonic,
         })
-      } else if (!watchOnlyForced && importKind === 'key') {
+      } else {
         let keyType: 'ed25519' | 'ecdsa' | null = importKeyType === 'auto' ? null : importKeyType
         if (keyType === null) {
           let detection: KeyDetection
@@ -779,15 +813,8 @@ function App() {
           privateKey: importMnemonic,
           keyType,
         })
-      } else {
-        wallet = await invoke<WalletSummary>('import_watch_only_wallet', {
-          name,
-          publicKey: importMnemonic,
-          keyType: importKeyType === 'ecdsa' ? 'ecdsa' : 'ed25519',
-          network: networkView,
-        })
       }
-      if (walletMode === 'import' || watchOnlyForced) {
+      if (walletMode === 'import') {
         // Link every account this key controls on the wallet's network. The
         // wallet is already saved, so a lookup failure only means the
         // accounts are added later.
@@ -803,6 +830,45 @@ function App() {
       setActiveTab('home')
     } catch (saveError) {
       setError(errorMessage(saveError))
+    } finally {
+      setIsSavingWallet(false)
+    }
+  }
+
+  // Creates a watch-only wallet from a public key scanned off the signer
+  // device (`HVTX1-PUB:<type>:<hex>`); the payload carries its own key type.
+  async function handleWalletKeyScanned(text: string) {
+    setScanningWalletKey(false)
+    const payload = text.slice('HVTX1-PUB:'.length)
+    const colon = payload.indexOf(':')
+    const keyType = colon < 0 ? '' : payload.slice(0, colon)
+    const publicKey = payload.slice(colon + 1)
+    if (keyType !== 'ed25519' && keyType !== 'ecdsa') {
+      setScanError('The scanned code is not a public key from the signer.')
+      return
+    }
+    setIsSavingWallet(true)
+    try {
+      let wallet = await invoke<WalletSummary>('import_watch_only_wallet', {
+        name,
+        publicKey,
+        keyType,
+        network: networkView,
+      })
+      // Link every account this key controls on the wallet's network. The
+      // wallet is already saved, so a lookup failure only means the
+      // accounts are added later.
+      try {
+        wallet = await invoke<WalletSummary>('find_wallet_accounts', { walletId: wallet.id })
+      } catch {
+        // Nothing to link yet, or the mirror node is unreachable.
+      }
+      setWallets((existing) => [...existing, wallet])
+      setName('')
+      setImportMnemonic('')
+      setActiveTab('home')
+    } catch (saveError) {
+      setScanError(errorMessage(saveError))
     } finally {
       setIsSavingWallet(false)
     }
@@ -1171,6 +1237,8 @@ function App() {
     setName('')
     setImportMnemonic('')
     setImportKeyType('auto')
+    setScanningWalletKey(false)
+    setScanError('')
     setError('')
   }
 
@@ -1950,7 +2018,8 @@ function App() {
                   <p className="field-hint">
                     Mainnet wallets are watch-only. This app never creates, imports or
                     stores a secret for Mainnet, so keys used on Testnet stay off
-                    Mainnet. Enter a public key to monitor its accounts and balances.
+                    Mainnet. Scan the signer device's public-key QR code to monitor
+                    matching accounts and balances.
                   </p>
                 )}
                 {networkView === 'testnet' && (
@@ -2082,33 +2151,13 @@ function App() {
                 )}
 
                 {(networkView === 'mainnet' || (walletMode === 'import' && importKind === 'watchonly')) && (
-                  <>
-                    <label htmlFor="import-watch-public-key">Public key (hex or DER)</label>
-                    <input
-                      id="import-watch-public-key"
-                      autoComplete="off"
-                      autoCapitalize="none"
-                      maxLength={200}
-                      spellCheck={false}
-                      required
-                      value={importMnemonic}
-                      onChange={(event) => setImportMnemonic(event.target.value)}
-                    />
-                    <label htmlFor="import-watch-key-type">Key type</label>
-                    <select
-                      id="import-watch-key-type"
-                      value={importKeyType === 'auto' ? 'ed25519' : importKeyType}
-                      onChange={(event) => setImportKeyType(event.target.value as 'ed25519' | 'ecdsa')}
-                    >
-                      <option value="ed25519">Ed25519</option>
-                      <option value="ecdsa">ECDSA (secp256k1)</option>
-                    </select>
-                    <p className="field-hint">
-                      Stores only this public key (raw hex or the DER form exported by most Hedera tools).
-                      It can monitor matching
-                      {networkView === 'mainnet' ? ' Mainnet' : ' Testnet'} accounts but cannot sign or spend.
-                    </p>
-                  </>
+                  <p className="field-hint">
+                    Name the wallet, then scan the public key shown by the signer
+                    device (its &ldquo;show a key&rsquo;s public key&rdquo; option). The wallet
+                    stores only that public key: it can monitor matching
+                    {networkView === 'mainnet' ? ' Mainnet' : ' Testnet'} accounts but
+                    cannot sign or spend. Keys cannot be typed or pasted here.
+                  </p>
                 )}
 
                 <label htmlFor="wallet-name">Wallet name</label>
@@ -2122,16 +2171,30 @@ function App() {
                   onChange={(event) => setName(event.target.value)}
                 />
                 {error && <p className="error-message" role="alert">{error}</p>}
+                {scanError && <p className="error-message" role="alert">{scanError}</p>}
                 <div className="button-pair">
-                  <button className="primary-button" type="submit" disabled={isSavingWallet}>
-                    {isSavingWallet
-                      ? 'Saving securely...'
-                      : networkView === 'mainnet' || (walletMode === 'import' && importKind === 'watchonly')
-                        ? 'Add watch-only wallet'
+                  {networkView === 'mainnet'
+                    || (walletMode === 'import' && importKind === 'watchonly') ? (
+                    <button
+                      className="primary-button scan-wallet-key-button"
+                      type="button"
+                      disabled={isSavingWallet || !name.trim()}
+                      onClick={() => {
+                        setScanError('')
+                        setScanningWalletKey(true)
+                      }}
+                    >
+                      {isSavingWallet ? 'Saving securely...' : 'Scan to create wallet'}
+                    </button>
+                  ) : (
+                    <button className="primary-button" type="submit" disabled={isSavingWallet}>
+                      {isSavingWallet
+                        ? 'Saving securely...'
                         : walletMode === 'create'
                           ? 'Create encrypted wallet'
                           : 'Import encrypted wallet'}
-                  </button>
+                    </button>
+                  )}
                   <button
                     className="secondary-button"
                     type="button"
@@ -2141,6 +2204,18 @@ function App() {
                     Cancel
                   </button>
                 </div>
+                {scanningWalletKey && (
+                  <div className="qr-scanner-overlay">
+                    <QrScanner
+                      prefix="HVTX1-PUB:"
+                      subject="public key"
+                      pasteFallback={false}
+                      onScan={(text) => void handleWalletKeyScanned(text)}
+                      onClose={() => setScanningWalletKey(false)}
+                      showStopButton={false}
+                    />
+                  </div>
+                )}
               </form>
             </section>
           )}

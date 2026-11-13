@@ -1694,9 +1694,14 @@ describe('watch-only wallet', () => {
     await user.click(await screen.findByRole('button', { name: 'Import' }))
     await user.click(screen.getByRole('button', { name: 'Watch-only public key' }))
     const publicKey = 'd75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a'
-    await user.type(screen.getByLabelText('Public key (hex or DER)'), publicKey)
+    expect(screen.queryByLabelText('Public key (hex or DER)')).not.toBeInTheDocument()
+    const scanButton = screen.getByRole('button', { name: 'Scan to create wallet' })
+    expect(scanButton).toBeDisabled()
     await user.type(screen.getByLabelText('Wallet name'), 'Monitor')
-    await user.click(screen.getByRole('button', { name: 'Add watch-only wallet' }))
+    expect(scanButton).toBeEnabled()
+    scanner.reply = `HVTX1-PUB:ed25519:${publicKey}`
+    await user.click(scanButton)
+    await user.click(await screen.findByRole('button', { name: 'Deliver scanned reply' }))
 
     expect(commandsCalled('import_watch_only_wallet')[0].args).toEqual({
       name: 'Monitor',
@@ -1714,6 +1719,25 @@ describe('watch-only wallet', () => {
     expect(screen.queryByRole('heading', { name: 'Create account' })).not.toBeInTheDocument()
     await chooseMenu(user, 'Wallet management', 'Create account')
     expect(screen.getByRole('heading', { name: 'Create account' })).toBeInTheDocument()
+  })
+
+  it('rejects a malformed public-key QR without creating a wallet', async () => {
+    const user = userEvent.setup()
+    installBackend()
+    render(<App />)
+    await unlock(user)
+    await user.click(screen.getByRole('button', { name: /Create \/ import wallet/ }))
+    await user.click(await screen.findByRole('button', { name: 'Import' }))
+    await user.click(screen.getByRole('button', { name: 'Watch-only public key' }))
+    await user.type(screen.getByLabelText('Wallet name'), 'Monitor')
+    scanner.reply = 'HVTX1-PUB:rsa:deadbeef'
+    await user.click(screen.getByRole('button', { name: 'Scan to create wallet' }))
+    await user.click(await screen.findByRole('button', { name: 'Deliver scanned reply' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'The scanned code is not a public key from the signer.',
+    )
+    expect(commandsCalled('import_watch_only_wallet')).toHaveLength(0)
   })
 
   it('clears the form and closes the tab when Cancel is clicked', async () => {
@@ -2741,11 +2765,16 @@ describe('network separation', () => {
     expect(screen.queryByRole('button', { name: 'Recovery phrase' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Private key' })).not.toBeInTheDocument()
 
-    await user.type(screen.getByLabelText('Public key (hex or DER)'), 'ab'.repeat(32))
     await user.type(screen.getByLabelText('Wallet name'), 'New watcher')
-    await user.click(screen.getByRole('button', { name: 'Add watch-only wallet' }))
+    scanner.reply = `HVTX1-PUB:ecdsa:${'ab'.repeat(33)}`
+    await user.click(screen.getByRole('button', { name: 'Scan to create wallet' }))
+    await user.click(await screen.findByRole('button', { name: 'Deliver scanned reply' }))
     await waitFor(() => {
-      expect(commandsCalled('import_watch_only_wallet')[0]?.args).toMatchObject({ network: 'mainnet' })
+      expect(commandsCalled('import_watch_only_wallet')[0]?.args).toMatchObject({
+        network: 'mainnet',
+        keyType: 'ecdsa',
+        publicKey: 'ab'.repeat(33),
+      })
     })
   })
 
