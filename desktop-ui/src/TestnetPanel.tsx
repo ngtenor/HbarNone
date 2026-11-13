@@ -185,6 +185,7 @@ type SigningRequest = {
   deleteAccount: string
   newKey: string
   keyStructure: string[]
+  currentKey: string
   tinybars: number
   tokenId: string
   tokenUnits: string
@@ -192,6 +193,31 @@ type SigningRequest = {
   serialNumber: string
   memo: string
   expiresAtSeconds: number
+  estimatedFeeHbar: string
+  maxFeeHbar: string
+}
+
+// A public key shortened to its first and last three characters.
+function abbreviateKey(key: string) {
+  return key.length > 11 ? `${key.slice(0, 3)}.....${key.slice(-3)}` : key
+}
+
+// An unfilled box that gains a tick once the matching signature is scanned.
+function SignatureCheckbox({ checked, label }: { checked: boolean; label: string }) {
+  return (
+    <svg
+      className="signature-checkbox"
+      role="checkbox"
+      aria-checked={checked}
+      aria-label={label}
+      viewBox="0 0 16 16"
+    >
+      <rect x="1" y="1" width="14" height="14" rx="2" fill="none" stroke="currentColor" strokeWidth="1.5" />
+      {checked && (
+        <path d="M3.5 8.5 6.5 11.5 12.5 4.5" fill="none" stroke="currentColor" strokeWidth="2" />
+      )}
+    </svg>
+  )
 }
 
 const QUIET_ZONE = 4
@@ -306,15 +332,14 @@ export function TestnetPanel({
   const [signing, setSigning] = useState<SigningRequest | null>(null)
   const [signatureText, setSignatureText] = useState('')
   const [signatureText2, setSignatureText2] = useState('')
-  const [scanning, setScanning] = useState<'current' | 'new' | null>(null)
+  const [scanning, setScanning] = useState(false)
   const handleScanned = (text: string) => {
-    if (scanning === 'new') setSignatureText2(text)
-    else setSignatureText(text)
-    setScanning(null)
+    setSignatureText(text)
+    setScanning(false)
   }
   const [secondsLeft, setSecondsLeft] = useState(0)
   useEffect(() => {
-    if (!signing) setScanning(null)
+    if (!signing) setScanning(false)
   }, [signing])
   // The move screen shows the camera as a layer; a click anywhere outside it closes it.
   useEffect(() => {
@@ -322,11 +347,18 @@ export function TestnetPanel({
     const closeOnOutsideClick = (event: MouseEvent) => {
       const target = event.target as Element | null
       if (target?.closest('.qr-scanner-overlay, .scan-signature-button')) return
-      setScanning(null)
+      setScanning(false)
     }
     document.addEventListener('mousedown', closeOnOutsideClick)
     return () => document.removeEventListener('mousedown', closeOnOutsideClick)
   }, [scanning, signing])
+  // An error on the move signing screen closes on the next click anywhere in the app.
+  useEffect(() => {
+    if (!error || signing?.action !== 'key-update') return
+    const clear = () => setError('')
+    document.addEventListener('mousedown', clear)
+    return () => document.removeEventListener('mousedown', clear)
+  }, [error, signing])
   useEffect(() => {
     if (!signing) return
     const tick = () =>
@@ -842,6 +874,34 @@ export function TestnetPanel({
   const moveTargetWallet = otherWallets.find((item) => item.id === moveTarget)
   const moveNeedsTwoSignatures = moveTargetWallet?.secret_kind === 'watchonly'
 
+  // A scanned move signature is checked right away: the backend verifies it
+  // and reports which of the two keys produced it, so the matching box can
+  // be ticked. A wrong key or a repeated signature is an error.
+  const handleMoveScanned = (text: string) => {
+    setScanning(false)
+    void run(async () => {
+      if (!signing) return
+      const signedBy = await invoke<'current' | 'new'>('verify_move_signature', {
+        request: signing.payload,
+        response: text,
+        walletId: wallet.id,
+        targetWalletId: moveTarget,
+      })
+      if (signedBy === 'current') {
+        if (signatureText) throw new Error('This signature was already submitted.')
+        setSignatureText(text)
+      } else {
+        if (!moveNeedsTwoSignatures) {
+          throw new Error(
+            "Only this account's key needs to sign; the app signs with the receiving wallet's key itself.",
+          )
+        }
+        if (signatureText2) throw new Error('This signature was already submitted.')
+        setSignatureText2(text)
+      }
+    })
+  }
+
   const handlePrepareMove = () => run(async () => {
     const request = await invoke<SigningRequest>('prepare_unsigned_move', {
       walletId: wallet.id,
@@ -1096,16 +1156,10 @@ export function TestnetPanel({
             <dd>{signing.sender}</dd>
           </>
         )}
-        {signing.action === 'key-update' && (
-          <>
-            <dt>Account</dt>
-            <dd>{signing.sender}</dd>
-            <dt>New owner</dt>
-            <dd>{targetName}</dd>
-            <dt>New key</dt>
-            <dd className="key-text">{signing.newKey}</dd>
-          </>
-        )}
+        <dt>Estimated network fee</dt>
+        <dd>{signing.estimatedFeeHbar} HBAR</dd>
+        <dt>Maximum network fee (estimate + 25%)</dt>
+        <dd>{signing.maxFeeHbar} HBAR</dd>
       </dl>
     )
     const requestAsText = (
@@ -1119,12 +1173,7 @@ export function TestnetPanel({
         <button
           className="primary-button"
           type="button"
-          disabled={
-            isBusy
-            || secondsLeft === 0
-            || !signatureText.trim()
-            || (isMoveSigning && moveNeedsTwoSignatures && !signatureText2.trim())
-          }
+          disabled={isBusy || secondsLeft === 0 || !signatureText.trim()}
           onClick={handleSubmitSigned}
         >
           {isBusy ? 'Submitting...' : submitLabel}
@@ -1135,8 +1184,12 @@ export function TestnetPanel({
       </div>
     )
     if (isMoveSigning) {
-      // The move screen is wide: details sit beside the QR code, each signature
-      // has its own scan button, and the camera opens as a layer over the box.
+      const currentSigned = Boolean(signatureText.trim())
+      const newSigned = Boolean(signatureText2.trim())
+      const allSigned = currentSigned && (!moveNeedsTwoSignatures || newSigned)
+      // The move screen is wide: the account and the keys that must sign sit
+      // beside the QR code, each key with a box that is ticked once its
+      // signature is scanned. The camera opens as a layer over the box.
       return (
         <div className="testnet-confirm move-confirm" role="group" aria-label="Signing request">
           {intro}
@@ -1145,60 +1198,74 @@ export function TestnetPanel({
               <QrCode request={signing} />
               {timerHint}
             </div>
-            {requestDetails}
+            <dl className="move-details">
+              <dt>This account</dt>
+              <dd>{signing.sender}</dd>
+              <dt>This account&apos;s key</dt>
+              <dd>
+                <span className="key-text">{abbreviateKey(signing.currentKey)}</span>
+                <SignatureCheckbox checked={currentSigned} label="This account's key signature" />
+              </dd>
+              {moveNeedsTwoSignatures && (
+                <>
+                  <dt>Receiving wallet&apos;s key</dt>
+                  <dd>
+                    <span className="key-text">{abbreviateKey(signing.newKey)}</span>
+                    <SignatureCheckbox
+                      checked={newSigned}
+                      label="Receiving wallet's key signature"
+                    />
+                  </dd>
+                </>
+              )}
+            </dl>
           </div>
-          {requestAsText}
-          <label htmlFor={`signature-${wallet.id}`}>Signature from the current key&apos;s signer</label>
-          <div className="signature-row">
+          <div className="button-pair move-signing-actions">
             <button
               className="secondary-button scan-signature-button"
               type="button"
-              disabled={isBusy || secondsLeft === 0}
-              onClick={() => setScanning(scanning === 'current' ? null : 'current')}
+              disabled={isBusy || secondsLeft === 0 || allSigned}
+              onClick={() => setScanning(!scanning)}
             >
-              {scanning === 'current' ? 'Stop scanning' : "Scan current key's signature"}
+              Scan signatures
             </button>
-            <textarea
-              id={`signature-${wallet.id}`}
-              rows={3}
-              autoComplete="off"
-              spellCheck={false}
-              placeholder="HVTX1-SIG:..."
-              value={signatureText}
-              onChange={(event) => setSignatureText(event.target.value)}
-            />
+            <button
+              className="primary-button"
+              type="button"
+              disabled={isBusy || secondsLeft === 0 || !allSigned}
+              onClick={handleSubmitSigned}
+            >
+              {isBusy ? 'Submitting...' : submitLabel}
+            </button>
+            <button
+              className="secondary-button"
+              type="button"
+              disabled={isBusy}
+              onClick={() => {
+                setSigning(null)
+                setSignatureText('')
+                setSignatureText2('')
+                setConfirmingMove(true)
+              }}
+            >
+              Back
+            </button>
+            <button
+              className="secondary-button"
+              type="button"
+              disabled={isBusy}
+              onClick={() => toggleSection('move')}
+            >
+              Cancel
+            </button>
           </div>
-          {moveNeedsTwoSignatures && (
-            <>
-              <label htmlFor={`signature2-${wallet.id}`}>Signature from the new key&apos;s signer</label>
-              <div className="signature-row">
-                <button
-                  className="secondary-button scan-signature-button"
-                  type="button"
-                  disabled={isBusy || secondsLeft === 0}
-                  onClick={() => setScanning(scanning === 'new' ? null : 'new')}
-                >
-                  {scanning === 'new' ? 'Stop scanning' : "Scan new key's signature"}
-                </button>
-                <textarea
-                  id={`signature2-${wallet.id}`}
-                  rows={3}
-                  autoComplete="off"
-                  spellCheck={false}
-                  placeholder="HVTX1-SIG:..."
-                  value={signatureText2}
-                  onChange={(event) => setSignatureText2(event.target.value)}
-                />
-              </div>
-            </>
-          )}
-          {actions}
+          {requestAsText}
           {scanning && (
             <div className="qr-scanner-overlay">
               <QrScanner
                 prefix="HVTX1-SIG:"
-                onScan={handleScanned}
-                onClose={() => setScanning(null)}
+                onScan={handleMoveScanned}
+                onClose={() => setScanning(false)}
                 showStopButton={false}
               />
             </div>
@@ -1215,13 +1282,13 @@ export function TestnetPanel({
         {requestAsText}
         <label htmlFor={`signature-${wallet.id}`}>Signature from the signer</label>
         {scanning ? (
-          <QrScanner prefix="HVTX1-SIG:" onScan={handleScanned} onClose={() => setScanning(null)} />
+          <QrScanner prefix="HVTX1-SIG:" onScan={handleScanned} onClose={() => setScanning(false)} />
         ) : (
           <button
             className="secondary-button"
             type="button"
             disabled={isBusy || secondsLeft === 0}
-            onClick={() => setScanning('current')}
+            onClick={() => setScanning(true)}
           >
             Scan reply with camera
           </button>
@@ -1663,7 +1730,7 @@ export function TestnetPanel({
                 <dt>Account</dt>
                 <dd>{accountLabel}</dd>
                 <dt>Fee</dt>
-                <dd>A small network fee, about 0.05 USD in HBAR</dd>
+                <dd>Network estimate plus 25%, handled automatically</dd>
               </dl>
               {hasCustomFees(tokenDetails.custom_fees) && (
                 <div role="note" aria-label="Custom fee note">
@@ -2144,7 +2211,7 @@ export function TestnetPanel({
                   </>
                 )}
                 <dt>Maximum fee</dt>
-                <dd>1 ℏ (the real fee is far lower)</dd>
+                <dd>Network estimate plus 25%, handled automatically</dd>
               </dl>
               {sendNft && hasCustomFees(nftFeeInfo?.custom_fees) && nftFeeInfo && (
                 <div role="note" aria-label="Custom fee warning">
@@ -2311,7 +2378,7 @@ export function TestnetPanel({
                 <dt>Key</dt>
                 <dd>This wallet&apos;s key</dd>
                 <dt>Maximum fee</dt>
-                <dd>1 ℏ (the real fee is far lower)</dd>
+                <dd>Network estimate plus 25%, handled automatically</dd>
               </dl>
               <div className="button-pair">
                 <button
@@ -2417,7 +2484,7 @@ export function TestnetPanel({
                 <dt>New owner</dt>
                 <dd>{targetName}</dd>
                 <dt>Maximum fee</dt>
-                <dd>1 ℏ (the real fee is far lower)</dd>
+                <dd>Network estimate plus 25%, handled automatically</dd>
               </dl>
               <label className="testnet-acknowledge">
                 <input
@@ -2519,7 +2586,7 @@ export function TestnetPanel({
                 <dt>Remaining ℏ go to</dt>
                 <dd>{deleteRecipient.trim()}</dd>
                 <dt>Maximum fee</dt>
-                <dd>1 ℏ (the real fee is far lower)</dd>
+                <dd>Network estimate plus 25%, handled automatically</dd>
               </dl>
               <label className="testnet-acknowledge">
                 <input

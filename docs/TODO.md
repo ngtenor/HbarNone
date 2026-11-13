@@ -231,7 +231,7 @@ until separately reviewed and tested.
 4. (Done through stage 6; all stages merged into main and manually tested on
    Testnet with disposable accounts.) HTS tokens, in stages (hot wallets first):
    - Stage 1: token balances in Account assets and Send menu, and Token info lookup.
-   - Stage 2: create and delete a fungible token. The wallet key is the treasury, admin and supply key; the fee cap for creation is 20 HBAR.
+   - Stage 2: create and delete a fungible token. The wallet key is the treasury, admin and supply key; the maximum fee is the network estimate plus 25%.
    - Stage 3: associate, dissociate and hide tokens.
    - Stage 4: send a token, with a receiver-association check.
    - Stage 5: mint and burn. Token management -> Issuing has Mint token and Burn token; the backend checks the supply key and treasury first.
@@ -406,7 +406,7 @@ HTS tokens. Use it to pick up cold.
    - `hedera-tx`: `TokenTransferList`, `UInt32Value` (`expected_decimals`, so a
      wrong scale is rejected by the network) and `token_transfer_body_bytes`,
      with a unit test. `CryptoTransferBody` gained `token_transfers` (field 2).
-   - `submit.rs`: `send_testnet_token` (sender signs and pays, 1 HBAR fee cap,
+   - `submit.rs`: `send_testnet_token` (sender signs and pays, network-estimated fee plus 25%,
      memo up to 100 bytes).
    - `src-tauri`: `send_token` command. It checks the token (exists, not
      deleted, fungible), the amount (above zero, within balance) and the
@@ -491,6 +491,19 @@ HTS tokens. Use it to pick up cold.
   local build time alone does not establish AI usage cost.
 
 ### Recently completed (8 Nov 2026)
+- [x] Move-signing screen redesign (13 Nov): the watch-only move signing box
+  now shows, beside the QR code, "This account", "This account's key" and
+  (when the target is watch-only) "Receiving wallet's key", each key
+  abbreviated (first 3 characters, 5 dots, last 3) with a checkbox that is
+  ticked once its signature is scanned. Fee estimates are no longer shown
+  there. One "Scan signatures" button opens the camera as a layer (an outside
+  click closes it); each scanned reply is verified by the new
+  `verify_move_signature` command, which reports which key signed. A wrong
+  key or a repeated signature shows an error that closes on the next click.
+  Once all required signatures are in, scanning is disabled and "Submit
+  signed move" activates; "Back" returns to the review and "Cancel" to the
+  accounts screen. The pasted-signature text boxes were removed from this
+  screen (other signing flows are unchanged).
 - [x] Move-screen layout and per-signature camera scan (9 Nov): the watch-only
   move confirmation and signing boxes now span the full panel width, the
   request details sit beside the QR code, and each signature line pairs a scan

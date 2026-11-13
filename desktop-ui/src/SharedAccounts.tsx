@@ -15,12 +15,16 @@ const POLL_ATTEMPTS = 20
 const sleep = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms))
 
 // The mirror node trails consensus by a few seconds, so bookkeeping retries.
-async function retry<T>(task: () => Promise<T>, attempts: number): Promise<T> {
+async function retry<T>(
+  task: () => Promise<T>,
+  attempts: number,
+  retryable?: (failure: unknown) => boolean,
+): Promise<T> {
   for (let attempt = 1; ; attempt += 1) {
     try {
       return await task()
     } catch (failure) {
-      if (attempt >= attempts) throw failure
+      if (attempt >= attempts || (retryable && !retryable(failure))) throw failure
       await sleep(3000)
     }
   }
@@ -67,6 +71,8 @@ type SigningRequest = {
   tinybars: number
   memo: string
   expiresAtSeconds: number
+  estimatedFeeHbar: string
+  maxFeeHbar: string
 }
 
 type SignatureProgress = {
@@ -285,11 +291,15 @@ export function SharedAccounts({ wallets, onWalletsRefresh }: Props) {
   const handleCreate = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     return run(async () => {
+      setNotice('Submitting account creation to Testnet. Network fees within the estimate plus 25% are handled automatically...')
       const result = await invoke<{ transactionId: string }>('create_shared_account', {
         fromAccount: funder,
         initialHbar: openingBalance.trim(),
         required: Number(requiredInput),
         keys: keyList(),
+      }).catch((failure: unknown) => {
+        setNotice('')
+        throw failure
       })
       setNotice('Submitted. Waiting for Testnet to confirm the new account...')
       const added = await retry(
@@ -299,7 +309,14 @@ export function SharedAccounts({ wallets, onWalletsRefresh }: Props) {
             name: linkName.trim() || null,
           }),
         POLL_ATTEMPTS,
-      )
+        (failure) => [
+          'Testnet has not confirmed the creation yet.',
+          'The account is unknown on Testnet.',
+        ].includes(errorMessage(failure)),
+      ).catch((failure: unknown) => {
+        setNotice('')
+        throw failure
+      })
       setAccounts((existing) => [...existing, added])
       openFlow(null)
       setNotice(`Created shared account ${added.displayId}.`)
@@ -477,6 +494,10 @@ export function SharedAccounts({ wallets, onWalletsRefresh }: Props) {
         {secondsLeft > 0 ? `Time left: ${secondsLeft} seconds` : 'The request has expired. Start again.'}
       </p>
       <dl className="confirm-grid">
+        <dt>Estimated network fee</dt>
+        <dd>{signing.estimatedFeeHbar} HBAR</dd>
+        <dt>Maximum network fee (estimate + 25%)</dt>
+        <dd>{signing.maxFeeHbar} HBAR</dd>
         {signingFor === 'send' ? (
           <>
             <dt>From</dt>
@@ -717,6 +738,11 @@ export function SharedAccounts({ wallets, onWalletsRefresh }: Props) {
             ))}
           </select>
           <label htmlFor="shared-opening">Opening balance (HBAR)</label>
+          <p className="field-hint">
+            The network fee is estimated automatically, with a 25% buffer.
+            Extra fee approval is needed only if the node quotes a higher fee.
+            The funding account pays the actual fee in addition to the opening balance.
+          </p>
           <input
             id="shared-opening"
             autoComplete="off"

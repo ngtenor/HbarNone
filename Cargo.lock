@@ -1691,7 +1691,11 @@ dependencies = [
  "ed25519-dalek",
  "k256",
  "prost",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
  "sha3",
+ "tokio",
  "tonic",
  "wallet-core",
 ]

@@ -47,6 +47,43 @@ numbered test (pass/fail, transaction IDs, surprises) as you go.
    threshold key with the same three public keys).
 7. Click **Refresh balance**: 20 ℏ.
 
+All transaction flows now estimate the full fee using the Testnet mirror's
+state-aware fee endpoint, convert USD tinycents to tinybars using the network
+exchange rate, and round up a 25% buffer. Fixed 1/5/20 HBAR ceilings are removed.
+Hot-wallet operations sign and submit automatically within that maximum,
+without a separate fee dialog. Only an `INSUFFICIENT_TX_FEE` node precheck
+with a quote above the buffered maximum asks for approval to re-sign at the
+quoted fee and retry once. Declining must prevent that retry. Missing quotes,
+quotes at or below the maximum, other errors, timeouts and a second rejection
+must not trigger a retry or further fee dialogs.
+For offline and shared signing, compare the maximum in the app with the signer;
+the signer is offline and cannot independently verify the network estimate.
+An estimation or exchange-rate error must prevent signing/submission.
+The funding account pays the actual fee in addition to the opening balance.
+Only the explicitly approved precheck fee increase above is retried.
+A consensus failure is reported immediately with the transaction ID; it is
+not treated as pending confirmation or automatically resubmitted. Failed
+consensus transactions may still incur fees.
+
+The UI shows a submitting status while waiting for the node (connection
+timeout 10 seconds, RPC timeout 20 seconds), followed by mirror
+confirmation only after submission succeeds. Names are local labels, not
+part of the creation transaction; repeating a name is allowed and creates
+a separate account. If a submission times out, check the funder's transactions
+on the mirror before creating again to avoid accidentally funding two accounts.
+
+Reported during manual testing: the first creation appeared to succeed;
+a later creation waited about 30 seconds and returned `INSUFFICIENT_TX_FEE`.
+The first patch retried only precheck fee rejections, still initially offering
+1 HBAR. Retesting returned **"The account creation failed: INSUFFICIENT_TX_FEE"**,
+which is a final consensus result, not a precheck rejection. That path never
+used the permitted 5 HBAR cap and unnecessarily retried confirmation polling.
+An intermediate correction offered 5 HBAR from the outset. The current policy
+replaces that fixed ceiling with the network estimate plus 25% and still stops
+polling final failures. Signature-count thresholds are unchanged.
+Repeat this test with the updated app and record transaction IDs and actual
+fees; live Testnet verification is pending.
+
 ## Test 2: link and unlink by ID
 
 1. Click **Forget** on the new account, then **Link a shared account**, type

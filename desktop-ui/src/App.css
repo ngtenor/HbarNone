@@ -1008,40 +1008,28 @@ h2.section-title,
   justify-items: start;
 }
 
-.move-confirm .signature-row {
+/* The account and key rows beside the QR code: each key pairs its
+   abbreviated value with a box that is ticked once its signature is in. */
+.move-confirm .move-details dd {
   display: flex;
-  gap: 12px;
-  align-items: flex-start;
-  margin: 6px 0 12px;
+  align-items: center;
+  gap: 10px;
 }
 
-.move-confirm .signature-row .scan-signature-button {
-  flex: 0 0 200px;
-  min-height: 40px;
-  padding: 0 14px;
+.signature-checkbox {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
 }
 
-.move-confirm .signature-row textarea {
-  flex: 1;
-  box-sizing: border-box;
-  height: 40px;
-  min-height: 40px;
-  min-width: 0;
-}
-
-/* Breathing room between "Show request as text" and the first signature. */
+/* Breathing room between the buttons and "Show request as text". */
 .move-confirm details {
-  margin-bottom: 14px;
+  margin-top: 14px;
 }
 
-/* Submit matches the scan buttons' width, so Cancel starts where the
-   signature text boxes do. */
+/* The button row below the QR code: scan, submit, back and cancel. */
 .move-confirm .button-pair {
   gap: 12px;
-}
-
-.move-confirm .button-pair .primary-button {
-  flex: 0 0 200px;
 }
 
 /* The camera opens as a layer over the signing box, just below the hint

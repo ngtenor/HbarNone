@@ -11,6 +11,7 @@ use tonic::transport::Endpoint;
 use wallet_core::key_import::KeyType;
 use wallet_core::wallet_service::validate_account_id;
 
+use crate::fees::{FeeApproval, submit_with_estimated_fee};
 use crate::key_tree::KeyTree;
 use crate::{
     ChangeKeyParams, CreateAccountParams, CreateTokenParams, DeleteAccountParams,
@@ -18,18 +19,14 @@ use crate::{
     NftTransferParams, TokenAssociationParams, TokenSupplyParams, TokenTransferParams, Transaction,
     TransactionResponse, TransferParams, change_key_body_bytes, create_account_body_bytes,
     create_nft_collection_body_bytes, create_token_body_bytes, delete_account_body_bytes,
-    delete_token_body_bytes, key_message, nft_mint_body_bytes, nft_transfer_body_bytes, sign_body,
-    sign_body_multi, token_association_body_bytes, token_supply_body_bytes,
-    token_transfer_body_bytes, transfer_body_bytes,
+    delete_token_body_bytes, key_message, nft_mint_body_bytes, nft_transfer_body_bytes,
+    token_association_body_bytes, token_supply_body_bytes, token_transfer_body_bytes,
+    transfer_body_bytes,
 };
 
 /// Testnet node account 0.0.3 and its plain-gRPC endpoint.
 pub const TESTNET_NODE_ACCOUNT: (i64, i64, i64) = (0, 0, 3);
 pub const TESTNET_NODE_URL: &str = "http://34.94.106.61:50211";
-/// Upper bound on the fee the payer agrees to (1 HBAR). The real fee is far lower.
-pub const MAX_FEE_TINYBARS: u64 = 100_000_000;
-/// Creating a token costs about one US dollar, so its limit is higher (20 HBAR).
-pub const MAX_TOKEN_CREATE_FEE_TINYBARS: u64 = 2_000_000_000;
 pub const MAX_MEMO_BYTES: usize = 100;
 const TINYBARS_PER_HBAR: u64 = 100_000_000;
 pub(crate) const TRANSFER_PATH: &str = "/proto.CryptoService/cryptoTransfer";
@@ -121,6 +118,7 @@ pub async fn send_testnet_transfer(
     receiver: &str,
     tinybars: i64,
     memo: &str,
+    approval: &impl FeeApproval,
 ) -> Result<SendReceipt, String> {
     if memo.len() > MAX_MEMO_BYTES {
         return Err("The memo is too long (100 bytes at most).".to_string());
@@ -139,14 +137,12 @@ pub async fn send_testnet_transfer(
         node: TESTNET_NODE_ACCOUNT,
         valid_start_seconds: start.as_secs() as i64,
         valid_start_nanos: start.subsec_nanos() as i32,
-        max_fee_tinybars: MAX_FEE_TINYBARS,
+        max_fee_tinybars: 0,
         memo: memo.to_string(),
     };
     let body = transfer_body_bytes(&params)?;
-    let encoded = sign_body(&body, key_type, secret)?;
-    let transaction =
-        <Transaction as prost::Message>::decode(encoded.as_slice()).map_err(|e| e.to_string())?;
-    let response = submit(transaction, TRANSFER_PATH).await?;
+    let response =
+        submit_with_estimated_fee(&body, &[(key_type, secret)], TRANSFER_PATH, approval).await?;
     if response.precheck_code != 0 {
         return Err(format!(
             "The node rejected the transfer: {}",
@@ -170,12 +166,13 @@ pub async fn create_testnet_account(
     payer: &str,
     payer_key: (KeyType, &[u8; 32]),
     initial_tinybars: i64,
+    approval: &impl FeeApproval,
 ) -> Result<SendReceipt, String> {
     let key = key_message(
         new_key.0,
         &wallet_core::key_import::public_key_bytes(new_key.0, new_key.1)?,
     )?;
-    create_testnet_account_with_key(key, payer, payer_key, initial_tinybars).await
+    create_testnet_account_with_key(key, payer, payer_key, initial_tinybars, approval).await
 }
 
 /// Creates a new Testnet account controlled by a key structure (for example a
@@ -186,8 +183,10 @@ pub async fn create_testnet_shared_account(
     payer: &str,
     payer_key: (KeyType, &[u8; 32]),
     initial_tinybars: i64,
+    approval: &impl FeeApproval,
 ) -> Result<SendReceipt, String> {
-    create_testnet_account_with_key(tree.to_key()?, payer, payer_key, initial_tinybars).await
+    create_testnet_account_with_key(tree.to_key()?, payer, payer_key, initial_tinybars, approval)
+        .await
 }
 
 async fn create_testnet_account_with_key(
@@ -195,6 +194,7 @@ async fn create_testnet_account_with_key(
     payer: &str,
     payer_key: (KeyType, &[u8; 32]),
     initial_tinybars: i64,
+    approval: &impl FeeApproval,
 ) -> Result<SendReceipt, String> {
     if !(0..=MAX_INITIAL_TINYBARS).contains(&initial_tinybars) {
         return Err("The opening balance is out of range.".to_string());
@@ -211,15 +211,20 @@ async fn create_testnet_account_with_key(
         node: TESTNET_NODE_ACCOUNT,
         valid_start_seconds: start.as_secs() as i64,
         valid_start_nanos: start.subsec_nanos() as i32,
-        max_fee_tinybars: MAX_FEE_TINYBARS,
+        max_fee_tinybars: 0,
         memo: String::new(),
     };
     let body = create_account_body_bytes(&params)?;
-    let encoded = sign_body(&body, payer_key.0, payer_key.1)?;
-    let transaction =
-        <Transaction as prost::Message>::decode(encoded.as_slice()).map_err(|e| e.to_string())?;
-    let response = submit(transaction, CREATE_PATH).await?;
+    let response = submit_with_estimated_fee(&body, &[payer_key], CREATE_PATH, approval).await?;
     if response.precheck_code != 0 {
+        if response.precheck_code == 9 {
+            return Err(format!(
+                "The node rejected the account creation: INSUFFICIENT_TX_FEE. \
+                 The network quote no longer covers the required fee. \
+                 Node-quoted fee: {} HBAR. The account was not created; estimate again.",
+                crate::fees::format_hbar(response.cost),
+            ));
+        }
         return Err(format!(
             "The node rejected the account creation: {}",
             precheck_message(response.precheck_code)
@@ -239,6 +244,7 @@ pub async fn change_testnet_account_key(
     account: &str,
     current: (KeyType, &[u8; 32]),
     new: (KeyType, &[u8; 32]),
+    approval: &impl FeeApproval,
 ) -> Result<SendReceipt, String> {
     let account_id = parse_account(account)?;
     let new_public_key = wallet_core::key_import::public_key_bytes(new.0, new.1)?;
@@ -257,13 +263,10 @@ pub async fn change_testnet_account_key(
         node: TESTNET_NODE_ACCOUNT,
         valid_start_seconds: start.as_secs() as i64,
         valid_start_nanos: start.subsec_nanos() as i32,
-        max_fee_tinybars: MAX_FEE_TINYBARS,
+        max_fee_tinybars: 0,
     };
     let body = change_key_body_bytes(&params)?;
-    let encoded = sign_body_multi(&body, &[current, new])?;
-    let transaction =
-        <Transaction as prost::Message>::decode(encoded.as_slice()).map_err(|e| e.to_string())?;
-    let response = submit(transaction, UPDATE_PATH).await?;
+    let response = submit_with_estimated_fee(&body, &[current, new], UPDATE_PATH, approval).await?;
     if response.precheck_code != 0 {
         return Err(format!(
             "The node rejected the key change: {}",
@@ -287,6 +290,7 @@ pub async fn delete_testnet_account(
     recipient: &str,
     recipient_key_held: bool,
     signers: &[(KeyType, &[u8; 32])],
+    approval: &impl FeeApproval,
 ) -> Result<SendReceipt, String> {
     let account_id = parse_account(account)?;
     let recipient_id = parse_account(recipient)?;
@@ -306,7 +310,7 @@ pub async fn delete_testnet_account(
         node: TESTNET_NODE_ACCOUNT,
         valid_start_seconds: start.as_secs() as i64,
         valid_start_nanos: start.subsec_nanos() as i32,
-        max_fee_tinybars: MAX_FEE_TINYBARS,
+        max_fee_tinybars: 0,
     };
     let body = delete_account_body_bytes(&params)?;
     // One signature per distinct key.
@@ -324,10 +328,7 @@ pub async fn delete_testnet_account(
             unique.push(*signer);
         }
     }
-    let encoded = sign_body_multi(&body, &unique)?;
-    let transaction =
-        <Transaction as prost::Message>::decode(encoded.as_slice()).map_err(|e| e.to_string())?;
-    let response = submit(transaction, DELETE_PATH).await?;
+    let response = submit_with_estimated_fee(&body, &unique, DELETE_PATH, approval).await?;
     if response.precheck_code != 0 {
         return Err(format!(
             "The node rejected the account deletion: {}",
@@ -398,6 +399,7 @@ pub async fn create_testnet_token(
     symbol: &str,
     decimals: u32,
     initial_supply: u64,
+    approval: &impl FeeApproval,
 ) -> Result<SendReceipt, String> {
     if decimals > MAX_TOKEN_DECIMALS {
         return Err("Decimals can be 18 at most.".to_string());
@@ -415,13 +417,10 @@ pub async fn create_testnet_token(
         node: TESTNET_NODE_ACCOUNT,
         valid_start_seconds: seconds,
         valid_start_nanos: nanos,
-        max_fee_tinybars: MAX_TOKEN_CREATE_FEE_TINYBARS,
+        max_fee_tinybars: 0,
     };
     let body = create_token_body_bytes(&params)?;
-    let encoded = sign_body(&body, key.0, key.1)?;
-    let transaction =
-        <Transaction as prost::Message>::decode(encoded.as_slice()).map_err(|e| e.to_string())?;
-    let response = submit(transaction, TOKEN_CREATE_PATH).await?;
+    let response = submit_with_estimated_fee(&body, &[key], TOKEN_CREATE_PATH, approval).await?;
     if response.precheck_code != 0 {
         return Err(format!(
             "The node rejected the token creation: {}",
@@ -440,6 +439,7 @@ pub async fn create_testnet_nft_collection(
     key: (KeyType, &[u8; 32]),
     name: &str,
     symbol: &str,
+    approval: &impl FeeApproval,
 ) -> Result<SendReceipt, String> {
     let payer_id = parse_account(payer)?;
     let (seconds, nanos) = start_time()?;
@@ -454,13 +454,10 @@ pub async fn create_testnet_nft_collection(
         node: TESTNET_NODE_ACCOUNT,
         valid_start_seconds: seconds,
         valid_start_nanos: nanos,
-        max_fee_tinybars: MAX_TOKEN_CREATE_FEE_TINYBARS,
+        max_fee_tinybars: 0,
     };
     let body = create_nft_collection_body_bytes(&params)?;
-    let encoded = sign_body(&body, key.0, key.1)?;
-    let transaction =
-        <Transaction as prost::Message>::decode(encoded.as_slice()).map_err(|e| e.to_string())?;
-    let response = submit(transaction, TOKEN_CREATE_PATH).await?;
+    let response = submit_with_estimated_fee(&body, &[key], TOKEN_CREATE_PATH, approval).await?;
     if response.precheck_code != 0 {
         return Err(format!(
             "The node rejected the collection creation: {}",
@@ -479,6 +476,7 @@ pub async fn mint_testnet_nft(
     key: (KeyType, &[u8; 32]),
     token: &str,
     metadata: &str,
+    approval: &impl FeeApproval,
 ) -> Result<SendReceipt, String> {
     if metadata.trim().is_empty() || metadata.len() > MAX_NFT_METADATA_BYTES {
         return Err("The NFT metadata must be 1 to 100 bytes.".to_string());
@@ -492,13 +490,10 @@ pub async fn mint_testnet_nft(
         node: TESTNET_NODE_ACCOUNT,
         valid_start_seconds: seconds,
         valid_start_nanos: nanos,
-        max_fee_tinybars: MAX_FEE_TINYBARS,
+        max_fee_tinybars: 0,
     };
     let body = nft_mint_body_bytes(&params)?;
-    let encoded = sign_body(&body, key.0, key.1)?;
-    let transaction =
-        <Transaction as prost::Message>::decode(encoded.as_slice()).map_err(|e| e.to_string())?;
-    let response = submit(transaction, TOKEN_MINT_PATH).await?;
+    let response = submit_with_estimated_fee(&body, &[key], TOKEN_MINT_PATH, approval).await?;
     if response.precheck_code != 0 {
         return Err(format!(
             "The node rejected the NFT mint: {}",
@@ -517,6 +512,7 @@ pub async fn change_testnet_token_association(
     key: (KeyType, &[u8; 32]),
     token: &str,
     associate: bool,
+    approval: &impl FeeApproval,
 ) -> Result<SendReceipt, String> {
     let payer_id = parse_account(account_id)?;
     let token_id = parse_account(token)?;
@@ -527,18 +523,15 @@ pub async fn change_testnet_token_association(
         node: TESTNET_NODE_ACCOUNT,
         valid_start_seconds: seconds,
         valid_start_nanos: nanos,
-        max_fee_tinybars: MAX_FEE_TINYBARS,
+        max_fee_tinybars: 0,
     };
     let body = token_association_body_bytes(&params, associate)?;
-    let encoded = sign_body(&body, key.0, key.1)?;
-    let transaction =
-        <Transaction as prost::Message>::decode(encoded.as_slice()).map_err(|e| e.to_string())?;
     let path = if associate {
         TOKEN_ASSOCIATE_PATH
     } else {
         TOKEN_DISSOCIATE_PATH
     };
-    let response = submit(transaction, path).await?;
+    let response = submit_with_estimated_fee(&body, &[key], path, approval).await?;
     if response.precheck_code != 0 {
         return Err(format!(
             "The node rejected the request: {}",
@@ -561,6 +554,7 @@ pub async fn send_testnet_token(
     amount: u64,
     decimals: u32,
     memo: &str,
+    approval: &impl FeeApproval,
 ) -> Result<SendReceipt, String> {
     if memo.len() > MAX_MEMO_BYTES {
         return Err("The memo is too long (100 bytes at most).".to_string());
@@ -577,14 +571,11 @@ pub async fn send_testnet_token(
         node: TESTNET_NODE_ACCOUNT,
         valid_start_seconds: seconds,
         valid_start_nanos: nanos,
-        max_fee_tinybars: MAX_FEE_TINYBARS,
+        max_fee_tinybars: 0,
         memo: memo.to_string(),
     };
     let body = token_transfer_body_bytes(&params)?;
-    let encoded = sign_body(&body, key.0, key.1)?;
-    let transaction =
-        <Transaction as prost::Message>::decode(encoded.as_slice()).map_err(|e| e.to_string())?;
-    let response = submit(transaction, TRANSFER_PATH).await?;
+    let response = submit_with_estimated_fee(&body, &[key], TRANSFER_PATH, approval).await?;
     if response.precheck_code != 0 {
         return Err(format!(
             "The node rejected the token transfer: {}",
@@ -605,6 +596,7 @@ pub async fn send_testnet_nft(
     token: &str,
     serial_number: i64,
     memo: &str,
+    approval: &impl FeeApproval,
 ) -> Result<SendReceipt, String> {
     if memo.len() > MAX_MEMO_BYTES {
         return Err("The memo is too long (100 bytes at most).".to_string());
@@ -619,14 +611,11 @@ pub async fn send_testnet_nft(
         node: TESTNET_NODE_ACCOUNT,
         valid_start_seconds: seconds,
         valid_start_nanos: nanos,
-        max_fee_tinybars: MAX_FEE_TINYBARS,
+        max_fee_tinybars: 0,
         memo: memo.to_string(),
     };
     let body = nft_transfer_body_bytes(&params)?;
-    let encoded = sign_body(&body, key.0, key.1)?;
-    let transaction =
-        <Transaction as prost::Message>::decode(encoded.as_slice()).map_err(|e| e.to_string())?;
-    let response = submit(transaction, TRANSFER_PATH).await?;
+    let response = submit_with_estimated_fee(&body, &[key], TRANSFER_PATH, approval).await?;
     if response.precheck_code != 0 {
         return Err(format!(
             "The node rejected the NFT transfer: {}",
@@ -643,6 +632,7 @@ pub async fn delete_testnet_token(
     payer: &str,
     key: (KeyType, &[u8; 32]),
     token: &str,
+    approval: &impl FeeApproval,
 ) -> Result<SendReceipt, String> {
     let payer_id = parse_account(payer)?;
     let token_id = parse_account(token)?;
@@ -653,13 +643,10 @@ pub async fn delete_testnet_token(
         node: TESTNET_NODE_ACCOUNT,
         valid_start_seconds: seconds,
         valid_start_nanos: nanos,
-        max_fee_tinybars: MAX_FEE_TINYBARS,
+        max_fee_tinybars: 0,
     };
     let body = delete_token_body_bytes(&params)?;
-    let encoded = sign_body(&body, key.0, key.1)?;
-    let transaction =
-        <Transaction as prost::Message>::decode(encoded.as_slice()).map_err(|e| e.to_string())?;
-    let response = submit(transaction, TOKEN_DELETE_PATH).await?;
+    let response = submit_with_estimated_fee(&body, &[key], TOKEN_DELETE_PATH, approval).await?;
     if response.precheck_code != 0 {
         return Err(format!(
             "The node rejected the token deletion: {}",
@@ -679,6 +666,7 @@ pub async fn change_testnet_token_supply(
     token: &str,
     amount: u64,
     mint: bool,
+    approval: &impl FeeApproval,
 ) -> Result<SendReceipt, String> {
     let payer_id = parse_account(payer)?;
     let (seconds, nanos) = start_time()?;
@@ -689,18 +677,15 @@ pub async fn change_testnet_token_supply(
         node: TESTNET_NODE_ACCOUNT,
         valid_start_seconds: seconds,
         valid_start_nanos: nanos,
-        max_fee_tinybars: MAX_FEE_TINYBARS,
+        max_fee_tinybars: 0,
     };
     let body = token_supply_body_bytes(&params, mint)?;
-    let encoded = sign_body(&body, key.0, key.1)?;
-    let transaction =
-        <Transaction as prost::Message>::decode(encoded.as_slice()).map_err(|e| e.to_string())?;
     let (path, action) = if mint {
         (TOKEN_MINT_PATH, "mint")
     } else {
         (TOKEN_BURN_PATH, "burn")
     };
-    let response = submit(transaction, path).await?;
+    let response = submit_with_estimated_fee(&body, &[key], path, approval).await?;
     if response.precheck_code != 0 {
         return Err(format!(
             "The node rejected the token {action}: {}",

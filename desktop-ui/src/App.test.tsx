@@ -52,6 +52,24 @@ const PHRASE = 'alpha bravo charlie delta echo foxtrot golf hotel india juliet k
 const invokeMock = vi.hoisted(() => vi.fn())
 vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }))
 
+// The camera cannot run in tests. When a test sets `scanner.reply`, the
+// scanner renders a button that delivers that reply; otherwise the real
+// component renders (to test its no-camera message).
+const scanner = vi.hoisted(() => ({ reply: null as string | null }))
+vi.mock('./QrScanner', async (importOriginal) => {
+  const real = await importOriginal<typeof import('./QrScanner')>()
+  return {
+    QrScanner: (props: Parameters<typeof real.QrScanner>[0]) =>
+      scanner.reply === null ? (
+        <real.QrScanner {...props} />
+      ) : (
+        <button type="button" onClick={() => props.onScan(scanner.reply!)}>
+          Deliver scanned reply
+        </button>
+      ),
+  }
+})
+
 function testnetAccount(id: string): Account {
   return { network: 'testnet', id, display_id: `${id}-abcde`, name: 'NONAME', named: false }
 }
@@ -132,6 +150,7 @@ async function typeRecipient(user: ReturnType<typeof userEvent.setup>, value: st
 function installBackend(overrides: Partial<Backend> = {}) {
   // Each test starts in the Testnet view.
   localStorage.removeItem('networkView')
+  scanner.reply = null
   backend = {
     status: 'locked',
     wallets: [wallet('w1', 'Savings'), wallet('w2', 'Trading')],
@@ -303,6 +322,8 @@ function installBackend(overrides: Partial<Backend> = {}) {
           tinybars: 100_000_000,
           memo: '',
           expiresAtSeconds: Math.floor(Date.now() / 1000) + 170,
+          estimatedFeeHbar: '0.08000000',
+          maxFeeHbar: '0.10000000',
         }
       case 'prepare_unsigned_delete':
         return {
@@ -317,6 +338,8 @@ function installBackend(overrides: Partial<Backend> = {}) {
           tinybars: 0,
           memo: '',
           expiresAtSeconds: Math.floor(Date.now() / 1000) + 170,
+          estimatedFeeHbar: '0.08000000',
+          maxFeeHbar: '0.10000000',
         }
       case 'prepare_unsigned_create':
         return {
@@ -331,6 +354,8 @@ function installBackend(overrides: Partial<Backend> = {}) {
           tinybars: 200_000_000,
           memo: '',
           expiresAtSeconds: Math.floor(Date.now() / 1000) + 170,
+          estimatedFeeHbar: '0.08000000',
+          maxFeeHbar: '0.10000000',
         }
       case 'prepare_unsigned_token_transfer':
         return {
@@ -348,6 +373,8 @@ function installBackend(overrides: Partial<Backend> = {}) {
           tokenDecimals: 2,
           memo: '',
           expiresAtSeconds: Math.floor(Date.now() / 1000) + 170,
+          estimatedFeeHbar: '0.08000000',
+          maxFeeHbar: '0.10000000',
         }
       case 'prepare_unsigned_nft_transfer':
         return {
@@ -366,6 +393,8 @@ function installBackend(overrides: Partial<Backend> = {}) {
           serialNumber: (args as { serialNumber: string }).serialNumber,
           memo: '',
           expiresAtSeconds: Math.floor(Date.now() / 1000) + 170,
+          estimatedFeeHbar: '0.08000000',
+          maxFeeHbar: '0.10000000',
         }
       case 'prepare_unsigned_token_association':
         return {
@@ -383,6 +412,8 @@ function installBackend(overrides: Partial<Backend> = {}) {
           tokenDecimals: 0,
           memo: '',
           expiresAtSeconds: Math.floor(Date.now() / 1000) + 170,
+          estimatedFeeHbar: '0.08000000',
+          maxFeeHbar: '0.10000000',
         }
       case 'prepare_unsigned_move':
         return {
@@ -394,13 +425,24 @@ function installBackend(overrides: Partial<Backend> = {}) {
           receiver: '',
           deleteAccount: '',
           newKey: 'cd'.repeat(32),
+          keyStructure: [],
+          currentKey: 'ab'.repeat(32),
           tinybars: 0,
           tokenId: '',
           tokenUnits: '',
           tokenDecimals: 0,
+          serialNumber: '',
           memo: '',
           expiresAtSeconds: Math.floor(Date.now() / 1000) + 170,
+          estimatedFeeHbar: '0.08000000',
+          maxFeeHbar: '0.10000000',
         }
+      case 'verify_move_signature': {
+        const response = String(args?.response)
+        if (response.includes('CURRENT')) return 'current'
+        if (response.includes('NEW')) return 'new'
+        throw new Error('The signature was made with a key that is not part of this move.')
+      }
       case 'submit_signed_move':
         return { transactionId: '0.0.1001-1700000000-000000009' }
       case 'submit_signed_request':
@@ -448,6 +490,8 @@ function installBackend(overrides: Partial<Backend> = {}) {
           serialNumber: '',
           memo: String(args?.memo ?? ''),
           expiresAtSeconds: Math.floor(Date.now() / 1000) + 170,
+          estimatedFeeHbar: '0.08000000',
+          maxFeeHbar: '0.10000000',
         }
       case 'check_shared_signatures': {
         const responses = (args?.responses as string[]) ?? []
@@ -492,6 +536,8 @@ function installBackend(overrides: Partial<Backend> = {}) {
           serialNumber: '',
           memo: '',
           expiresAtSeconds: Math.floor(Date.now() / 1000) + 170,
+          estimatedFeeHbar: '0.08000000',
+          maxFeeHbar: '0.10000000',
         }
       case 'submit_shared_key_change':
         if (backend.sendError) throw new Error(backend.sendError)
@@ -2242,6 +2288,8 @@ describe('watch-only wallet', () => {
     await user.click(await screen.findByRole('button', { name: 'Create signing request' }))
 
     expect(await screen.findByRole('img', { name: 'Signing request QR code' })).toBeInTheDocument()
+    expect(screen.getByText('0.08000000 HBAR')).toBeInTheDocument()
+    expect(screen.getByText('0.10000000 HBAR')).toBeInTheDocument()
     expect(commandsCalled('send_hbar')).toHaveLength(0)
     const submit = screen.getByRole('button', { name: 'Submit signed transfer' })
     expect(submit).toBeDisabled()
@@ -3149,15 +3197,19 @@ describe('address book pruning', () => {
 })
 
 describe('offline key rotation', () => {
-  it('moves a watch-only account with signatures from both keys', async () => {
-    const user = userEvent.setup()
+  function installMoveBackend(targetWatchOnly = true) {
     installBackend({
       status: 'unlocked',
       wallets: [
         { ...wallet('w1', 'Watcher', '0.0.1001'), secret_kind: 'watchonly', key_type: 'ed25519' },
-        { ...wallet('w2', 'Cold'), secret_kind: 'watchonly', key_type: 'ed25519' },
+        targetWatchOnly
+          ? { ...wallet('w2', 'Cold'), secret_kind: 'watchonly', key_type: 'ed25519' }
+          : wallet('w2', 'Hot'),
       ],
     })
+  }
+
+  async function openSigningScreen(user: ReturnType<typeof userEvent.setup>) {
     render(<App />)
     await openAccount(user, 'Watcher')
     await chooseMenu(user, 'Account management', 'Move account')
@@ -3165,10 +3217,26 @@ describe('offline key rotation', () => {
     await user.click(screen.getByRole('button', { name: 'Review move' }))
     await user.click(screen.getByLabelText(/I understand that the other wallet/))
     await user.click(screen.getByRole('button', { name: 'Create signing request' }))
+    return screen.findByRole('group', { name: 'Signing request' })
+  }
 
-    const request = await screen.findByRole('group', { name: 'Signing request' })
-    expect(request).toHaveTextContent('New key')
-    expect(request).toHaveTextContent('Cold')
+  async function scan(user: ReturnType<typeof userEvent.setup>, reply: string) {
+    scanner.reply = reply
+    await user.click(screen.getByRole('button', { name: 'Scan signatures' }))
+    await user.click(await screen.findByRole('button', { name: 'Deliver scanned reply' }))
+  }
+
+  it('moves a watch-only account after scanning signatures from both keys', async () => {
+    const user = userEvent.setup()
+    installMoveBackend()
+    const request = await openSigningScreen(user)
+
+    // The account and both keys (abbreviated) are shown without fee details.
+    expect(request).toHaveTextContent('This account')
+    expect(request).toHaveTextContent('0.0.1001-abcde')
+    expect(request).toHaveTextContent('aba.....bab')
+    expect(request).toHaveTextContent('cdc.....dcd')
+    expect(request).not.toHaveTextContent('network fee')
     expect(commandsCalled('prepare_unsigned_move')[0].args).toEqual({
       walletId: 'w1',
       accountId: '0.0.1001',
@@ -3176,17 +3244,27 @@ describe('offline key rotation', () => {
     })
 
     // The target is watch-only, so both keys must sign before submitting.
-    await user.type(
-      screen.getByLabelText("Signature from the current key's signer"),
-      'HVTX1-SIG:AA',
-    )
+    const currentBox = screen.getByRole('checkbox', { name: "This account's key signature" })
+    const newBox = screen.getByRole('checkbox', { name: "Receiving wallet's key signature" })
     const submit = screen.getByRole('button', { name: 'Submit signed move' })
+    expect(currentBox).not.toBeChecked()
+    expect(newBox).not.toBeChecked()
     expect(submit).toBeDisabled()
-    await user.type(screen.getByLabelText(/new key.s signer/), 'HVTX1-SIG:BB')
+
+    await scan(user, 'HVTX1-SIG:CURRENT')
+    await waitFor(() => expect(currentBox).toBeChecked())
+    expect(newBox).not.toBeChecked()
+    expect(submit).toBeDisabled()
+
+    await scan(user, 'HVTX1-SIG:NEW')
+    await waitFor(() => expect(newBox).toBeChecked())
+    expect(screen.getByRole('button', { name: 'Scan signatures' })).toBeDisabled()
+    expect(submit).toBeEnabled()
+
     await user.click(submit)
     await waitFor(() => expect(commandsCalled('submit_signed_move')[0].args).toMatchObject({
       request: 'HVTX1-REQ:05',
-      responses: ['HVTX1-SIG:AA', 'HVTX1-SIG:BB'],
+      responses: ['HVTX1-SIG:CURRENT', 'HVTX1-SIG:NEW'],
       walletId: 'w1',
       targetWalletId: 'w2',
     }))
@@ -3195,66 +3273,85 @@ describe('offline key rotation', () => {
 
   it('needs only the current key when the target wallet holds its key', async () => {
     const user = userEvent.setup()
-    installBackend({
-      status: 'unlocked',
-      wallets: [
-        { ...wallet('w1', 'Watcher', '0.0.1001'), secret_kind: 'watchonly', key_type: 'ed25519' },
-        wallet('w2', 'Hot'),
-      ],
-    })
-    render(<App />)
-    await openAccount(user, 'Watcher')
-    await chooseMenu(user, 'Account management', 'Move account')
-    await user.selectOptions(screen.getByLabelText('New wallet'), 'w2')
-    await user.click(screen.getByRole('button', { name: 'Review move' }))
-    await user.click(screen.getByLabelText(/I understand that the other wallet/))
-    await user.click(screen.getByRole('button', { name: 'Create signing request' }))
+    installMoveBackend(false)
+    await openSigningScreen(user)
 
-    await screen.findByRole('group', { name: 'Signing request' })
-    expect(screen.queryByLabelText(/new key.s signer/)).not.toBeInTheDocument()
-    await user.type(
-      screen.getByLabelText("Signature from the current key's signer"),
-      'HVTX1-SIG:AA',
-    )
+    expect(
+      screen.queryByRole('checkbox', { name: "Receiving wallet's key signature" }),
+    ).not.toBeInTheDocument()
+    await scan(user, 'HVTX1-SIG:CURRENT')
+    await waitFor(() =>
+      expect(screen.getByRole('checkbox', { name: "This account's key signature" })).toBeChecked())
     await user.click(screen.getByRole('button', { name: 'Submit signed move' }))
     await waitFor(() => expect(commandsCalled('submit_signed_move')[0].args).toMatchObject({
-      responses: ['HVTX1-SIG:AA'],
+      responses: ['HVTX1-SIG:CURRENT'],
       targetWalletId: 'w2',
     }))
   })
 
-  it('offers a camera scan button per signature and closes the camera on an outside click', async () => {
+  it('rejects a signature from a wrong key and clears the error on the next click', async () => {
     const user = userEvent.setup()
-    installBackend({
-      status: 'unlocked',
-      wallets: [
-        { ...wallet('w1', 'Watcher', '0.0.1001'), secret_kind: 'watchonly', key_type: 'ed25519' },
-        { ...wallet('w2', 'Cold'), secret_kind: 'watchonly', key_type: 'ed25519' },
-      ],
-    })
-    render(<App />)
-    await openAccount(user, 'Watcher')
-    await chooseMenu(user, 'Account management', 'Move account')
-    await user.selectOptions(screen.getByLabelText('New wallet'), 'w2')
-    await user.click(screen.getByRole('button', { name: 'Review move' }))
+    installMoveBackend()
+    await openSigningScreen(user)
+
+    await scan(user, 'HVTX1-SIG:OTHER')
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'The signature was made with a key that is not part of this move.',
+    )
+    expect(screen.getByRole('checkbox', { name: "This account's key signature" })).not.toBeChecked()
+
+    // A click anywhere in the app closes the error.
+    await user.click(screen.getByRole('heading', { name: 'Move account to another wallet' }))
+    await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument())
+  })
+
+  it('rejects the same signature scanned twice', async () => {
+    const user = userEvent.setup()
+    installMoveBackend()
+    await openSigningScreen(user)
+
+    await scan(user, 'HVTX1-SIG:CURRENT')
+    const currentBox = screen.getByRole('checkbox', { name: "This account's key signature" })
+    await waitFor(() => expect(currentBox).toBeChecked())
+
+    await scan(user, 'HVTX1-SIG:CURRENT')
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'This signature was already submitted.',
+    )
+    expect(currentBox).toBeChecked()
+    expect(screen.getByRole('button', { name: 'Submit signed move' })).toBeDisabled()
+  })
+
+  it('returns to the review with Back and leaves the screen with Cancel', async () => {
+    const user = userEvent.setup()
+    installMoveBackend()
+    await openSigningScreen(user)
+
+    await user.click(screen.getByRole('button', { name: 'Back' }))
+    expect(screen.getByRole('group', { name: 'Confirm account move' })).toBeInTheDocument()
+
     await user.click(screen.getByLabelText(/I understand that the other wallet/))
     await user.click(screen.getByRole('button', { name: 'Create signing request' }))
     await screen.findByRole('group', { name: 'Signing request' })
+    await user.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(
+      screen.queryByRole('heading', { name: 'Move account to another wallet' }),
+    ).not.toBeInTheDocument()
+  })
 
-    expect(screen.getByRole('button', { name: "Scan current key's signature" })).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: "Scan new key's signature" }))
+  it('opens the camera over the signing box and closes it on an outside click', async () => {
+    const user = userEvent.setup()
+    installMoveBackend()
+    await openSigningScreen(user)
+
+    await user.click(screen.getByRole('button', { name: 'Scan signatures' }))
     expect(await screen.findByText(/does not allow camera access/)).toBeInTheDocument()
-    // The clicked button now stops the scan; the other button keeps its label.
-    expect(screen.getByRole('button', { name: 'Stop scanning' })).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: "Scan new key's signature" })).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: "Scan current key's signature" })).toBeInTheDocument()
 
     // A click anywhere outside the camera window closes it.
-    await user.click(screen.getByText("Signature from the current key's signer"))
+    await user.click(screen.getByRole('heading', { name: 'Move account to another wallet' }))
     await waitFor(() =>
       expect(screen.queryByText(/does not allow camera access/)).not.toBeInTheDocument())
-    expect(screen.getByRole('button', { name: "Scan new key's signature" })).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Stop scanning' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Scan signatures' })).toBeEnabled()
   })
 })
 
@@ -3290,6 +3387,8 @@ describe('shared accounts (multisig)', () => {
     await user.click(screen.getByRole('button', { name: 'Create signing request' }))
 
     await screen.findByRole('group', { name: 'Shared signing request' })
+    expect(screen.getByText('0.08000000 HBAR')).toBeInTheDocument()
+    expect(screen.getByText('0.10000000 HBAR')).toBeInTheDocument()
     const submit = screen.getByRole('button', { name: 'Submit' })
     expect(submit).toBeDisabled()
 
@@ -3361,6 +3460,82 @@ describe('shared accounts (multisig)', () => {
     expect(await screen.findByText(/Created shared account 0\.0\.9001-abcde/)).toBeInTheDocument()
     expect(commandsCalled('finish_shared_create')).toHaveLength(1)
     expect(screen.getByText('2 of 3 keys')).toBeInTheDocument()
+  })
+
+  it.each(['create_shared_account', 'finish_shared_create'])(
+    'surfaces a fee failure from %s without retrying or leaving stale progress',
+    async (failureCommand) => {
+      const user = userEvent.setup()
+      installBackend({ status: 'unlocked', wallets: [wallet('w1', 'Savings', '0.0.1001')] })
+      const original = invokeMock.getMockImplementation()
+      if (!original) throw new Error('Backend mock is missing')
+      let rejectCreation: (error: string) => void = () => {
+        throw new Error('Creation has not started')
+      }
+      invokeMock.mockImplementation((cmd: string, args?: Record<string, unknown>) =>
+        cmd === failureCommand
+          ? new Promise((_, reject) => { rejectCreation = reject })
+          : original(cmd, args),
+      )
+      render(<App />)
+      await user.click(await screen.findByRole('button', { name: 'Create a shared account' }))
+      expect(screen.getByText(/The network fee is estimated automatically/)).toBeInTheDocument()
+      await user.selectOptions(screen.getByLabelText('Funding account (signs and pays)'), '0.0.1001')
+      await user.type(screen.getByLabelText('Opening balance (HBAR)'), '20')
+      await user.type(screen.getByLabelText('Participant public keys (one per line)'), SHARED_KEYS.join('\n'))
+      await user.click(screen.getByRole('button', { name: 'Create account' }))
+      expect(screen.getByRole('status')).toHaveTextContent(
+        failureCommand === 'create_shared_account'
+          ? 'Submitting account creation to Testnet'
+          : 'Submitted. Waiting for Testnet to confirm the new account',
+      )
+      expect(screen.getByRole('button', { name: 'Working...' })).toBeDisabled()
+      await act(async () => {
+        rejectCreation(
+          failureCommand === 'create_shared_account'
+            ? 'INSUFFICIENT_TX_FEE. The network quote no longer covers the required fee.'
+            : 'The account creation failed: INSUFFICIENT_TX_FEE',
+        )
+      })
+      expect(await screen.findByRole('alert')).toHaveTextContent('INSUFFICIENT_TX_FEE')
+      expect(screen.queryByRole('status')).not.toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Create account' })).toBeEnabled()
+      expect(commandsCalled('finish_shared_create')).toHaveLength(0)
+      expect(invokeMock.mock.calls.filter(([cmd]) => cmd === failureCommand)).toHaveLength(1)
+    },
+  )
+
+  it('polls a pending shared creation without submitting another transaction', async () => {
+    const user = userEvent.setup()
+    installBackend({ status: 'unlocked', wallets: [wallet('w1', 'Savings', '0.0.1001')] })
+    const original = invokeMock.getMockImplementation()
+    if (!original) throw new Error('Backend mock is missing')
+    let confirmations = 0
+    invokeMock.mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
+      if (cmd === 'finish_shared_create' && ++confirmations === 1) {
+        throw new Error('Testnet has not confirmed the creation yet.')
+      }
+      return original(cmd, args)
+    })
+    render(<App />)
+    await user.click(await screen.findByRole('button', { name: 'Create a shared account' }))
+    await user.selectOptions(screen.getByLabelText('Funding account (signs and pays)'), '0.0.1001')
+    await user.type(screen.getByLabelText('Opening balance (HBAR)'), '20')
+    await user.type(screen.getByLabelText('Participant public keys (one per line)'), SHARED_KEYS.join('\n'))
+    vi.useFakeTimers()
+    try {
+      await act(async () => {
+        fireEvent.submit(screen.getByRole('form', { name: 'Create a shared account' }))
+      })
+      expect(confirmations).toBe(1)
+      expect(screen.getByRole('status')).toHaveTextContent('Waiting for Testnet to confirm')
+      await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
+      expect(confirmations).toBe(2)
+      expect(screen.getByRole('status')).toHaveTextContent('Created shared account')
+      expect(commandsCalled('create_shared_account')).toHaveLength(1)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('converts a wallet account into a shared account', async () => {

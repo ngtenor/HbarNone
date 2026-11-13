@@ -31,6 +31,10 @@ fn sign(request: &str, key_type: &str, key: &str) -> Result<String, String> {
         d.payer,
         d.memo
     );
+    println!(
+        "Maximum network fee: {} HBAR. Verify this against the coordinator's quote.",
+        hedera_tx::fees::format_hbar(d.fee_limit_tinybars),
+    );
     let parsed = parse_private_key(key)?;
     sign_request(request, key_type, &parsed.secret)
 }

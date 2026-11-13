@@ -18,8 +18,6 @@ pub const REQUEST_PREFIX: &str = "HVTX1-REQ:";
 pub const RESPONSE_PREFIX: &str = "HVTX1-SIG:";
 /// Longest validity window the signer accepts (Hedera's own maximum).
 pub const MAX_VALID_SECONDS: i64 = 180;
-/// Highest fee limit the signer accepts: 1 HBAR.
-pub const MAX_FEE_TINYBARS: u64 = 100_000_000;
 pub const MAX_MEMO_BYTES: usize = 100;
 /// The only node the app targets (Testnet 0.0.3).
 const NODE_NUM: i64 = 3;
@@ -453,9 +451,6 @@ fn summarise(bytes: &[u8]) -> Result<Summary, Reject> {
         .seconds;
     if !(1..=MAX_VALID_SECONDS).contains(&valid) {
         return Err(No("validity window out of range"));
-    }
-    if body.fee > MAX_FEE_TINYBARS {
-        return Err(No("fee limit too high"));
     }
     if !plain_text(&body.memo) {
         return Err(No("memo is too long or has control characters"));
@@ -921,7 +916,7 @@ mod tests {
         assert_eq!(*tinybars, 150_000_000);
         assert_eq!(s.memo, "lunch");
         assert_eq!(s.node, "0.0.3");
-        assert_eq!(s.fee_limit_tinybars, MAX_FEE_TINYBARS);
+        assert_eq!(s.fee_limit_tinybars, 0);
         assert_eq!(s.expires_at_seconds - s.valid_start_seconds, 180);
         assert_eq!(format_hbar(*tinybars), "1.50000000");
     }
@@ -1395,7 +1390,6 @@ mod tests {
         });
         let other_payer = with_body(|b| lines(b)[0].account.as_mut().unwrap().num = 5);
         let long_window = with_body(|b| b.valid_duration.as_mut().unwrap().seconds = 181);
-        let high_fee = with_body(|b| b.fee = MAX_FEE_TINYBARS + 1);
         let other_node = with_body(|b| b.node_account.as_mut().unwrap().num = 4);
         let escape_memo = with_body(|b| b.memo = "a\u{1b}[2Jb".to_string());
         let other_shard = with_body(|b| lines(b)[1].account.as_mut().unwrap().shard = 1);
@@ -1403,12 +1397,19 @@ mod tests {
             wrong_way,
             other_payer,
             long_window,
-            high_fee,
             other_node,
             escape_memo,
             other_shard,
         ] {
             assert!(parse_request(&bad).is_err(), "should reject {bad}");
+        }
+    }
+
+    #[test]
+    fn displays_the_signed_fee_without_a_fixed_hbar_ceiling() {
+        for fee in [100_000_001, 2_500_000_000, u64::MAX] {
+            let payload = with_body(|body| body.fee = fee);
+            assert_eq!(parse_request(&payload).unwrap().1.fee_limit_tinybars, fee);
         }
     }
 

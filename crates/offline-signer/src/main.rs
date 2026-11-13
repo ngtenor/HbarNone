@@ -215,8 +215,12 @@ fn show(summary: &Summary) {
         }
     }
     println!(
-        "  Fee limit     {} HBAR (the real fee is far lower)",
-        format_hbar(summary.fee_limit_tinybars as i64)
+        "  Maximum fee   {}.{:08} HBAR",
+        summary.fee_limit_tinybars / 100_000_000,
+        summary.fee_limit_tinybars % 100_000_000,
+    );
+    println!(
+        "  Check this maximum carefully: this offline signer cannot verify a network fee estimate."
     );
     println!("  Node          {}", summary.node);
     println!(

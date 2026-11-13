@@ -9,6 +9,7 @@ use prost::Message;
 use sha3::{Digest, Keccak256};
 use wallet_core::key_import::{KeyType, public_key_bytes};
 
+pub mod fees;
 pub mod key_tree;
 pub mod offline;
 pub mod submit;

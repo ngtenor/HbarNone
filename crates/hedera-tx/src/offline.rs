@@ -4,6 +4,8 @@
 //! (`HVTX1-REQ:<hex>`, suitable for a QR code). A separate signer returns
 //! `HVTX1-SIG:<hex>`, which the app verifies and submits. Payloads use
 //! uppercase hex so they fit QR alphanumeric mode.
+//! Builders return unpriced drafts; call `with_estimated_fee` before exporting
+//! a request to a signer.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -17,9 +19,8 @@ use wallet_core::key_import::KeyType;
 use crate::AUTO_RENEW_SECONDS;
 use crate::key_tree::KeyTree;
 use crate::submit::{
-    CREATE_PATH, DELETE_PATH, MAX_FEE_TINYBARS, MAX_INITIAL_TINYBARS, MAX_MEMO_BYTES,
-    TESTNET_NODE_ACCOUNT, TOKEN_ASSOCIATE_PATH, TOKEN_DISSOCIATE_PATH, TRANSFER_PATH, UPDATE_PATH,
-    parse_account, submit,
+    CREATE_PATH, DELETE_PATH, MAX_INITIAL_TINYBARS, MAX_MEMO_BYTES, TESTNET_NODE_ACCOUNT,
+    TOKEN_ASSOCIATE_PATH, TOKEN_DISSOCIATE_PATH, TRANSFER_PATH, UPDATE_PATH, parse_account, submit,
 };
 use crate::{
     ChangeKeyParams, CreateAccountParams, DeleteAccountParams, NftTransferParams, SignatureMap,
@@ -160,6 +161,17 @@ pub struct UnsignedRequest {
     pub description: RequestDescription,
 }
 
+impl UnsignedRequest {
+    pub async fn with_estimated_fee(
+        self,
+        signing_keys: &[(KeyType, Vec<u8>)],
+    ) -> Result<(Self, crate::fees::FeeQuote), String> {
+        let body = from_hex(strip(&self.payload, REQUEST_PREFIX, "request")?)?;
+        let (body, quote) = crate::fees::price_body(&body, signing_keys).await?;
+        Ok((finish(body)?, quote))
+    }
+}
+
 fn now_seconds() -> Result<u64, String> {
     Ok(SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -206,7 +218,7 @@ pub fn build_request(
         node: TESTNET_NODE_ACCOUNT,
         valid_start_seconds: seconds,
         valid_start_nanos: nanos,
-        max_fee_tinybars: MAX_FEE_TINYBARS,
+        max_fee_tinybars: 0,
         memo: memo.to_string(),
     };
     finish(transfer_body_bytes_valid_for(&params, VALID_SECONDS)?)
@@ -224,7 +236,7 @@ pub fn build_delete_request(account: &str, recipient: &str) -> Result<UnsignedRe
         node: TESTNET_NODE_ACCOUNT,
         valid_start_seconds: seconds,
         valid_start_nanos: nanos,
-        max_fee_tinybars: MAX_FEE_TINYBARS,
+        max_fee_tinybars: 0,
     };
     finish(delete_account_body_bytes_valid_for(&params, VALID_SECONDS)?)
 }
@@ -251,7 +263,7 @@ pub fn build_create_request(
         node: TESTNET_NODE_ACCOUNT,
         valid_start_seconds: seconds,
         valid_start_nanos: nanos,
-        max_fee_tinybars: MAX_FEE_TINYBARS,
+        max_fee_tinybars: 0,
         memo: memo.to_string(),
     };
     finish(create_account_body_bytes_valid_for(&params, VALID_SECONDS)?)
@@ -279,7 +291,7 @@ pub fn build_token_transfer_request(
         node: TESTNET_NODE_ACCOUNT,
         valid_start_seconds: seconds,
         valid_start_nanos: nanos,
-        max_fee_tinybars: MAX_FEE_TINYBARS,
+        max_fee_tinybars: 0,
         memo: memo.to_string(),
     };
     finish(token_transfer_body_bytes_valid_for(&params, VALID_SECONDS)?)
@@ -305,7 +317,7 @@ pub fn build_nft_transfer_request(
         node: TESTNET_NODE_ACCOUNT,
         valid_start_seconds: seconds,
         valid_start_nanos: nanos,
-        max_fee_tinybars: MAX_FEE_TINYBARS,
+        max_fee_tinybars: 0,
         memo: memo.to_string(),
     };
     finish(nft_transfer_body_bytes_valid_for(&params, VALID_SECONDS)?)
@@ -324,7 +336,7 @@ pub fn build_token_association_request(
         node: TESTNET_NODE_ACCOUNT,
         valid_start_seconds: seconds,
         valid_start_nanos: nanos,
-        max_fee_tinybars: MAX_FEE_TINYBARS,
+        max_fee_tinybars: 0,
     };
     finish(token_association_body_bytes_valid_for(
         &params,
@@ -344,7 +356,7 @@ pub fn build_key_update_request(account: &str, key: &KeyTree) -> Result<Unsigned
         node: TESTNET_NODE_ACCOUNT,
         valid_start_seconds: seconds,
         valid_start_nanos: nanos,
-        max_fee_tinybars: MAX_FEE_TINYBARS,
+        max_fee_tinybars: 0,
     };
     finish(change_key_body_bytes_valid_for(&params, VALID_SECONDS)?)
 }
@@ -390,7 +402,6 @@ pub fn describe_body(body_bytes: &[u8]) -> Result<RequestDescription, String> {
         + usize::from(body.token_dissociation.is_some());
     let on_main = |a: &crate::AccountId| a.shard == 0 && a.realm == 0 && a.num > 0;
     if !(1..=VALID_SECONDS).contains(&valid)
-        || body.fee > MAX_FEE_TINYBARS
         || body.memo.len() > MAX_MEMO_BYTES
         || body.token_creation.is_some()
         || body.token_deletion.is_some()

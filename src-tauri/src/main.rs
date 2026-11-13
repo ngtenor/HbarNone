@@ -468,6 +468,38 @@ struct SendResult {
     transaction_id: String,
 }
 
+struct DesktopFeeApproval(tauri::AppHandle);
+
+impl hedera_tx::fees::FeeApproval for DesktopFeeApproval {
+    async fn approve(&self, current_maximum: u64, required_fee: u64) -> Result<(), String> {
+        let app = self.0.clone();
+        let message = format!(
+            "The node rejected the transaction because its required fee exceeds \
+             the estimate plus 25% buffer.\n\n\
+             Current maximum: {} HBAR\n\
+             Node-quoted fee: {} HBAR\n\n\
+             Only the actual network fee is charged, in addition to any transfer \
+             or opening balance. Approve this higher maximum and retry once?",
+            hedera_tx::fees::format_hbar(current_maximum),
+            hedera_tx::fees::format_hbar(required_fee),
+        );
+        let accepted = tauri::async_runtime::spawn_blocking(move || {
+            app.dialog()
+                .message(message)
+                .title("Network fee exceeds 25% buffer")
+                .buttons(tauri_plugin_dialog::MessageDialogButtons::OkCancel)
+                .blocking_show()
+        })
+        .await
+        .map_err(|e| format!("Could not show network fee approval: {e}"))?;
+        if accepted {
+            Ok(())
+        } else {
+            Err("Fee increase declined. The rejected transaction was not resubmitted.".into())
+        }
+    }
+}
+
 /// Creates a fungible token owned by the wallet's key. `initial_supply` is in
 /// whole tokens, such as `1000` or `12.5`.
 #[tauri::command]
@@ -478,6 +510,7 @@ async fn create_token(
     symbol: String,
     decimals: u32,
     initial_supply: String,
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<SendResult, String> {
     hedera_tx::check_token_text("name", &name)?;
@@ -498,6 +531,7 @@ async fn create_token(
         &symbol,
         decimals,
         supply,
+        &DesktopFeeApproval(app),
     )
     .await?;
     Ok(SendResult {
@@ -513,6 +547,7 @@ async fn create_nft_collection(
     from_account: String,
     name: String,
     symbol: String,
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<SendResult, String> {
     hedera_tx::check_token_text("name", &name)?;
@@ -527,6 +562,7 @@ async fn create_nft_collection(
         (key_type, &secret),
         &name,
         &symbol,
+        &DesktopFeeApproval(app),
     )
     .await?;
     Ok(SendResult {
@@ -576,6 +612,7 @@ async fn mint_nft(
     account_id: String,
     token_id: String,
     metadata: String,
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<SendResult, String> {
     let payer = testnet_account_of(&state, &wallet_id, &account_id)?;
@@ -620,9 +657,14 @@ async fn mint_nft(
         .with_wallet_key(&wallet_id, |key_type, secret| {
             Ok((key_type, Zeroizing::new(*secret)))
         })?;
-    let receipt =
-        hedera_tx::submit::mint_testnet_nft(&payer, (key_type, &secret), &token_id, &metadata)
-            .await?;
+    let receipt = hedera_tx::submit::mint_testnet_nft(
+        &payer,
+        (key_type, &secret),
+        &token_id,
+        &metadata,
+        &DesktopFeeApproval(app),
+    )
+    .await?;
     Ok(SendResult {
         transaction_id: receipt.transaction_id,
     })
@@ -634,6 +676,7 @@ async fn associate_token(
     wallet_id: String,
     account_id: String,
     token_id: String,
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<SendResult, String> {
     let account = testnet_account_of(&state, &wallet_id, &account_id)?;
@@ -649,6 +692,7 @@ async fn associate_token(
         (key_type, &secret),
         &token_id,
         true,
+        &DesktopFeeApproval(app),
     )
     .await?;
     Ok(SendResult {
@@ -663,6 +707,7 @@ async fn dissociate_token(
     wallet_id: String,
     account_id: String,
     token_id: String,
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<SendResult, String> {
     let account = testnet_account_of(&state, &wallet_id, &account_id)?;
@@ -678,6 +723,7 @@ async fn dissociate_token(
         (key_type, &secret),
         &token_id,
         false,
+        &DesktopFeeApproval(app),
     )
     .await?;
     Ok(SendResult {
@@ -712,6 +758,7 @@ async fn delete_token(
     wallet_id: String,
     account_id: String,
     token_id: String,
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<SendResult, String> {
     let payer = testnet_account_of(&state, &wallet_id, &account_id)?;
@@ -738,8 +785,13 @@ async fn delete_token(
         .with_wallet_key(&wallet_id, |key_type, secret| {
             Ok((key_type, Zeroizing::new(*secret)))
         })?;
-    let receipt =
-        hedera_tx::submit::delete_testnet_token(&payer, (key_type, &secret), &token_id).await?;
+    let receipt = hedera_tx::submit::delete_testnet_token(
+        &payer,
+        (key_type, &secret),
+        &token_id,
+        &DesktopFeeApproval(app),
+    )
+    .await?;
     Ok(SendResult {
         transaction_id: receipt.transaction_id,
     })
@@ -788,6 +840,7 @@ async fn change_token_supply(
     token_id: String,
     amount: String,
     mint: bool,
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<SendResult, String> {
     let payer = testnet_account_of(&state, &wallet_id, &account_id)?;
@@ -846,6 +899,7 @@ async fn change_token_supply(
         &token_id,
         units,
         mint,
+        &DesktopFeeApproval(app),
     )
     .await?;
     Ok(SendResult {
@@ -861,6 +915,7 @@ async fn send_hbar(
     recipient: String,
     amount_hbar: String,
     memo: String,
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<SendResult, String> {
     let tinybars = hedera_tx::submit::parse_hbar(&amount_hbar)?;
@@ -872,7 +927,13 @@ async fn send_hbar(
     let recipient = parse_account_input(&recipient, Network::Testnet, true)?;
     ensure_send_allowed(&state, &recipient)?;
     let receipt = hedera_tx::submit::send_testnet_transfer(
-        key_type, &secret, &sender, &recipient, tinybars, &memo,
+        key_type,
+        &secret,
+        &sender,
+        &recipient,
+        tinybars,
+        &memo,
+        &DesktopFeeApproval(app),
     )
     .await?;
     Ok(SendResult {
@@ -891,6 +952,7 @@ async fn send_token(
     token_id: String,
     amount: String,
     memo: String,
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<SendResult, String> {
     let sender = testnet_account_of(&state, &wallet_id, &from_account)?;
@@ -912,6 +974,7 @@ async fn send_token(
         units,
         decimals,
         &memo,
+        &DesktopFeeApproval(app),
     )
     .await?;
     Ok(SendResult {
@@ -1045,6 +1108,7 @@ async fn send_nft(
     token_id: String,
     serial_number: String,
     memo: String,
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<SendResult, String> {
     let sender = testnet_account_of(&state, &wallet_id, &from_account)?;
@@ -1074,6 +1138,7 @@ async fn send_nft(
         &token_id,
         serial,
         &memo,
+        &DesktopFeeApproval(app),
     )
     .await?;
     Ok(SendResult {
@@ -1188,6 +1253,9 @@ struct SigningRequest {
     /// The lines of a key structure being set (threshold first, then one key
     /// per line); empty for a single key.
     key_structure: Vec<String>,
+    /// The account's current public key in hex, set for a key change so the
+    /// UI can show which key must still sign; empty otherwise.
+    current_key: String,
     /// HBAR sent, or the opening balance of a new account.
     tinybars: i64,
     /// The token of a token request, or empty.
@@ -1199,6 +1267,8 @@ struct SigningRequest {
     serial_number: String,
     memo: String,
     expires_at_seconds: i64,
+    estimated_fee_hbar: String,
+    max_fee_hbar: String,
 }
 
 fn require_watch_only(state: &AppState, wallet_id: &str) -> Result<(), String> {
@@ -1213,7 +1283,37 @@ fn require_watch_only(state: &AppState, wallet_id: &str) -> Result<(), String> {
     }
 }
 
-fn signing_request(request: hedera_tx::offline::UnsignedRequest) -> Result<SigningRequest, String> {
+async fn signing_request(
+    request: hedera_tx::offline::UnsignedRequest,
+) -> Result<SigningRequest, String> {
+    let raw = MirrorClient::testnet()?
+        .account_key(&request.description.payer)
+        .await?
+        .ok_or_else(|| "The fee payer was not found on Testnet.".to_string())?;
+    let payer_tree = KeyTree::from_mirror(&raw.kind, &raw.hex)?;
+    let mut leaves = payer_tree.leaf_keys();
+    if let hedera_tx::offline::Action::KeyUpdate { key } = &request.description.action {
+        leaves.extend(key.leaf_keys());
+    }
+    let keys = leaves
+        .into_iter()
+        .map(|(kind, hex)| {
+            let key = KeyTree::single(kind, &hex)?.to_key()?;
+            let bytes = key
+                .ed25519
+                .or(key.ecdsa_secp256k1)
+                .ok_or_else(|| "Unsupported signing key for fee estimation.".to_string())?;
+            Ok((kind, bytes))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let (request, quote) = request.with_estimated_fee(&keys).await?;
+    render_signing_request(request, &quote)
+}
+
+fn render_signing_request(
+    request: hedera_tx::offline::UnsignedRequest,
+    quote: &hedera_tx::fees::FeeQuote,
+) -> Result<SigningRequest, String> {
     use hedera_tx::offline::Action;
     let code =
         qrcode::QrCode::with_error_correction_level(request.payload.as_bytes(), qrcode::EcLevel::L)
@@ -1338,6 +1438,7 @@ fn signing_request(request: hedera_tx::offline::UnsignedRequest) -> Result<Signi
         delete_account,
         new_key,
         key_structure,
+        current_key: String::new(),
         tinybars,
         token_id,
         token_units,
@@ -1345,12 +1446,14 @@ fn signing_request(request: hedera_tx::offline::UnsignedRequest) -> Result<Signi
         serial_number,
         memo: d.memo,
         expires_at_seconds: d.expires_at_seconds,
+        estimated_fee_hbar: hedera_tx::fees::format_hbar(quote.estimated_tinybars),
+        max_fee_hbar: hedera_tx::fees::format_hbar(quote.max_fee_tinybars),
     })
 }
 
 /// Builds an unsigned transfer for a watch-only wallet to be signed elsewhere.
 #[tauri::command]
-fn prepare_unsigned_transfer(
+async fn prepare_unsigned_transfer(
     wallet_id: String,
     from_account: String,
     recipient: String,
@@ -1366,6 +1469,7 @@ fn prepare_unsigned_transfer(
     signing_request(hedera_tx::offline::build_request(
         &sender, &recipient, tinybars, &memo,
     )?)
+    .await
 }
 
 /// Builds an unsigned token transfer for a watch-only wallet, after the same
@@ -1392,6 +1496,7 @@ async fn prepare_unsigned_token_transfer(
     signing_request(hedera_tx::offline::build_token_transfer_request(
         &sender, &recipient, &token_id, units, decimals, &memo,
     )?)
+    .await
 }
 
 /// Builds an unsigned NFT transfer for a watch-only wallet, after the same
@@ -1426,6 +1531,7 @@ async fn prepare_unsigned_nft_transfer(
     signing_request(hedera_tx::offline::build_nft_transfer_request(
         &sender, &recipient, &token_id, serial, &memo,
     )?)
+    .await
 }
 
 /// Builds an unsigned association or dissociation for a watch-only wallet.
@@ -1449,12 +1555,13 @@ async fn prepare_unsigned_token_association(
     signing_request(hedera_tx::offline::build_token_association_request(
         &account, &token_id, associate,
     )?)
+    .await
 }
 
 /// Builds an unsigned deletion of one of a watch-only wallet's accounts. The
 /// remaining HBAR go to another account of the same wallet, so one key signs.
 #[tauri::command]
-fn prepare_unsigned_delete(
+async fn prepare_unsigned_delete(
     wallet_id: String,
     account_id: String,
     recipient: String,
@@ -1470,12 +1577,13 @@ fn prepare_unsigned_delete(
     signing_request(hedera_tx::offline::build_delete_request(
         &account, &recipient,
     )?)
+    .await
 }
 
 /// Builds an unsigned creation of a new account that uses the watch-only
 /// wallet's own key and is funded by one of the wallet's accounts.
 #[tauri::command]
-fn prepare_unsigned_create(
+async fn prepare_unsigned_create(
     wallet_id: String,
     from_account: String,
     initial_hbar: String,
@@ -1494,6 +1602,7 @@ fn prepare_unsigned_create(
     signing_request(hedera_tx::offline::build_create_request(
         &payer, &key, tinybars, "",
     )?)
+    .await
 }
 
 /// Verifies the signer's response against the request and submits to Testnet.
@@ -1564,7 +1673,7 @@ async fn submit_signed_request(
 /// accounts to the target wallet's key. The network requires signatures from
 /// both the current key and the new key.
 #[tauri::command]
-fn prepare_unsigned_move(
+async fn prepare_unsigned_move(
     wallet_id: String,
     account_id: String,
     target_wallet_id: String,
@@ -1586,9 +1695,47 @@ fn prepare_unsigned_move(
         .ok_or_else(|| format!("wallet not found: {target_wallet_id}"))?;
     let target_key = lock_service(&state)?.wallet_public_key(&target_wallet_id)?;
     let key = hedera_tx::key_tree::KeyTree::single(target_type, &target_key)?;
-    signing_request(hedera_tx::offline::build_key_update_request(
+    let mut request = signing_request(hedera_tx::offline::build_key_update_request(
         &account, &key,
     )?)
+    .await?;
+    request.current_key = lock_service(&state)?
+        .wallet_public_key(&wallet_id)?
+        .to_lowercase();
+    Ok(request)
+}
+
+/// Verifies one scanned signature for a key change and reports which key
+/// produced it: "current" for this wallet's key, "new" for the target
+/// wallet's key. An invalid signature or any other key is an error.
+#[tauri::command]
+fn verify_move_signature(
+    request: String,
+    response: String,
+    wallet_id: String,
+    target_wallet_id: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let mut partial = hedera_tx::offline::begin_collect(&request)?;
+    partial.add_response(&response)?;
+    let signer = partial
+        .signer_keys
+        .first()
+        .cloned()
+        .ok_or_else(|| "This is not a valid signature from a signer.".to_string())?;
+    let current = lock_service(&state)?
+        .wallet_public_key(&wallet_id)?
+        .to_lowercase();
+    if signer == current {
+        return Ok("current".to_string());
+    }
+    let target = lock_service(&state)?
+        .wallet_public_key(&target_wallet_id)?
+        .to_lowercase();
+    if signer == target {
+        return Ok("new".to_string());
+    }
+    Err("The signature was made with a key that is not part of this move.".to_string())
 }
 
 /// Verifies the signed replies for a key change and submits it. The current
@@ -1832,6 +1979,7 @@ async fn create_shared_account(
     initial_hbar: String,
     required: u32,
     keys: Vec<String>,
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<SendResult, String> {
     let tinybars = hedera_tx::submit::parse_hbar(&initial_hbar)?;
@@ -1857,6 +2005,7 @@ async fn create_shared_account(
         &payer,
         (payer_type, &payer_secret),
         tinybars,
+        &DesktopFeeApproval(app),
     )
     .await?;
     Ok(SendResult {
@@ -1877,7 +2026,15 @@ async fn finish_shared_create(
         .await?
         .ok_or_else(|| "Testnet has not confirmed the creation yet.".to_string())?;
     if result != "SUCCESS" {
-        return Err(format!("The account creation failed: {result}"));
+        let detail = if result == "INSUFFICIENT_TX_FEE" {
+            " The estimated fee plus 25% was insufficient. No account was created; \
+             network fees may still have been charged. Obtain a fresh estimate before retrying."
+        } else {
+            ""
+        };
+        return Err(format!(
+            "The account creation failed: {result}.{detail} Transaction: {transaction_id}"
+        ));
     }
     let account_id =
         entity.ok_or_else(|| "Testnet has not confirmed the creation yet.".to_string())?;
@@ -1887,7 +2044,7 @@ async fn finish_shared_create(
 /// Builds an unsigned HBAR transfer from a shared account. Each participant
 /// signs the same request; the app merges the replies and submits.
 #[tauri::command]
-fn prepare_shared_transfer(
+async fn prepare_shared_transfer(
     account_id: String,
     recipient: String,
     amount_hbar: String,
@@ -1902,6 +2059,7 @@ fn prepare_shared_transfer(
     signing_request(hedera_tx::offline::build_request(
         &sender, &recipient, tinybars, &memo,
     )?)
+    .await
 }
 
 /// Verifies the collected replies against the request and reports progress
@@ -1952,7 +2110,7 @@ async fn submit_shared_transfer(
 /// an M-of-N key structure. The current key must sign, plus enough of the new
 /// keys to satisfy the threshold.
 #[tauri::command]
-fn prepare_shared_key_change(
+async fn prepare_shared_key_change(
     wallet_id: String,
     account_id: String,
     required: u32,
@@ -1964,6 +2122,7 @@ fn prepare_shared_key_change(
     signing_request(hedera_tx::offline::build_key_update_request(
         &account, &tree,
     )?)
+    .await
 }
 
 /// Verifies the replies for a key change to a structure and submits it. The
@@ -2075,6 +2234,7 @@ async fn create_account(
     wallet_id: String,
     from_account: String,
     initial_hbar: String,
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<SendResult, String> {
     let tinybars = hedera_tx::submit::parse_hbar(&initial_hbar)?;
@@ -2103,6 +2263,7 @@ async fn create_account(
         &payer,
         (payer_type, &payer_secret),
         tinybars,
+        &DesktopFeeApproval(app),
     )
     .await?;
     Ok(SendResult {
@@ -2118,6 +2279,7 @@ async fn move_account(
     wallet_id: String,
     account_id: String,
     target_wallet_id: String,
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<SendResult, String> {
     if wallet_id == target_wallet_id {
@@ -2136,6 +2298,7 @@ async fn move_account(
         &account,
         (current_type, &current_secret),
         (new_type, &new_secret),
+        &DesktopFeeApproval(app),
     )
     .await?;
     Ok(SendResult {
@@ -2176,6 +2339,7 @@ async fn delete_account(
     wallet_id: String,
     account_id: String,
     recipient: String,
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<SendResult, String> {
     let account = testnet_account_of(&state, &wallet_id, &account_id)?;
@@ -2214,6 +2378,7 @@ async fn delete_account(
         &recipient,
         recipient_wallet.is_some(),
         &signers,
+        &DesktopFeeApproval(app),
     )
     .await?;
     Ok(SendResult {
@@ -2715,6 +2880,7 @@ fn main() {
             prepare_unsigned_move,
             submit_signed_request,
             submit_signed_move,
+            verify_move_signature,
             find_wallet_accounts,
             get_account_balance,
             get_token_info,
