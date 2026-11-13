@@ -195,6 +195,14 @@ type SigningRequest = {
   expiresAtSeconds: number
 }
 
+type MultisigSignatureProgress = {
+  signedKeys: string[]
+  required: number
+  total: number
+  matched: number
+  satisfied: boolean
+}
+
 // A public key shortened to its first and last three characters.
 function abbreviateKey(key: string) {
   return key.length > 11 ? `${key.slice(0, 3)}.....${key.slice(-3)}` : key
@@ -330,10 +338,28 @@ export function TestnetPanel({
   const [signing, setSigning] = useState<SigningRequest | null>(null)
   const [signatureText, setSignatureText] = useState('')
   const [signatureText2, setSignatureText2] = useState('')
+  const [multisigResponses, setMultisigResponses] = useState<string[]>([])
+  const [multisigProgress, setMultisigProgress] = useState<MultisigSignatureProgress | null>(null)
   const [scanning, setScanning] = useState(false)
   const handleScanned = (text: string) => {
-    setSignatureText(text)
     setScanning(false)
+    if (!wallet.multisig_policy || !signing) {
+      setSignatureText(text)
+      return
+    }
+    void run(async () => {
+      const responses = [...multisigResponses, text]
+      const progress = await invoke<MultisigSignatureProgress>('check_multisig_wallet_signatures', {
+        walletId: wallet.id,
+        request: signing.payload,
+        responses,
+      })
+      if (multisigProgress && progress.signedKeys.length === multisigProgress.signedKeys.length) {
+        throw new Error('That key has already signed.')
+      }
+      setMultisigResponses(responses)
+      setMultisigProgress(progress)
+    })
   }
   const [secondsLeft, setSecondsLeft] = useState(0)
   useEffect(() => {
@@ -341,7 +367,7 @@ export function TestnetPanel({
   }, [signing])
   // The move screen shows the camera as a layer; a click anywhere outside it closes it.
   useEffect(() => {
-    if (!scanning || signing?.action !== 'key-update') return
+    if (!scanning || (signing?.action !== 'key-update' && !wallet.multisig_policy)) return
     const closeOnOutsideClick = (event: MouseEvent) => {
       const target = event.target as Element | null
       if (target?.closest('.qr-scanner-overlay, .scan-signature-button')) return
@@ -349,14 +375,14 @@ export function TestnetPanel({
     }
     document.addEventListener('mousedown', closeOnOutsideClick)
     return () => document.removeEventListener('mousedown', closeOnOutsideClick)
-  }, [scanning, signing])
+  }, [scanning, signing, wallet.multisig_policy])
   // An error on the move signing screen closes on the next click anywhere in the app.
   useEffect(() => {
-    if (!error || signing?.action !== 'key-update') return
+    if (!error || (signing?.action !== 'key-update' && !wallet.multisig_policy)) return
     const clear = () => setError('')
     document.addEventListener('mousedown', clear)
     return () => document.removeEventListener('mousedown', clear)
-  }, [error, signing])
+  }, [error, signing, wallet.multisig_policy])
   useEffect(() => {
     if (!signing) return
     const tick = () =>
@@ -448,6 +474,8 @@ export function TestnetPanel({
           associate: true,
         })
         setSignatureText('')
+        setMultisigResponses([])
+        setMultisigProgress(null)
         setSigning(request)
         return
       }
@@ -471,6 +499,8 @@ export function TestnetPanel({
           associate: false,
         })
         setSignatureText('')
+        setMultisigResponses([])
+        setMultisigProgress(null)
         setSigning(request)
         return
       }
@@ -765,7 +795,15 @@ export function TestnetPanel({
     : account
   const sameAccount = (typed: string) => typed.trim().split('-')[0] === account
   const funderRows = addressBook.rows.filter(
-    (row) => row.network === 'testnet' && row.wallet_id && (!isWatchOnly || row.wallet_id === wallet.id),
+    (row) => {
+      if (row.network !== 'testnet' || !row.wallet_id) return false
+      if (!isWatchOnly) return true
+      if (row.wallet_id === wallet.id) return true
+      if (!wallet.multisig_policy) return false
+      return otherWallets.some(
+        (owner) => owner.id === row.wallet_id && owner.secret_kind !== 'watchonly',
+      )
+    },
   )
   const funderKey = funderRows.map((row) => row.display_id).join(',')
 
@@ -931,6 +969,8 @@ export function TestnetPanel({
     setConfirming(false)
     setSigning(null)
     setSignatureText('')
+    setMultisigResponses([])
+    setMultisigProgress(null)
     setSendTokenId('')
     setSendNftKey('')
     setNftFeeInfo(null)
@@ -963,6 +1003,8 @@ export function TestnetPanel({
           memo,
         })
     setSignatureText('')
+    setMultisigResponses([])
+    setMultisigProgress(null)
     setSigning(request)
   })
 
@@ -984,10 +1026,18 @@ export function TestnetPanel({
       return
     }
     const tokenName = sendToken ? tokenLabel(sendToken) : 'token'
-    const result = await invoke<{ transactionId: string }>('submit_signed_request', {
-      request: signing.payload,
-      response: signatureText.trim(),
-    })
+    const result = wallet.multisig_policy
+      ? await invoke<{ transactionId: string }>('submit_multisig_wallet_request', {
+          walletId: wallet.id,
+          request: signing.payload,
+          responses: multisigResponses,
+        })
+      : await invoke<{ transactionId: string }>('submit_signed_request', {
+          request: signing.payload,
+          response: signatureText.trim(),
+        })
+    setMultisigResponses([])
+    setMultisigProgress(null)
     if (action === 'token-associate' || action === 'token-dissociate') {
       const adding = action === 'token-associate'
       toggleSection(adding ? 'token-add' : 'token-remove')
@@ -1030,6 +1080,8 @@ export function TestnetPanel({
       recipient: deleteRecipient.trim(),
     })
     setSignatureText('')
+    setMultisigResponses([])
+    setMultisigProgress(null)
     setConfirmingDelete(false)
     setDeleteAcknowledged(false)
     setSigning(request)
@@ -1042,6 +1094,8 @@ export function TestnetPanel({
       initialHbar: openingBalance.trim(),
     })
     setSignatureText('')
+    setMultisigResponses([])
+    setMultisigProgress(null)
     setConfirmingCreate(false)
     setSigning(request)
   })
@@ -1053,8 +1107,10 @@ export function TestnetPanel({
     const isMoveSigning = signing.action === 'key-update'
     const intro = (
       <p>
-        Scan this code with your offline signer, check the details it shows, then paste its
-        reply below.
+        Scan this code with your offline signer and check the details it shows.
+        {wallet.multisig_policy
+          ? ' Scan each signer reply into this app.'
+          : ' Then paste its reply below.'}
       </p>
     )
     const timerHint = (
@@ -1177,6 +1233,100 @@ export function TestnetPanel({
         </button>
       </div>
     )
+    if (wallet.multisig_policy) {
+      const policy = wallet.multisig_policy
+      const matched = multisigProgress?.matched ?? 0
+      const satisfied = multisigProgress?.satisfied ?? false
+      const missing = Math.max(0, policy.threshold - matched)
+      const actionLabel = signing.action === 'create'
+        ? 'Create account'
+        : signing.action === 'transfer'
+          ? 'Send HBAR'
+          : submitLabel
+      const goBack = () => {
+        setSigning(null)
+        setSignatureText('')
+        setMultisigResponses([])
+        setMultisigProgress(null)
+        if (signing.action === 'create') setConfirmingCreate(true)
+        else if (signing.action === 'transfer') setConfirming(true)
+        else if (signing.action === 'delete') setConfirmingDelete(true)
+        else if (signing.action === 'token-associate') toggleSection('token-add')
+        else if (signing.action === 'token-dissociate') toggleSection('token-remove')
+      }
+      return (
+        <div className="testnet-confirm move-confirm multisig-signing-confirm" role="group" aria-label="Signing request">
+          {intro}
+          <div className="signing-layout">
+            <div className="signing-qr">
+              <QrCode request={signing} />
+            </div>
+            <dl className="move-details multisig-signing-keys">
+              <dt>Keys</dt>
+              {policy.keys.map((key, index) => {
+                const label = `Key ${String.fromCharCode(65 + index)}`
+                return (
+                  <dd key={key}>
+                    <span className="key-text">{abbreviateKey(key)}</span>
+                    <SignatureCheckbox
+                      checked={Boolean(multisigProgress?.signedKeys.includes(key))}
+                      label={`${label} signature`}
+                    />
+                    <span>{label}</span>
+                  </dd>
+                )
+              })}
+            </dl>
+          </div>
+          <p className="field-hint" role="timer">
+            {secondsLeft > 0
+              ? `Valid for ${secondsLeft} more seconds. ${policy.threshold} of ${policy.keys.length} signatures required.`
+              : 'This request has expired. Go back and create a new one.'}
+          </p>
+          <p className="field-hint" role="status">
+            {satisfied
+              ? 'The threshold is satisfied.'
+              : `${matched} signatures collected. ${missing} more ${missing === 1 ? 'signature' : 'signatures'} required.`}
+          </p>
+          {requestDetails}
+          <div className="button-pair move-signing-actions">
+            <button
+              className="secondary-button scan-signature-button"
+              type="button"
+              disabled={isBusy || secondsLeft === 0 || satisfied}
+              onClick={() => setScanning(!scanning)}
+            >
+              Scan signatures
+            </button>
+            <button
+              className="primary-button"
+              type="button"
+              disabled={isBusy || secondsLeft === 0 || !satisfied}
+              onClick={handleSubmitSigned}
+            >
+              {isBusy ? 'Submitting...' : actionLabel}
+            </button>
+            <button className="secondary-button" type="button" disabled={isBusy} onClick={goBack}>
+              Back
+            </button>
+            <button className="secondary-button" type="button" disabled={isBusy} onClick={onCancel}>
+              Cancel
+            </button>
+          </div>
+          {requestAsText}
+          {scanning && (
+            <div className="qr-scanner-overlay">
+              <QrScanner
+                prefix="HVTX1-SIG:"
+                onScan={handleScanned}
+                onClose={() => setScanning(false)}
+                showStopButton={false}
+              />
+            </div>
+          )}
+        </div>
+      )
+    }
     if (isMoveSigning) {
       const currentSigned = Boolean(signatureText.trim())
       const newSigned = Boolean(signatureText2.trim())
@@ -1567,7 +1717,12 @@ export function TestnetPanel({
               entries={[
                 { id: 'rename', label: accountSummary?.named ? 'Rename account' : 'Name this account' },
                 ...(!readOnly && otherWallets.length > 0
-                  ? [{ id: 'move', label: 'Move account' }]
+                 ? [{
+                     id: 'move',
+                     label: 'Move account',
+                     disabled: Boolean(wallet.multisig_policy),
+                     detail: wallet.multisig_policy ? 'multisig key rotation is not supported yet' : undefined,
+                   }]
                   : []),
                 ...(!readOnly
                   ? [{ id: 'delete', label: 'Delete account', danger: true }]
@@ -2341,7 +2496,9 @@ export function TestnetPanel({
         <div className="testnet-send create-account">
           <h3 className="section-title">Create account</h3>
           <p className="field-hint">
-            {isWatchOnly
+            {wallet.multisig_policy
+              ? `Creates a new Testnet account using this wallet's ${wallet.multisig_policy.keys.length}-key policy with a threshold of ${wallet.multisig_policy.threshold}. The first account must be funded by a hot wallet in this vault; later accounts may be funded by this wallet.`
+              : isWatchOnly
               ? 'Creates a new Testnet account that uses this wallet\u2019s public key. Your offline signer signs the request. It is added to this wallet automatically. Choose one of this wallet\u2019s accounts to fund it:'
               : 'Creates a new Testnet account controlled by this wallet\u2019s key. It is added to this wallet automatically. Choose an account from the dropdown box below to fund the account:'}
           </p>
@@ -2366,7 +2523,11 @@ export function TestnetPanel({
                 <dt>Opening balance</dt>
                 <dd>{openingBalance.trim()} ℏ</dd>
                 <dt>Key</dt>
-                <dd>This wallet&apos;s key</dd>
+                <dd>
+                  {wallet.multisig_policy
+                    ? `${wallet.multisig_policy.keys.length} keys with a threshold of ${wallet.multisig_policy.threshold}`
+                    : 'This wallet\'s key'}
+                </dd>
               </dl>
               <div className="button-pair">
                 <button

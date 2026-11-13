@@ -97,7 +97,7 @@ Password change and encrypted backup export/restore are tracked under
 ## Hedera Testnet integration
 - [x] Account ID checksums (HIP-15, `0.0.12345-abcde`, verified against the published 0.0.123 vectors for Mainnet and Testnet): accounts are displayed with the checksum; send and delete recipients must carry a valid one; linking by ID verifies one if typed.
 - [x] Account names (max 25 characters, shown as `Name - 0.0.12345-abcde`, unnamed = `NONAME`) and an address book: wallet accounts and named outside accounts are listed with checksummed IDs and balances. External send and delete recipients are disabled by default and can be enabled in Settings.
-- [x] Multi-account wallets: each wallet (key) holds a list of `(network, account)` entries, unique per network across wallets, up to 50 per wallet; a legacy single account is migrated to Testnet on unlock. Import finds accounts for the key (single-key accounts only). Account creation (`CryptoCreate`), moving an account to another wallet's key (`CryptoUpdate`, signed by both keys), and account deletion (`CryptoDelete`) were implemented and manually verified on Testnet with disposable accounts. Mainnet is a data-model column only; multisig accounts are deferred to QR transport.
+- [x] Multi-account wallets: each wallet (key) holds a list of `(network, account)` entries, unique per network across wallets, up to 50 per wallet; a legacy single account is migrated to Testnet on unlock. Discovery matches the wallet's exact on-chain key structure. Account creation (`CryptoCreate`), moving an account to another single-key wallet (`CryptoUpdate`), and account deletion (`CryptoDelete`) were implemented and manually verified on Testnet with disposable accounts. Mainnet remains read-only; multisig signing is Testnet-only.
 - [x] `hedera-mirror` crate: read-only client for the public Testnet mirror node (fixed URL, https only, no redirects, 15 s timeout, 512 KB cap); contacts the network only when the user clicks a button
 - [x] Testnet panel on each wallet tab: link an account by ID, find an account by key (Ed25519), refresh balance and recent transactions. Verified manually against the real Testnet (1000 ℏ shown)
 - [x] Implement Settings "Back up and erase this device"; manually verified on Linux.
@@ -168,26 +168,21 @@ Testnet verification and CI before moving to the next stage.
 
 ### 11–13 November: multisig
 Implementation plan: [MULTISIG-PLAN.md](./MULTISIG-PLAN.md) (prepared 11 Nov).
-- [ ] Start with the planned 2-of-3 threshold account: display the key structure
-  and collect, validate and combine signatures for the same transaction body.
-  Implement the threshold logic generically (M-of-N, as Hedera's
-  `ThresholdKey` already is) so shapes such as 3-of-5 need no structural
-  change; 2-of-3 is the verified baseline and a 3-of-5 Testnet test is done
-  only if time permits (agreed 9 Nov).
-- [ ] Support the agreed account setup/key-change flow and a basic transfer
-  through the desktop coordinator and software signer.
-- [ ] Reject duplicate, unrelated, invalid or mismatched signatures and explain
-  the transaction signing time limit.
-- [ ] Test successful and insufficient-signature cases on Testnet, document
-  recovery and limitations, and pass CI. Keep this milestone focused on
-  ordinary transactions; schedule transactions are committed for the later
-  roadmap below.
-- [ ] Keep the key-tree representation and threshold evaluation generic and
-  independent of transaction type. Keep request validation, signature
-  verification and aggregation separable; bind each reply to the exact signing
-  bytes and signer key, and do not assume every signature arrives within one
-  180-second transaction window. Treat schedule signing as a distinct intent,
-  not as an ordinary transaction with a different label.
+- [x] Implement the wallet-first multisig policy: scan-only public-key import,
+  convert an empty Ed25519 watch-only wallet, freeze its 2-to-5-key threshold
+  policy, create accounts, link accounts only on exact structure match, and
+  collect participant signatures for supported Testnet operations.
+- [x] Remove the superseded Shared accounts UI, Tauri commands, and vault
+  model. Existing encrypted payloads remain readable; unknown legacy fields
+  are ignored and are dropped when the payload is next saved.
+- [x] Verify automated UI tests, Rust formatting, backend type-check, and UI
+  production build. See [MULTISIG-TESTING.md](./MULTISIG-TESTING.md) for the
+  current manual checklist.
+- [ ] Complete the manual Testnet run with disposable signer keys, including
+  scan-to-create, duplicate/unrelated/expired replies, first and later account
+  creation, exact-match linking, supported operations, and mismatch blocking.
+- [ ] Implement multisig key rotation and schedule signing as follow-up work;
+  they are not yet supported by the multisig wallet flow.
 
 ### 14 November: hardware readiness and consolidation
 - [ ] Prepare a wiring plan for the Pico 2, display, Arducam SPI camera and

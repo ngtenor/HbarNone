@@ -12,7 +12,6 @@ import { DropdownMenu } from './DropdownMenu'
 import type { MenuEntry } from './DropdownMenu'
 import { QrScanner } from './QrScanner'
 import { AccountBadge, WalletBadge } from './WalletBadge'
-import { SharedAccounts } from './SharedAccounts'
 import type { AddressBookView, KeyDetection, WalletKeys, WalletSummary } from './types'
 import brandLockup from './assets/brand-lockup.png'
 import './App.css'
@@ -35,6 +34,14 @@ type MultisigSetup = {
   threshold: number
   keys: string[]
   scanning: boolean
+  saving: boolean
+  error: string
+}
+
+type MultisigLink = {
+  walletId: string
+  accountId: string
+  preview: { description: string; required: number; total: number; keys: string[] } | null
   saving: boolean
   error: string
 }
@@ -201,8 +208,10 @@ function App() {
   const [scanningWalletKey, setScanningWalletKey] = useState(false)
   const [scanError, setScanError] = useState('')
   const [multisigSetup, setMultisigSetup] = useState<MultisigSetup | null>(null)
+  const [multisigLink, setMultisigLink] = useState<MultisigLink | null>(null)
   const [walletKeys, setWalletKeys] = useState<{ id: string, keys: WalletKeys } | null>(null)
   const [balances, setBalances] = useState<Record<string, number>>({})
+  const [multisigMismatchAccounts, setMultisigMismatchAccounts] = useState<Record<string, string[]>>({})
   const [selectedAccounts, setSelectedAccounts] = useState<Record<string, string>>({})
   const [isRefreshingAll, setIsRefreshingAll] = useState(false)
   const [findNotice, setFindNotice] = useState('')
@@ -399,10 +408,49 @@ function App() {
   }, [multisigSetup?.error])
 
   useEffect(() => {
+    if (!multisigLink?.error) return
+    const clear = () => setMultisigLink((current) => current && { ...current, error: '' })
+    document.addEventListener('mousedown', clear)
+    return () => document.removeEventListener('mousedown', clear)
+  }, [multisigLink?.error])
+
+  useEffect(() => {
     if (!findNotice) return
     const timer = window.setTimeout(() => setFindNotice(''), 2000)
     return () => window.clearTimeout(timer)
   }, [findNotice])
+
+  useEffect(() => {
+    if (vaultView !== 'unlocked') return
+    let cancelled = false
+    const walletsToCheck = wallets.filter(
+      (wallet) => wallet.multisig_policy && wallet.accounts.length > 0,
+    )
+    if (walletsToCheck.length === 0) return
+    void Promise.all(walletsToCheck.map(async (wallet) => {
+      try {
+        const ids = await invoke<string[]>('check_multisig_wallet_accounts', { walletId: wallet.id })
+        return [wallet.id, ids] as const
+      } catch (failure) {
+        throw new Error(
+          `Could not verify multisig keys for wallet '${wallet.name}': ${errorMessage(failure)}`,
+        )
+      }
+    }))
+      .then((results) => {
+        if (cancelled) return
+        setMultisigMismatchAccounts((existing) => ({
+          ...existing,
+          ...Object.fromEntries(results),
+        }))
+      })
+      .catch((failure: unknown) => {
+        if (!cancelled) setError(errorMessage(failure))
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [vaultView, wallets])
 
   useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent) => {
@@ -733,6 +781,21 @@ function App() {
       } catch (failure) {
         errors.push(`Account discovery failed: ${errorMessage(failure)}`)
       }
+      if (updated.multisig_policy) {
+        try {
+          const mismatches = await invoke<string[]>('check_multisig_wallet_accounts', {
+            walletId: wallet.id,
+          })
+          setMultisigMismatchAccounts((existing) => ({ ...existing, [wallet.id]: mismatches }))
+          if (mismatches.length > 0) {
+            setFindNotice(
+              `${mismatches.length} account(s) no longer match this wallet's multisig key policy. They are read-only until the on-chain key is restored.`,
+            )
+          }
+        } catch (failure) {
+          errors.push(`Multisig key verification failed: ${errorMessage(failure)}`)
+        }
+      }
       await Promise.all(updated.accounts
         .filter((account) => account.network === 'testnet')
         .map(async (account) => {
@@ -764,11 +827,12 @@ function App() {
     }
     if (
       wallet.secret_kind === 'watchonly'
-      && wallet.key_type === 'ed25519'
-      && wallet.accounts.length === 0
-      && !wallet.multisig_policy
     ) {
-      entries.push({ id: 'convert-multisig', label: 'Convert to multisig' })
+      if (wallet.multisig_policy) {
+        entries.push({ id: 'link-multisig-account', label: 'Link account by ID' })
+      } else if (wallet.key_type === 'ed25519' && wallet.accounts.length === 0) {
+        entries.push({ id: 'convert-multisig', label: 'Convert to multisig' })
+      }
     }
     if (wallet.secret_kind === 'mnemonic') {
       entries.push({ id: 'reveal-phrase', label: 'Reveal recovery phrase', danger: true })
@@ -796,6 +860,57 @@ function App() {
       })
     } catch (failure) {
       setError(errorMessage(failure))
+    }
+  }
+
+  function startMultisigLink(wallet: WalletSummary) {
+    setMultisigSetup(null)
+    setMultisigLink({
+      walletId: wallet.id,
+      accountId: '',
+      preview: null,
+      saving: false,
+      error: '',
+    })
+  }
+
+  async function previewMultisigLink() {
+    if (!multisigLink?.accountId.trim()) return
+    setMultisigLink((current) => current && { ...current, saving: true, error: '' })
+    try {
+      const preview = await invoke<NonNullable<MultisigLink['preview']> | null>(
+        'get_account_key_structure',
+        { accountId: multisigLink.accountId.trim() },
+      )
+      if (!preview) throw new Error('That Testnet account was not found.')
+      setMultisigLink((current) => current && { ...current, preview, saving: false })
+    } catch (failure) {
+      setMultisigLink((current) => current && {
+        ...current,
+        saving: false,
+        error: errorMessage(failure),
+      })
+    }
+  }
+
+  async function confirmMultisigLink() {
+    if (!multisigLink?.preview) return
+    setMultisigLink((current) => current && { ...current, saving: true, error: '' })
+    try {
+      const updated = await invoke<WalletSummary>('link_multisig_wallet_account', {
+        walletId: multisigLink.walletId,
+        accountId: multisigLink.accountId.trim(),
+      })
+      setWallets((existing) => existing.map((wallet) => (
+        wallet.id === updated.id ? updated : wallet
+      )))
+      setMultisigLink(null)
+    } catch (failure) {
+      setMultisigLink((current) => current && {
+        ...current,
+        saving: false,
+        error: errorMessage(failure),
+      })
     }
   }
 
@@ -873,6 +988,10 @@ function App() {
       setError('')
       setRenamingWalletId(null)
       void startMultisigConversion(wallet)
+    } else if (action === 'link-multisig-account') {
+      setError('')
+      setRenamingWalletId(null)
+      startMultisigLink(wallet)
     } else if (action === 'reveal-phrase' || action === 'reveal-key') {
       closeReveal()
       setWalletToDelete(null)
@@ -1819,6 +1938,9 @@ function App() {
                                     <span className="account-id">
                                       <AccountBadge account={account} />
                                       <AccountLabel name={account.name} displayId={account.display_id} />
+                                      {multisigMismatchAccounts[wallet.id]?.includes(account.id) && (
+                                        <span className="multisig-account-warning">Key mismatch</span>
+                                      )}
                                     </span>
                                     <span className="account-balance">
                                       {accountBalanceText(wallet.id, account.id)}
@@ -1840,18 +1962,6 @@ function App() {
                   </>
                 )}
               </section>
-              {networkView === 'testnet' && (
-                <SharedAccounts
-                  wallets={visibleWallets}
-                  onWalletsRefresh={() => {
-                    void invoke<VaultState>('get_vault_state')
-                      .then((state) => {
-                        if (state.status === 'unlocked') setWallets(state.wallets)
-                      })
-                      .catch(() => undefined)
-                  }}
-                />
-              )}
             </section>
           )}
 
@@ -2346,7 +2456,15 @@ function App() {
             const wallet = wallets.find((item) => item.id === activeTab)
             if (!wallet) return null
             const openAccount = selectedAccountOf(wallet)
-            const testnetPanel = (
+            const accountMismatch = Boolean(
+              openAccount && multisigMismatchAccounts[wallet.id]?.includes(openAccount),
+            )
+            const testnetPanel = accountMismatch ? (
+              <p className="error-message multisig-account-warning" role="alert">
+                This account's on-chain key no longer matches this wallet's multisig policy.
+                Transaction controls are disabled. Restore the original on-chain policy before using this account again.
+              </p>
+            ) : (
               <TestnetPanel
                 key={`${wallet.id}/${openAccount ?? ''}`}
                 wallet={wallet}
@@ -2370,6 +2488,81 @@ function App() {
               />
             )
             const setup = multisigSetup?.walletId === wallet.id ? multisigSetup : null
+            const link = multisigLink?.walletId === wallet.id ? multisigLink : null
+            if (link && wallet.multisig_policy) {
+              const matchesPolicy = Boolean(
+                link.preview
+                && link.preview.required === wallet.multisig_policy.threshold
+                && link.preview.total === wallet.multisig_policy.keys.length
+                && link.preview.keys.length === wallet.multisig_policy.keys.length
+                && link.preview.keys.every(
+                  (key, index) => key.toLowerCase() === wallet.multisig_policy?.keys[index],
+                ),
+              )
+              return (
+                <section
+                  className="vault-tab-panel wallet-tab-panel multisig-setup-panel"
+                  id={`panel-${wallet.id}`}
+                  role="tabpanel"
+                  aria-labelledby={`tab-${wallet.id}`}
+                >
+                  <h2>Link account</h2>
+                  <p>Enter the Testnet account ID. The account's full key structure is checked against this wallet before linking.</p>
+                  <form
+                    className="multisig-link-form"
+                    onSubmit={(event) => {
+                      event.preventDefault()
+                      void previewMultisigLink()
+                    }}
+                  >
+                    <label htmlFor="multisig-link-account-id">Account ID</label>
+                    <input
+                      id="multisig-link-account-id"
+                      autoComplete="off"
+                      value={link.accountId}
+                      disabled={link.saving}
+                      onChange={(event) => setMultisigLink((current) => current && ({
+                        ...current,
+                        accountId: event.target.value,
+                        preview: null,
+                        error: '',
+                      }))}
+                    />
+                    {link.error && <p className="error-message" role="alert">{link.error}</p>}
+                    <div className="button-pair multisig-setup-actions">
+                      <button className="primary-button" type="submit" disabled={link.saving || !link.accountId.trim()}>
+                        {link.saving ? 'Checking...' : 'Fetch key structure'}
+                      </button>
+                      <button
+                        className="secondary-button"
+                        type="button"
+                        disabled={link.saving}
+                        onClick={() => setMultisigLink(null)}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </form>
+                  {link.preview && (
+                    <div className="multisig-link-preview">
+                      <h3>On-chain key structure</h3>
+                      <pre className="key-text">{link.preview.description}</pre>
+                      {matchesPolicy
+                        ? <p className="field-hint">This account matches the wallet's exact multisig policy.</p>
+                        : <p className="error-message" role="alert">This account's key structure does not exactly match this wallet.</p>}
+                      <button
+                        className="primary-button"
+                        type="button"
+                        disabled={!matchesPolicy || link.saving}
+                        onClick={() => void confirmMultisigLink()}
+                      >
+                        Link this account
+                      </button>
+                    </div>
+                  )}
+                </section>
+              )
+            }
             if (setup) {
               const keysRemaining = Math.max(0, setup.keyCount - setup.keys.length)
               return (

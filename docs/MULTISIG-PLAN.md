@@ -326,6 +326,8 @@ paths) unchanged.
 
 ### Stage 9: accounts and operations under the policy
 
+**Status: core flows implemented; multisig key rotation and manual Testnet verification remain pending.**
+
 - Backend: generalise the watch-only request path from one wallet key to
   the wallet policy — `prepare_unsigned_*` builders take the policy where
   the account's key appears, and `submit_signed_request` accepts multiple
@@ -358,20 +360,28 @@ paths) unchanged.
   to…) shown just above the buttons, and the action button's label
   ("Send HBAR" etc.) differ. Expiry of the 180-second window disables
   everything except Back and Cancel.
-- Remove `SharedAccounts.tsx`, its Tauri commands and vault entries;
-  migrate or drop tests accordingly.
+- Completed: removed `SharedAccounts.tsx`, the superseded Tauri commands,
+  shared-account service methods and vault field, and obsolete tests. Serde
+  ignores the unused legacy payload field and drops it on the next save.
+- Multisig key rotation remains unsupported; the Move account action is
+  disabled for multisig accounts rather than falling back to single-key
+  signing.
 
 ### Stage 10: verification and docs
 
-- Rewrite [MULTISIG-TESTING.md](./MULTISIG-TESTING.md) for the new flows:
+**Status: documentation updated; manual Testnet verification remains pending.**
+
+- Completed: rewrote [MULTISIG-TESTING.md](./MULTISIG-TESTING.md) for the new flows:
   signer key derivation, scan-to-create, conversion, first-account
   creation via hot funder, y-of-x funded creation, linking, HBAR send,
   duplicate/unrelated/expired cases, mismatch flagging, and the note that
   up to five devices must scan and reply within one 180-second window.
 - Frontend tests for the new screens and enable/disable rules; Rust tests
   for the `HVTX1-PUB:` format, policy storage and multi-reply submission.
-- Update TODO.md and the README walkthrough; `cargo fmt`, tests and the
-  workspace check pass on Windows and Ubuntu CI.
+- Completed: updated [TODO.md](./TODO.md) and the README walkthrough.
+- Run `cargo fmt`, focused Rust tests, frontend tests, UI lint/build and the
+  backend check before considering the implementation ready; the manual
+  Testnet run is still required.
 
 ## Order of work and fallback
 

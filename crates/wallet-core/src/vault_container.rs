@@ -58,29 +58,6 @@ pub struct AddressBookEntry {
     pub name: String,
 }
 
-/// An account controlled by a key structure (for example a 2-of-3 threshold)
-/// rather than by one wallet's key. The vault stores no secret for it; every
-/// signature comes from a signer reply or from another wallet in the vault.
-/// Two entries are the same account when network and ID match.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SharedAccount {
-    pub network: Network,
-    pub id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-    /// Lowercase hex of the account's protobuf `Key` message, as read from
-    /// the mirror node when the account was linked.
-    pub key_hex: String,
-}
-
-impl PartialEq for SharedAccount {
-    fn eq(&self, other: &Self) -> bool {
-        self.network == other.network && self.id == other.id
-    }
-}
-
-impl Eq for SharedAccount {}
-
 /// A frozen, flat Ed25519 threshold policy attached to a watch-only wallet.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MultisigPolicy {
@@ -153,10 +130,6 @@ pub struct VaultPayload {
     /// receiver.
     #[serde(default)]
     pub allow_nft_custom_fees: bool,
-    /// Accounts controlled by a key structure (multisig), watched and
-    /// coordinated by this vault.
-    #[serde(default)]
-    pub shared_accounts: Vec<SharedAccount>,
 }
 
 impl Default for VaultPayload {
@@ -169,7 +142,6 @@ impl Default for VaultPayload {
             allow_external_deletes: false,
             hidden_tokens: Default::default(),
             allow_nft_custom_fees: false,
-            shared_accounts: Vec::new(),
         }
     }
 }

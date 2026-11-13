@@ -4,9 +4,9 @@ use crate::{
         parse_private_key, public_key_hex,
     },
     vault_container::{
-        AddressBookEntry, DEFAULT_AUTO_LOCK_SECONDS, MultisigPolicy, Network, SharedAccount,
-        VaultContainer, VaultPayload, VaultWallet, WalletAccount, decrypt_wallet_secret,
-        encrypt_wallet_secret, validate_auto_lock_seconds,
+        AddressBookEntry, DEFAULT_AUTO_LOCK_SECONDS, MultisigPolicy, Network, VaultContainer,
+        VaultPayload, VaultWallet, WalletAccount, decrypt_wallet_secret, encrypt_wallet_secret,
+        validate_auto_lock_seconds,
     },
     wallet::Wallet,
     wallet_store::WalletStore,
@@ -38,9 +38,6 @@ pub const UNNAMED_ACCOUNT: &str = "NONAME";
 pub const MAX_ACCOUNT_NAME_CHARS: usize = 25;
 pub const MAX_ADDRESS_BOOK_ENTRIES: usize = 200;
 pub const MAX_HIDDEN_TOKENS: usize = 500;
-pub const MAX_SHARED_ACCOUNTS: usize = 20;
-/// Longest key-structure hex a shared account may store (a protobuf `Key`).
-pub const MAX_SHARED_KEY_HEX_CHARS: usize = 2_000;
 
 /// An account as shown to the user: `display_id` carries the checksum.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -81,19 +78,6 @@ pub struct AddressBookRow {
     pub wallet_name: Option<String>,
 }
 
-/// Accepts the hex of a protobuf `Key` structure and returns it lowercased.
-fn validate_shared_key_hex(key_hex: &str) -> Result<String, String> {
-    let key_hex = key_hex.trim().to_ascii_lowercase();
-    if key_hex.is_empty()
-        || key_hex.len() % 2 != 0
-        || key_hex.len() > MAX_SHARED_KEY_HEX_CHARS
-        || !key_hex.bytes().all(|b| b.is_ascii_hexdigit())
-    {
-        return Err("the account's key structure is not valid".to_string());
-    }
-    Ok(key_hex)
-}
-
 pub fn validate_account_name(name: &str) -> Result<String, String> {
     let name = name.trim();
     if name.is_empty() {
@@ -108,37 +92,6 @@ pub fn validate_account_name(name: &str) -> Result<String, String> {
         return Err("the name cannot contain control characters".to_string());
     }
     Ok(name.to_string())
-}
-
-/// A shared (multisig) account as shown to the user. The key structure stays
-/// hex; the desktop layer reads it into a tree for display.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct SharedAccountSummary {
-    pub network: Network,
-    pub id: String,
-    pub display_id: String,
-    /// The user's name for the account, or `NONAME`.
-    pub name: String,
-    pub named: bool,
-    /// Lowercase hex of the account's protobuf `Key` message.
-    pub key_hex: String,
-}
-
-impl From<&SharedAccount> for SharedAccountSummary {
-    fn from(account: &SharedAccount) -> Self {
-        Self {
-            network: account.network,
-            id: account.id.clone(),
-            display_id: crate::account_checksum::with_checksum(account.network, &account.id)
-                .unwrap_or_else(|_| account.id.clone()),
-            name: account
-                .name
-                .clone()
-                .unwrap_or_else(|| UNNAMED_ACCOUNT.to_string()),
-            named: account.name.is_some(),
-            key_hex: account.key_hex.clone(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -964,10 +917,8 @@ impl WalletService {
     /// be linked to one wallet only, to avoid confusing balances.
     /// Links accounts to a wallet on one network. Accounts already on this
     /// wallet are skipped; one linked to another wallet is an error and
-    /// nothing is saved. A shared (multisig) account is skipped — the mirror
-    /// node's key search also matches keys inside a threshold structure, so a
-    /// participant's import may list one — and is an error when it is the
-    /// only account asked for.
+    /// nothing is saved. Callers must verify discovered accounts against the
+    /// wallet's full key policy before linking them.
     pub fn add_wallet_accounts_and_save(
         &mut self,
         wallet_id: &str,
@@ -981,23 +932,6 @@ impl WalletService {
             .map(|id| validate_account_id(id))
             .collect::<Result<Vec<_>, _>>()?;
         let mut next_payload = self.payload.as_ref().expect("checked unlocked").clone();
-        let is_shared = |id: &String| {
-            next_payload
-                .shared_accounts
-                .iter()
-                .any(|account| account.network == network && &account.id == id)
-        };
-        if let Some(shared) = account_ids.iter().find(|id| is_shared(id)) {
-            if account_ids.iter().all(is_shared) {
-                return Err(format!(
-                    "account {shared} is a shared account; it is not controlled by one wallet's key"
-                ));
-            }
-        }
-        let account_ids: Vec<String> = account_ids
-            .into_iter()
-            .filter(|id| !is_shared(id))
-            .collect();
         for account_id in &account_ids {
             if let Some(other) = next_payload.wallets.iter().find(|wallet| {
                 wallet.id != wallet_id
@@ -1070,156 +1004,6 @@ impl WalletService {
         account.name = Some(name);
         wallet.updated_at = chrono::Utc::now().to_rfc3339();
         let summary = WalletSummary::from_wallet(wallet);
-        self.persist_payload(next_payload, path)?;
-        Ok(summary)
-    }
-
-    /// Every shared (multisig) account the vault watches.
-    pub fn list_shared_accounts(&mut self) -> Result<Vec<SharedAccountSummary>, String> {
-        self.ensure_unlocked()?;
-        Ok(self
-            .payload
-            .as_ref()
-            .expect("checked unlocked")
-            .shared_accounts
-            .iter()
-            .map(SharedAccountSummary::from)
-            .collect())
-    }
-
-    /// Links a shared account: an account whose key is a structure, not one
-    /// wallet's key. `key_hex` is the protobuf `Key` message read from the
-    /// mirror node; the caller has validated and shown it to the user.
-    pub fn add_shared_account_and_save(
-        &mut self,
-        network: Network,
-        account_id: &str,
-        name: Option<&str>,
-        key_hex: &str,
-        path: &str,
-    ) -> Result<SharedAccountSummary, String> {
-        self.ensure_unlocked()?;
-        let id = validate_account_id(account_id)?;
-        let name = name.map(validate_account_name).transpose()?;
-        let key_hex = validate_shared_key_hex(key_hex)?;
-        let mut next_payload = self.payload.as_ref().expect("checked unlocked").clone();
-        if let Some(wallet) = next_payload.wallets.iter().find(|wallet| {
-            wallet
-                .accounts
-                .iter()
-                .any(|a| a.network == network && a.id == id)
-        }) {
-            return Err(format!(
-                "account {id} is already linked to wallet '{}'",
-                wallet.name
-            ));
-        }
-        let account = SharedAccount {
-            network,
-            id,
-            name,
-            key_hex,
-        };
-        if next_payload.shared_accounts.contains(&account) {
-            return Err(format!(
-                "account {} is already a shared account",
-                account.id
-            ));
-        }
-        if next_payload.shared_accounts.len() >= MAX_SHARED_ACCOUNTS {
-            return Err(format!(
-                "the vault can watch at most {MAX_SHARED_ACCOUNTS} shared accounts"
-            ));
-        }
-        let summary = SharedAccountSummary::from(&account);
-        next_payload.shared_accounts.push(account);
-        self.persist_payload(next_payload, path)?;
-        Ok(summary)
-    }
-
-    /// Stops watching a shared account. Nothing changes on the network.
-    pub fn remove_shared_account_and_save(
-        &mut self,
-        network: Network,
-        account_id: &str,
-        path: &str,
-    ) -> Result<(), String> {
-        self.ensure_unlocked()?;
-        let id = validate_account_id(account_id)?;
-        let mut next_payload = self.payload.as_ref().expect("checked unlocked").clone();
-        let before = next_payload.shared_accounts.len();
-        next_payload
-            .shared_accounts
-            .retain(|account| !(account.network == network && account.id == id));
-        if next_payload.shared_accounts.len() == before {
-            return Err(format!("account {id} is not a shared account"));
-        }
-        self.persist_payload(next_payload, path)
-    }
-
-    /// The stored key-structure hex of a shared account.
-    pub fn shared_account_key_hex(
-        &mut self,
-        network: Network,
-        account_id: &str,
-    ) -> Result<String, String> {
-        self.ensure_unlocked()?;
-        let id = validate_account_id(account_id)?;
-        self.payload
-            .as_ref()
-            .expect("checked unlocked")
-            .shared_accounts
-            .iter()
-            .find(|account| account.network == network && account.id == id)
-            .map(|account| account.key_hex.clone())
-            .ok_or_else(|| format!("account {id} is not a shared account"))
-    }
-
-    /// Moves an account out of its wallet and records it as a shared account
-    /// in one step, after its key became a structure on the network.
-    pub fn convert_account_to_shared_and_save(
-        &mut self,
-        wallet_id: &str,
-        network: Network,
-        account_id: &str,
-        name: Option<&str>,
-        key_hex: &str,
-        path: &str,
-    ) -> Result<SharedAccountSummary, String> {
-        self.ensure_unlocked()?;
-        let id = validate_account_id(account_id)?;
-        let name = name.map(validate_account_name).transpose()?;
-        let key_hex = validate_shared_key_hex(key_hex)?;
-        let mut next_payload = self.payload.as_ref().expect("checked unlocked").clone();
-        let account = SharedAccount {
-            network,
-            id: id.clone(),
-            name,
-            key_hex,
-        };
-        if next_payload.shared_accounts.contains(&account) {
-            return Err(format!("account {id} is already a shared account"));
-        }
-        if next_payload.shared_accounts.len() >= MAX_SHARED_ACCOUNTS {
-            return Err(format!(
-                "the vault can watch at most {MAX_SHARED_ACCOUNTS} shared accounts"
-            ));
-        }
-        let wallet = next_payload
-            .wallets
-            .iter_mut()
-            .find(|wallet| wallet.id == wallet_id)
-            .ok_or_else(|| format!("wallet not found: {wallet_id}"))?;
-        let before = wallet.accounts.len();
-        wallet
-            .accounts
-            .retain(|a| !(a.network == network && a.id == id));
-        if wallet.accounts.len() == before {
-            return Err(format!("account {id} is not linked to this wallet"));
-        }
-        wallet.updated_at = chrono::Utc::now().to_rfc3339();
-        let summary = SharedAccountSummary::from(&account);
-        next_payload.shared_accounts.push(account);
         self.persist_payload(next_payload, path)?;
         Ok(summary)
     }
@@ -1815,100 +1599,6 @@ mod tests {
         service.unlock_vault("vault password").unwrap();
         assert_eq!(service.failed_unlock_attempts, 0);
         assert!(service.unlock_blocked_until.is_none());
-    }
-
-    #[test]
-    fn shared_accounts_are_stored_renamed_and_removed() {
-        let (_directory, path) = temp_path();
-        let path = path.to_str().unwrap();
-        let mut service = WalletService::new();
-        service.create_vault("vault password", path).unwrap();
-        let wallet = service.create_and_save_wallet("Mine", path).unwrap();
-        service
-            .add_wallet_accounts_and_save(&wallet.id, Network::Testnet, &["0.0.7".into()], path)
-            .unwrap();
-
-        // A valid key structure is stored lowercased and survives a reload.
-        let added = service
-            .add_shared_account_and_save(
-                Network::Testnet,
-                "0.0.5005",
-                Some("Ours"),
-                "2A04 0801".replace(' ', "").to_uppercase().as_str(),
-                path,
-            )
-            .unwrap();
-        assert_eq!(added.id, "0.0.5005");
-        assert_eq!(added.name, "Ours");
-        assert_eq!(added.key_hex, "2a040801");
-        assert_eq!(
-            service
-                .shared_account_key_hex(Network::Testnet, "0.0.5005")
-                .unwrap(),
-            "2a040801"
-        );
-        let mut reopened = WalletService::load_store(path).unwrap();
-        reopened.unlock_vault("vault password").unwrap();
-        assert_eq!(reopened.list_shared_accounts().unwrap(), vec![added]);
-
-        // Duplicates, wallet-linked accounts and bad keys are refused.
-        assert!(
-            service
-                .add_shared_account_and_save(Network::Testnet, "0.0.5005", None, "2a040801", path)
-                .is_err()
-        );
-        assert!(
-            service
-                .add_shared_account_and_save(Network::Testnet, "0.0.7", None, "2a040801", path)
-                .is_err()
-        );
-        for bad_key in ["", "zz", "abc", &"ab".repeat(1_001)] {
-            assert!(
-                service
-                    .add_shared_account_and_save(Network::Testnet, "0.0.6006", None, bad_key, path)
-                    .is_err()
-            );
-        }
-
-        // Linking the shared account to a wallet is refused, and a mirror
-        // import that happens to list it (a participant key matches inside
-        // the structure) skips it while linking the rest.
-        assert!(
-            service
-                .add_wallet_accounts_and_save(
-                    &wallet.id,
-                    Network::Testnet,
-                    &["0.0.5005".into()],
-                    path
-                )
-                .is_err()
-        );
-        let imported = service
-            .add_wallet_accounts_and_save(
-                &wallet.id,
-                Network::Testnet,
-                &["0.0.5005".into(), "0.0.8".into()],
-                path,
-            )
-            .unwrap();
-        assert!(imported.accounts.iter().any(|a| a.id == "0.0.8"));
-        assert!(!imported.accounts.iter().any(|a| a.id == "0.0.5005"));
-
-        // Removal forgets the account; removing twice fails.
-        service
-            .remove_shared_account_and_save(Network::Testnet, "0.0.5005", path)
-            .unwrap();
-        assert!(service.list_shared_accounts().unwrap().is_empty());
-        assert!(
-            service
-                .remove_shared_account_and_save(Network::Testnet, "0.0.5005", path)
-                .is_err()
-        );
-        assert!(
-            service
-                .shared_account_key_hex(Network::Testnet, "0.0.5005")
-                .is_err()
-        );
     }
 
     #[test]

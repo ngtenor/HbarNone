@@ -12,7 +12,6 @@ use wallet_core::key_import::KeyType;
 use wallet_core::wallet_service::validate_account_id;
 
 use crate::fees::{FeeApproval, submit_with_estimated_fee};
-use crate::key_tree::KeyTree;
 use crate::{
     ChangeKeyParams, CreateAccountParams, CreateTokenParams, DeleteAccountParams,
     DeleteTokenParams, MAX_NFT_METADATA_BYTES, MAX_TOKEN_DECIMALS, NftMintParams,
@@ -173,20 +172,6 @@ pub async fn create_testnet_account(
         &wallet_core::key_import::public_key_bytes(new_key.0, new_key.1)?,
     )?;
     create_testnet_account_with_key(key, payer, payer_key, initial_tinybars, approval).await
-}
-
-/// Creates a new Testnet account controlled by a key structure (for example a
-/// 2-of-3 threshold), funded and signed by the payer. The network does not
-/// require the new keys to sign a creation.
-pub async fn create_testnet_shared_account(
-    tree: &KeyTree,
-    payer: &str,
-    payer_key: (KeyType, &[u8; 32]),
-    initial_tinybars: i64,
-    approval: &impl FeeApproval,
-) -> Result<SendReceipt, String> {
-    create_testnet_account_with_key(tree.to_key()?, payer, payer_key, initial_tinybars, approval)
-        .await
 }
 
 async fn create_testnet_account_with_key(
