@@ -193,8 +193,6 @@ type SigningRequest = {
   serialNumber: string
   memo: string
   expiresAtSeconds: number
-  estimatedFeeHbar: string
-  maxFeeHbar: string
 }
 
 // A public key shortened to its first and last three characters.
@@ -1156,10 +1154,6 @@ export function TestnetPanel({
             <dd>{signing.sender}</dd>
           </>
         )}
-        <dt>Estimated network fee</dt>
-        <dd>{signing.estimatedFeeHbar} HBAR</dd>
-        <dt>Maximum network fee (estimate + 25%)</dt>
-        <dd>{signing.maxFeeHbar} HBAR</dd>
       </dl>
     )
     const requestAsText = (
@@ -1729,8 +1723,6 @@ export function TestnetPanel({
                 <dd>{tokenDetails.treasury}</dd>
                 <dt>Account</dt>
                 <dd>{accountLabel}</dd>
-                <dt>Fee</dt>
-                <dd>Network estimate plus 25%, handled automatically</dd>
               </dl>
               {hasCustomFees(tokenDetails.custom_fees) && (
                 <div role="note" aria-label="Custom fee note">
@@ -2210,8 +2202,6 @@ export function TestnetPanel({
                     <dd>{memo}</dd>
                   </>
                 )}
-                <dt>Maximum fee</dt>
-                <dd>Network estimate plus 25%, handled automatically</dd>
               </dl>
               {sendNft && hasCustomFees(nftFeeInfo?.custom_fees) && nftFeeInfo && (
                 <div role="note" aria-label="Custom fee warning">
@@ -2377,8 +2367,6 @@ export function TestnetPanel({
                 <dd>{openingBalance.trim()} ℏ</dd>
                 <dt>Key</dt>
                 <dd>This wallet&apos;s key</dd>
-                <dt>Maximum fee</dt>
-                <dd>Network estimate plus 25%, handled automatically</dd>
               </dl>
               <div className="button-pair">
                 <button
@@ -2483,8 +2471,6 @@ export function TestnetPanel({
                 <dd>{accountLabel}</dd>
                 <dt>New owner</dt>
                 <dd>{targetName}</dd>
-                <dt>Maximum fee</dt>
-                <dd>Network estimate plus 25%, handled automatically</dd>
               </dl>
               <label className="testnet-acknowledge">
                 <input
@@ -2585,8 +2571,6 @@ export function TestnetPanel({
                 <dd>{accountLabel}</dd>
                 <dt>Remaining ℏ go to</dt>
                 <dd>{deleteRecipient.trim()}</dd>
-                <dt>Maximum fee</dt>
-                <dd>Network estimate plus 25%, handled automatically</dd>
               </dl>
               <label className="testnet-acknowledge">
                 <input

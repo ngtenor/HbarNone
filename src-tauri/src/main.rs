@@ -1267,8 +1267,6 @@ struct SigningRequest {
     serial_number: String,
     memo: String,
     expires_at_seconds: i64,
-    estimated_fee_hbar: String,
-    max_fee_hbar: String,
 }
 
 fn require_watch_only(state: &AppState, wallet_id: &str) -> Result<(), String> {
@@ -1306,13 +1304,12 @@ async fn signing_request(
             Ok((kind, bytes))
         })
         .collect::<Result<Vec<_>, String>>()?;
-    let (request, quote) = request.with_estimated_fee(&keys).await?;
-    render_signing_request(request, &quote)
+    let (request, _quote) = request.with_estimated_fee(&keys).await?;
+    render_signing_request(request)
 }
 
 fn render_signing_request(
     request: hedera_tx::offline::UnsignedRequest,
-    quote: &hedera_tx::fees::FeeQuote,
 ) -> Result<SigningRequest, String> {
     use hedera_tx::offline::Action;
     let code =
@@ -1446,8 +1443,6 @@ fn render_signing_request(
         serial_number,
         memo: d.memo,
         expires_at_seconds: d.expires_at_seconds,
-        estimated_fee_hbar: hedera_tx::fees::format_hbar(quote.estimated_tinybars),
-        max_fee_hbar: hedera_tx::fees::format_hbar(quote.max_fee_tinybars),
     })
 }
 

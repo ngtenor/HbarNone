@@ -71,8 +71,6 @@ type SigningRequest = {
   tinybars: number
   memo: string
   expiresAtSeconds: number
-  estimatedFeeHbar: string
-  maxFeeHbar: string
 }
 
 type SignatureProgress = {
@@ -291,7 +289,7 @@ export function SharedAccounts({ wallets, onWalletsRefresh }: Props) {
   const handleCreate = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     return run(async () => {
-      setNotice('Submitting account creation to Testnet. Network fees within the estimate plus 25% are handled automatically...')
+      setNotice('Submitting account creation to Testnet...')
       const result = await invoke<{ transactionId: string }>('create_shared_account', {
         fromAccount: funder,
         initialHbar: openingBalance.trim(),
@@ -494,10 +492,6 @@ export function SharedAccounts({ wallets, onWalletsRefresh }: Props) {
         {secondsLeft > 0 ? `Time left: ${secondsLeft} seconds` : 'The request has expired. Start again.'}
       </p>
       <dl className="confirm-grid">
-        <dt>Estimated network fee</dt>
-        <dd>{signing.estimatedFeeHbar} HBAR</dd>
-        <dt>Maximum network fee (estimate + 25%)</dt>
-        <dd>{signing.maxFeeHbar} HBAR</dd>
         {signingFor === 'send' ? (
           <>
             <dt>From</dt>
@@ -739,9 +733,7 @@ export function SharedAccounts({ wallets, onWalletsRefresh }: Props) {
           </select>
           <label htmlFor="shared-opening">Opening balance (HBAR)</label>
           <p className="field-hint">
-            The network fee is estimated automatically, with a 25% buffer.
-            Extra fee approval is needed only if the node quotes a higher fee.
-            The funding account pays the actual fee in addition to the opening balance.
+            The funding account pays the network fee in addition to the opening balance.
           </p>
           <input
             id="shared-opening"

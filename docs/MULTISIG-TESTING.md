@@ -56,8 +56,8 @@ with a quote above the buffered maximum asks for approval to re-sign at the
 quoted fee and retry once. Declining must prevent that retry. Missing quotes,
 quotes at or below the maximum, other errors, timeouts and a second rejection
 must not trigger a retry or further fee dialogs.
-For offline and shared signing, compare the maximum in the app with the signer;
-the signer is offline and cannot independently verify the network estimate.
+Offline and shared signing requests carry the signed maximum in their payload
+but display no fee information; neither does the offline signer.
 An estimation or exchange-rate error must prevent signing/submission.
 The funding account pays the actual fee in addition to the opening balance.
 Only the explicitly approved precheck fee increase above is retried.

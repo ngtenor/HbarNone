@@ -322,8 +322,6 @@ function installBackend(overrides: Partial<Backend> = {}) {
           tinybars: 100_000_000,
           memo: '',
           expiresAtSeconds: Math.floor(Date.now() / 1000) + 170,
-          estimatedFeeHbar: '0.08000000',
-          maxFeeHbar: '0.10000000',
         }
       case 'prepare_unsigned_delete':
         return {
@@ -338,8 +336,6 @@ function installBackend(overrides: Partial<Backend> = {}) {
           tinybars: 0,
           memo: '',
           expiresAtSeconds: Math.floor(Date.now() / 1000) + 170,
-          estimatedFeeHbar: '0.08000000',
-          maxFeeHbar: '0.10000000',
         }
       case 'prepare_unsigned_create':
         return {
@@ -354,8 +350,6 @@ function installBackend(overrides: Partial<Backend> = {}) {
           tinybars: 200_000_000,
           memo: '',
           expiresAtSeconds: Math.floor(Date.now() / 1000) + 170,
-          estimatedFeeHbar: '0.08000000',
-          maxFeeHbar: '0.10000000',
         }
       case 'prepare_unsigned_token_transfer':
         return {
@@ -373,8 +367,6 @@ function installBackend(overrides: Partial<Backend> = {}) {
           tokenDecimals: 2,
           memo: '',
           expiresAtSeconds: Math.floor(Date.now() / 1000) + 170,
-          estimatedFeeHbar: '0.08000000',
-          maxFeeHbar: '0.10000000',
         }
       case 'prepare_unsigned_nft_transfer':
         return {
@@ -393,8 +385,6 @@ function installBackend(overrides: Partial<Backend> = {}) {
           serialNumber: (args as { serialNumber: string }).serialNumber,
           memo: '',
           expiresAtSeconds: Math.floor(Date.now() / 1000) + 170,
-          estimatedFeeHbar: '0.08000000',
-          maxFeeHbar: '0.10000000',
         }
       case 'prepare_unsigned_token_association':
         return {
@@ -412,8 +402,6 @@ function installBackend(overrides: Partial<Backend> = {}) {
           tokenDecimals: 0,
           memo: '',
           expiresAtSeconds: Math.floor(Date.now() / 1000) + 170,
-          estimatedFeeHbar: '0.08000000',
-          maxFeeHbar: '0.10000000',
         }
       case 'prepare_unsigned_move':
         return {
@@ -434,8 +422,6 @@ function installBackend(overrides: Partial<Backend> = {}) {
           serialNumber: '',
           memo: '',
           expiresAtSeconds: Math.floor(Date.now() / 1000) + 170,
-          estimatedFeeHbar: '0.08000000',
-          maxFeeHbar: '0.10000000',
         }
       case 'verify_move_signature': {
         const response = String(args?.response)
@@ -490,8 +476,6 @@ function installBackend(overrides: Partial<Backend> = {}) {
           serialNumber: '',
           memo: String(args?.memo ?? ''),
           expiresAtSeconds: Math.floor(Date.now() / 1000) + 170,
-          estimatedFeeHbar: '0.08000000',
-          maxFeeHbar: '0.10000000',
         }
       case 'check_shared_signatures': {
         const responses = (args?.responses as string[]) ?? []
@@ -536,8 +520,6 @@ function installBackend(overrides: Partial<Backend> = {}) {
           serialNumber: '',
           memo: '',
           expiresAtSeconds: Math.floor(Date.now() / 1000) + 170,
-          estimatedFeeHbar: '0.08000000',
-          maxFeeHbar: '0.10000000',
         }
       case 'submit_shared_key_change':
         if (backend.sendError) throw new Error(backend.sendError)
@@ -2288,8 +2270,7 @@ describe('watch-only wallet', () => {
     await user.click(await screen.findByRole('button', { name: 'Create signing request' }))
 
     expect(await screen.findByRole('img', { name: 'Signing request QR code' })).toBeInTheDocument()
-    expect(screen.getByText('0.08000000 HBAR')).toBeInTheDocument()
-    expect(screen.getByText('0.10000000 HBAR')).toBeInTheDocument()
+    expect(screen.queryByText(/network fee/i)).not.toBeInTheDocument()
     expect(commandsCalled('send_hbar')).toHaveLength(0)
     const submit = screen.getByRole('button', { name: 'Submit signed transfer' })
     expect(submit).toBeDisabled()
@@ -3387,8 +3368,7 @@ describe('shared accounts (multisig)', () => {
     await user.click(screen.getByRole('button', { name: 'Create signing request' }))
 
     await screen.findByRole('group', { name: 'Shared signing request' })
-    expect(screen.getByText('0.08000000 HBAR')).toBeInTheDocument()
-    expect(screen.getByText('0.10000000 HBAR')).toBeInTheDocument()
+    expect(screen.queryByText(/network fee/i)).not.toBeInTheDocument()
     const submit = screen.getByRole('button', { name: 'Submit' })
     expect(submit).toBeDisabled()
 
@@ -3479,7 +3459,6 @@ describe('shared accounts (multisig)', () => {
       )
       render(<App />)
       await user.click(await screen.findByRole('button', { name: 'Create a shared account' }))
-      expect(screen.getByText(/The network fee is estimated automatically/)).toBeInTheDocument()
       await user.selectOptions(screen.getByLabelText('Funding account (signs and pays)'), '0.0.1001')
       await user.type(screen.getByLabelText('Opening balance (HBAR)'), '20')
       await user.type(screen.getByLabelText('Participant public keys (one per line)'), SHARED_KEYS.join('\n'))
