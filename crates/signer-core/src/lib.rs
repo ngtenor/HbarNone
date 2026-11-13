@@ -16,6 +16,9 @@ use zeroize::Zeroizing;
 
 pub const REQUEST_PREFIX: &str = "HVTX1-REQ:";
 pub const RESPONSE_PREFIX: &str = "HVTX1-SIG:";
+/// A public key displayed by the signer for the app to scan when creating a
+/// watch-only wallet: `HVTX1-PUB:<ed25519|ecdsa>:<hex>`.
+pub const PUBLIC_KEY_PREFIX: &str = "HVTX1-PUB:";
 /// Longest validity window the signer accepts (Hedera's own maximum).
 pub const MAX_VALID_SECONDS: i64 = 180;
 pub const MAX_MEMO_BYTES: usize = 100;
@@ -778,6 +781,46 @@ pub fn sign(request: &str, key: &SigningKey, now_seconds: i64) -> Result<String,
     Ok(format!("{RESPONSE_PREFIX}{}", to_hex(&raw)))
 }
 
+/// Formats a key's public half as the `HVTX1-PUB:` payload the app scans
+/// when creating a watch-only wallet. Nothing secret leaves the key.
+pub fn format_public_key(key: &SigningKey) -> Result<String, String> {
+    let kind = match key.kind() {
+        KeyKind::Ed25519 => "ed25519",
+        KeyKind::Ecdsa => "ecdsa",
+    };
+    Ok(format!(
+        "{PUBLIC_KEY_PREFIX}{kind}:{}",
+        key.public_key_hex()?
+    ))
+}
+
+/// Parses a scanned `HVTX1-PUB:` payload into its key type and lowercase hex
+/// public key, rejecting anything that is not exactly a key of that type.
+pub fn parse_public_key(payload: &str) -> Result<(KeyKind, String), String> {
+    let rest = payload
+        .trim()
+        .strip_prefix(PUBLIC_KEY_PREFIX)
+        .ok_or_else(|| format!("The scanned code is not a public key ({PUBLIC_KEY_PREFIX}...)."))?;
+    let (kind_text, hex) = rest
+        .split_once(':')
+        .ok_or_else(|| "The public key payload is missing its key type.".to_string())?;
+    let (kind, expected_len) = match kind_text {
+        "ed25519" => (KeyKind::Ed25519, 64),
+        "ecdsa" => (KeyKind::Ecdsa, 66),
+        other => {
+            return Err(format!(
+                "Unknown key type in the public key payload: {other}."
+            ));
+        }
+    };
+    if hex.len() != expected_len || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(format!(
+            "A {kind_text} public key must be {expected_len} hex characters."
+        ));
+    }
+    Ok((kind, hex.to_lowercase()))
+}
+
 /// Formats tinybars as `1.50000000`.
 pub fn format_hbar(tinybars: i64) -> String {
     format!("{}.{:08}", tinybars / 100_000_000, tinybars % 100_000_000)
@@ -868,6 +911,31 @@ mod tests {
         assert_eq!(testnet_checksum("0.0.12x"), None);
         assert_eq!(testnet_checksum("0.0"), None);
         assert_eq!(with_checksum("junk"), "junk");
+    }
+
+    #[test]
+    fn public_key_payload_round_trips_and_rejects_junk() {
+        for kind in [KeyKind::Ed25519, KeyKind::Ecdsa] {
+            let key = SigningKey::new(kind, [7u8; 32]).unwrap();
+            let payload = format_public_key(&key).unwrap();
+            assert!(payload.starts_with(PUBLIC_KEY_PREFIX));
+            let (parsed_kind, hex) = parse_public_key(&payload).unwrap();
+            assert_eq!(parsed_kind, kind);
+            assert_eq!(hex, key.public_key_hex().unwrap());
+            // Uppercase hex is the same key.
+            let upper = payload.replace(&hex, &hex.to_uppercase());
+            assert_eq!(parse_public_key(&upper).unwrap().1, hex);
+        }
+        for bad in [
+            "HVTX1-SIG:ed25519:00",
+            "HVTX1-PUB:ed25519",
+            &format!("HVTX1-PUB:rsa:{}", "00".repeat(32)),
+            &format!("HVTX1-PUB:ed25519:{}", "00".repeat(33)),
+            &format!("HVTX1-PUB:ecdsa:{}", "00".repeat(32)),
+            &format!("HVTX1-PUB:ed25519:{}zz", "00".repeat(31)),
+        ] {
+            assert!(parse_public_key(bad).is_err(), "{bad}");
+        }
     }
 
     fn request(memo: &str) -> String {

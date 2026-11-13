@@ -1,7 +1,8 @@
 //! Command-line offline signer (test build).
 //!
 //! Shows every field of an HBarNone signing request, asks for the key, and
-//! signs only after the user types `yes`. It never connects to a network.
+//! signs only after the user types `yes`. It can also show a key's public
+//! half as a QR code for the app to scan. It never connects to a network.
 
 use std::io::{self, Write};
 use std::path::Path;
@@ -11,8 +12,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 mod scan;
 
 use signer_core::{
-    Action, KeyKind, KeyStructure, SigningKey, Summary, check_time, format_hbar, parse_request,
-    sign, with_checksum,
+    Action, KeyKind, KeyStructure, SigningKey, Summary, check_time, format_hbar, format_public_key,
+    parse_request, sign, with_checksum,
 };
 use wallet_core::key_import::parse_private_key;
 use wallet_core::wallet::Wallet;
@@ -266,6 +267,30 @@ fn read_request() -> Result<String, String> {
 fn run() -> Result<(), String> {
     println!("HBarNone offline signer (test build). Testnet only. Use disposable keys.");
     println!("Nothing here connects to a network.\n");
+    println!("What do you need?  1) sign a request   2) show a key's public key");
+    match ask("Choose 1 or 2 (Enter for 1): ")?.as_str() {
+        "" | "1" => run_sign(),
+        "2" => run_show_public_key(),
+        _ => Err("Choose 1 or 2.".to_string()),
+    }
+}
+
+/// Derives the public half of a key and shows it as a `HVTX1-PUB:` QR code,
+/// so the app can create a watch-only wallet without the key being typed.
+/// The private key is read hidden; nothing secret is displayed or signed.
+fn run_show_public_key() -> Result<(), String> {
+    let key = read_key()?;
+    println!(
+        "\nPublic key {}: {}",
+        kind_label(&key.kind()),
+        key.public_key_hex()?
+    );
+    println!("Scan the QR code below into the app to create a watch-only wallet:\n");
+    print_qr(&format_public_key(&key)?);
+    Ok(())
+}
+
+fn run_sign() -> Result<(), String> {
     let request = read_request()?;
     let (_, summary) = parse_request(&request).map_err(|e| e.to_string())?;
     check_time(&summary, now_seconds()).map_err(|e| e.to_string())?;
