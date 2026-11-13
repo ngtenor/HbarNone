@@ -1566,11 +1566,23 @@ export function TestnetPanel({
     setNewAccountName('')
     return watchTransaction(transactionId, 'Creating account', async () => {
       let updated = await retry(async () => {
+        if (wallet.multisig_policy) {
+          // The mirror node cannot find threshold keys by public key, so the
+          // created account is read from the transaction record and linked.
+          return await invoke<WalletSummary>('link_created_multisig_account', {
+            walletId: wallet.id,
+            transactionId,
+          })
+        }
         const found = await invoke<WalletSummary>('find_wallet_accounts', { walletId: wallet.id })
         if (found.accounts.length <= accountsBefore) throw new Error('not listed yet')
         return found
       }, 4).catch(() => null)
-      if (!updated) return 'The new account is not listed yet. Use the Accounts refresh button in a moment.'
+      if (!updated) {
+        return wallet.multisig_policy
+          ? 'The new account is not linked yet. Use Wallet management → Link account by ID in a moment.'
+          : 'The new account is not listed yet. Use the Accounts refresh button in a moment.'
+      }
       const created = updated.accounts.find((item) => !idsBefore.has(item.id))
       if (chosenName && created) {
         try {

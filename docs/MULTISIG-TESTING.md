@@ -68,8 +68,10 @@ IDs without recording private keys or recovery phrases.
    The corresponding checkboxes must tick; after one signature, creation
    stays disabled; after two, **Scan signatures** is disabled and **Create
    account** is enabled.
-5. Create the account. Confirm it appears under the multisig wallet and that
-   the hot payer was charged the opening balance and network fee.
+5. Create the account. The app reads the new account ID from the transaction
+   record and links it automatically. Confirm it appears under the multisig
+   wallet and that the hot payer was charged the opening balance and network
+   fee.
 6. If the account has enough balance, create a second account funded by the
    multisig wallet itself. Verify the same threshold signatures are needed
    for that payer.

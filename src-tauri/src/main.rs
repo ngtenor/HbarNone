@@ -454,6 +454,28 @@ async fn link_multisig_wallet_account(
     )
 }
 
+/// Links the account created by a multisig wallet's own successful creation
+/// transaction. The mirror node does not index threshold keys by public key,
+/// so the new account is read from the transaction record instead of being
+/// discovered like a single-key wallet's accounts.
+#[tauri::command]
+async fn link_created_multisig_account(
+    wallet_id: String,
+    transaction_id: String,
+    state: State<'_, AppState>,
+) -> Result<WalletSummary, String> {
+    let (result, entity) = MirrorClient::testnet()?
+        .transaction_outcome(&transaction_id)
+        .await?
+        .ok_or_else(|| "Testnet has not recorded the transaction yet.".to_string())?;
+    if result != "SUCCESS" {
+        return Err(format!("The transaction did not succeed: {result}"));
+    }
+    let account_id =
+        entity.ok_or_else(|| "The transaction did not create an account.".to_string())?;
+    link_multisig_wallet_account(wallet_id, account_id, state).await
+}
+
 #[tauri::command]
 async fn check_multisig_wallet_accounts(
     wallet_id: String,
@@ -2776,6 +2798,7 @@ fn main() {
             verify_move_signature,
             find_wallet_accounts,
             link_multisig_wallet_account,
+            link_created_multisig_account,
             check_multisig_wallet_accounts,
             get_account_balance,
             get_token_info,

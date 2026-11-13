@@ -550,6 +550,15 @@ function installBackend(overrides: Partial<Backend> = {}) {
         }
         return { ...wallet }
       }
+      case 'link_created_multisig_account': {
+        const wallet = backend.wallets.find((item) => item.id === args?.walletId)
+        if (!wallet) throw new Error('wallet not found')
+        const accountId = '0.0.5005'
+        if (!wallet.accounts.some((account) => account.id === accountId)) {
+          wallet.accounts.push(testnetAccount(accountId))
+        }
+        return { ...wallet }
+      }
       case 'check_multisig_wallet_accounts':
         return backend.multisigMismatches ?? []
       case 'detect_private_key_type':
@@ -2498,6 +2507,15 @@ describe('watch-only wallet', () => {
       walletId: 'multisig',
       responses: ['HVTX1-SIG:KEY_A', 'HVTX1-SIG:KEY_B'],
     })
+    await screen.findByText('SUCCESS!')
+    // The account is linked from the transaction record, not key discovery.
+    await waitFor(() => expect(commandsCalled('link_created_multisig_account')).toHaveLength(1))
+    expect(commandsCalled('link_created_multisig_account')[0].args).toEqual({
+      walletId: 'multisig',
+      transactionId: '0.0.1001-1700000000-000000003',
+    })
+    expect(commandsCalled('find_wallet_accounts')).toHaveLength(0)
+    await waitFor(() => expect(backend.wallets[0].accounts.map((item) => item.id)).toEqual(['0.0.5005']))
   })
 
   it('offers camera scanning of the reply and falls back to pasting when no camera exists', async () => {
