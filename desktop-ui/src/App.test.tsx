@@ -18,6 +18,7 @@ type Wallet = {
   accounts: Account[]
   secret_kind?: string
   key_type?: string
+  multisig_policy?: { threshold: number; keys: string[] } | null
   custody?: 'hot' | 'cold'
 }
 
@@ -609,6 +610,17 @@ function installBackend(overrides: Partial<Backend> = {}) {
         return 250_000_000
       case 'get_wallet_keys':
         return { publicKey: 'ab'.repeat(32), evmAddress: null }
+      case 'convert_watch_only_to_multisig': {
+        const wallet = backend.wallets.find((item) => item.id === args?.walletId)
+        if (!wallet) throw new Error('wallet not found')
+        Object.assign(wallet, {
+          multisig_policy: {
+            threshold: Number(args?.threshold),
+            keys: args?.keys as string[],
+          },
+        })
+        return { ...wallet }
+      }
       case 'detect_private_key_type':
         return backend.detection
       case 'import_private_key': {
@@ -1719,6 +1731,54 @@ describe('watch-only wallet', () => {
     expect(screen.queryByRole('heading', { name: 'Create account' })).not.toBeInTheDocument()
     await chooseMenu(user, 'Wallet management', 'Create account')
     expect(screen.getByRole('heading', { name: 'Create account' })).toBeInTheDocument()
+  })
+
+  it('converts an empty watch-only wallet into a frozen multisig policy', async () => {
+    const user = userEvent.setup()
+    installBackend({
+      status: 'unlocked',
+      wallets: [{ ...wallet('cold', 'Cold'), secret_kind: 'watchonly', key_type: 'ed25519' }],
+    })
+    render(<App />)
+    await openWalletTab(user, 'Cold')
+    await chooseMenu(user, 'Wallet management', 'Convert to multisig')
+    expect(await screen.findByRole('heading', { name: 'Multisig options' })).toBeInTheDocument()
+
+    const threshold = screen.getByLabelText('Choose the number of signatures required')
+    expect(threshold).toBeDisabled()
+    await user.selectOptions(screen.getByLabelText('Choose the number of keys for this wallet'), '3')
+    await user.selectOptions(threshold, '2')
+    await user.click(screen.getByRole('button', { name: 'Import public keys' }))
+    expect(screen.getByText('Key A')).toBeInTheDocument()
+    expect(screen.getByText('Scan 2 more keys')).toBeInTheDocument()
+
+    scanner.reply = `HVTX1-PUB:ed25519:${'ab'.repeat(32)}`
+    await user.click(screen.getByRole('button', { name: 'Scan public key' }))
+    await user.click(await screen.findByRole('button', { name: 'Deliver scanned reply' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Duplicate key detected. Scan a different key',
+    )
+
+    scanner.reply = `HVTX1-PUB:ed25519:${'cd'.repeat(32)}`
+    await user.click(screen.getByRole('button', { name: 'Scan public key' }))
+    await user.click(await screen.findByRole('button', { name: 'Deliver scanned reply' }))
+    expect(screen.getByText('Scan 1 more key')).toBeInTheDocument()
+    scanner.reply = `HVTX1-PUB:ed25519:${'ef'.repeat(32)}`
+    await user.click(screen.getByRole('button', { name: 'Scan public key' }))
+    await user.click(await screen.findByRole('button', { name: 'Deliver scanned reply' }))
+    expect(screen.getByText('Scan completed')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Create multisig wallet' }))
+    await waitFor(() => expect(commandsCalled('convert_watch_only_to_multisig')).toHaveLength(1))
+    expect(commandsCalled('convert_watch_only_to_multisig')[0].args).toEqual({
+      walletId: 'cold',
+      threshold: 2,
+      keys: ['ab'.repeat(32), 'cd'.repeat(32), 'ef'.repeat(32)],
+    })
+    expect(screen.getByText(/watch-only multisig, 2 of 3 keys/)).toBeInTheDocument()
+    expect(screen.getByText('Key C')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Wallet management' }))
+    expect(screen.queryByRole('menuitem', { name: 'Convert to multisig' })).not.toBeInTheDocument()
   })
 
   it('rejects a malformed public-key QR without creating a wallet', async () => {

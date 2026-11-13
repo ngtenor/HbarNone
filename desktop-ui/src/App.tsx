@@ -27,6 +27,18 @@ type VaultState = {
   autoLockSeconds: number
 }
 
+type MultisigSetup = {
+  walletId: string
+  originalKey: string
+  step: 'options' | 'keys'
+  keyCount: number
+  threshold: number
+  keys: string[]
+  scanning: boolean
+  saving: boolean
+  error: string
+}
+
 const MIN_AUTO_LOCK_SECONDS = 30
 const MAX_AUTO_LOCK_SECONDS = 1800
 const DEFAULT_AUTO_LOCK_SECONDS = 300
@@ -188,6 +200,7 @@ function App() {
   // device; the key is never typed or pasted.
   const [scanningWalletKey, setScanningWalletKey] = useState(false)
   const [scanError, setScanError] = useState('')
+  const [multisigSetup, setMultisigSetup] = useState<MultisigSetup | null>(null)
   const [walletKeys, setWalletKeys] = useState<{ id: string, keys: WalletKeys } | null>(null)
   const [balances, setBalances] = useState<Record<string, number>>({})
   const [selectedAccounts, setSelectedAccounts] = useState<Record<string, string>>({})
@@ -366,6 +379,24 @@ function App() {
     document.addEventListener('mousedown', clear)
     return () => document.removeEventListener('mousedown', clear)
   }, [scanError])
+
+  useEffect(() => {
+    if (!multisigSetup?.scanning) return
+    const closeOnOutsideClick = (event: MouseEvent) => {
+      const target = event.target as Element | null
+      if (target?.closest('.qr-scanner-overlay, .scan-multisig-key-button')) return
+      setMultisigSetup((current) => current && { ...current, scanning: false })
+    }
+    document.addEventListener('mousedown', closeOnOutsideClick)
+    return () => document.removeEventListener('mousedown', closeOnOutsideClick)
+  }, [multisigSetup?.scanning])
+
+  useEffect(() => {
+    if (!multisigSetup?.error) return
+    const clear = () => setMultisigSetup((current) => current && { ...current, error: '' })
+    document.addEventListener('mousedown', clear)
+    return () => document.removeEventListener('mousedown', clear)
+  }, [multisigSetup?.error])
 
   useEffect(() => {
     if (!findNotice) return
@@ -731,6 +762,14 @@ function App() {
     if (wallet.network === 'testnet') {
       entries.push({ id: 'create-account', label: 'Create account' })
     }
+    if (
+      wallet.secret_kind === 'watchonly'
+      && wallet.key_type === 'ed25519'
+      && wallet.accounts.length === 0
+      && !wallet.multisig_policy
+    ) {
+      entries.push({ id: 'convert-multisig', label: 'Convert to multisig' })
+    }
     if (wallet.secret_kind === 'mnemonic') {
       entries.push({ id: 'reveal-phrase', label: 'Reveal recovery phrase', danger: true })
     }
@@ -739,6 +778,85 @@ function App() {
     }
     entries.push({ id: 'delete', label: 'Delete wallet', danger: true })
     return entries
+  }
+
+  async function startMultisigConversion(wallet: WalletSummary) {
+    try {
+      const keys = await invoke<WalletKeys>('get_wallet_keys', { walletId: wallet.id })
+      setMultisigSetup({
+        walletId: wallet.id,
+        originalKey: keys.publicKey.toLowerCase(),
+        step: 'options',
+        keyCount: 0,
+        threshold: 0,
+        keys: [keys.publicKey.toLowerCase()],
+        scanning: false,
+        saving: false,
+        error: '',
+      })
+    } catch (failure) {
+      setError(errorMessage(failure))
+    }
+  }
+
+  function handleMultisigKeyScanned(text: string) {
+    setMultisigSetup((current) => {
+      if (!current) return current
+      const payload = text.slice('HVTX1-PUB:'.length)
+      const separator = payload.indexOf(':')
+      const keyType = separator < 0 ? '' : payload.slice(0, separator)
+      const scannedKey = (separator < 0 ? '' : payload.slice(separator + 1)).toLowerCase()
+      if (keyType !== 'ed25519') {
+        return {
+          ...current,
+          scanning: false,
+          error: 'Multisig wallets currently support Ed25519 keys only.',
+        }
+      }
+      if (!/^[0-9a-f]{64}$/.test(scannedKey)) {
+        return {
+          ...current,
+          scanning: false,
+          error: 'The scanned Ed25519 public key is invalid.',
+        }
+      }
+      if (current.keys.includes(scannedKey)) {
+        return {
+          ...current,
+          scanning: false,
+          error: 'Duplicate key detected. Scan a different key',
+        }
+      }
+      if (current.keys.length >= current.keyCount) return { ...current, scanning: false }
+      return {
+        ...current,
+        keys: [...current.keys, scannedKey],
+        scanning: false,
+        error: '',
+      }
+    })
+  }
+
+  async function createMultisigWallet() {
+    if (!multisigSetup || multisigSetup.keys.length !== multisigSetup.keyCount) return
+    setMultisigSetup((current) => current && { ...current, saving: true, error: '' })
+    try {
+      const updated = await invoke<WalletSummary>('convert_watch_only_to_multisig', {
+        walletId: multisigSetup.walletId,
+        threshold: multisigSetup.threshold,
+        keys: multisigSetup.keys,
+      })
+      setWallets((existing) => existing.map((wallet) => (
+        wallet.id === updated.id ? updated : wallet
+      )))
+      setMultisigSetup(null)
+    } catch (failure) {
+      setMultisigSetup((current) => current && {
+        ...current,
+        saving: false,
+        error: errorMessage(failure),
+      })
+    }
   }
 
   function handleWalletManagement(wallet: WalletSummary, action: string) {
@@ -751,6 +869,10 @@ function App() {
       setRenamingWalletId(null)
       setRenameError('')
       setCreatingAccountWalletId(wallet.id)
+    } else if (action === 'convert-multisig') {
+      setError('')
+      setRenamingWalletId(null)
+      void startMultisigConversion(wallet)
     } else if (action === 'reveal-phrase' || action === 'reveal-key') {
       closeReveal()
       setWalletToDelete(null)
@@ -2153,7 +2275,7 @@ function App() {
                 {(networkView === 'mainnet' || (walletMode === 'import' && importKind === 'watchonly')) && (
                   <p className="field-hint">
                     Name the wallet, then scan the public key shown by the signer
-                    device (its &ldquo;show a key&rsquo;s public key&rdquo; option). The wallet
+                    device (its &ldquo;derive a public key&rdquo; option). The wallet
                     stores only that public key: it can monitor matching
                     {networkView === 'mainnet' ? ' Mainnet' : ' Testnet'} accounts but
                     cannot sign or spend. Keys cannot be typed or pasted here.
@@ -2247,6 +2369,165 @@ function App() {
                 )))}
               />
             )
+            const setup = multisigSetup?.walletId === wallet.id ? multisigSetup : null
+            if (setup) {
+              const keysRemaining = Math.max(0, setup.keyCount - setup.keys.length)
+              return (
+                <section
+                  className="vault-tab-panel wallet-tab-panel multisig-setup-panel"
+                  id={`panel-${wallet.id}`}
+                  role="tabpanel"
+                  aria-labelledby={`tab-${wallet.id}`}
+                >
+                  {setup.step === 'options' ? (
+                    <>
+                      <h2>Multisig options</h2>
+                      <div className="multisig-option-row">
+                        <label htmlFor="multisig-key-count">Choose the number of keys for this wallet</label>
+                        <select
+                          id="multisig-key-count"
+                          value={setup.keyCount || ''}
+                          onChange={(event) => {
+                            const keyCount = Number(event.target.value)
+                            setMultisigSetup((current) => current && ({
+                              ...current,
+                              keyCount,
+                              threshold: current.threshold > keyCount ? keyCount : current.threshold,
+                            }))
+                          }}
+                        >
+                          <option value="" disabled>Choose</option>
+                          {[2, 3, 4, 5].map((count) => (
+                            <option key={count} value={count}>{count}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className={`multisig-option-row${setup.keyCount === 0 ? ' disabled' : ''}`}>
+                        <label htmlFor="multisig-threshold">Choose the number of signatures required</label>
+                        <select
+                          id="multisig-threshold"
+                          value={setup.threshold || ''}
+                          disabled={setup.keyCount === 0}
+                          onChange={(event) => setMultisigSetup((current) => current && ({
+                            ...current,
+                            threshold: Number(event.target.value),
+                          }))}
+                        >
+                          <option value="" disabled>Choose</option>
+                          {Array.from({ length: setup.keyCount }, (_, index) => index + 1).map((count) => (
+                            <option key={count} value={count}>{count}</option>
+                          ))}
+                        </select>
+                      </div>
+                      {setup.error && <p className="error-message" role="alert">{setup.error}</p>}
+                      <div className="button-pair multisig-setup-actions">
+                        <button
+                          className="primary-button"
+                          type="button"
+                          disabled={setup.keyCount === 0 || setup.threshold === 0}
+                          onClick={() => setMultisigSetup((current) => current && ({
+                            ...current,
+                            step: 'keys',
+                            keys: [current.originalKey],
+                            error: '',
+                          }))}
+                        >
+                          Import public keys
+                        </button>
+                        <button
+                          className="secondary-button"
+                          type="button"
+                          onClick={() => setMultisigSetup(null)}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <h2>Import public keys</h2>
+                      <p>
+                        You have chosen {setup.keyCount} keys with a threshold of {setup.threshold} signatures.
+                        Scan the public keys of the signers using the buttons below:
+                      </p>
+                      <div className="multisig-key-list">
+                        {setup.keys.map((key, index) => (
+                          <div className="multisig-key-row" key={key}>
+                            <strong>Key {String.fromCharCode(65 + index)}</strong>
+                            <span className="mono-value">{key.slice(0, 8)}.....{key.slice(-8)}</span>
+                          </div>
+                        ))}
+                      </div>
+                      <p role="status">
+                        {keysRemaining > 0
+                          ? `Scan ${keysRemaining} more ${keysRemaining === 1 ? 'key' : 'keys'}`
+                          : 'Scan completed'}
+                      </p>
+                      {setup.error && <p className="error-message" role="alert">{setup.error}</p>}
+                      <div className="button-pair multisig-setup-actions">
+                        <button
+                          className="secondary-button scan-multisig-key-button"
+                          type="button"
+                          disabled={setup.saving || keysRemaining === 0}
+                          onClick={() => setMultisigSetup((current) => current && ({
+                            ...current,
+                            scanning: true,
+                            error: '',
+                          }))}
+                        >
+                          Scan public key
+                        </button>
+                        <button
+                          className="primary-button"
+                          type="button"
+                          disabled={setup.saving || keysRemaining !== 0}
+                          onClick={() => void createMultisigWallet()}
+                        >
+                          {setup.saving ? 'Saving...' : 'Create multisig wallet'}
+                        </button>
+                        <button
+                          className="secondary-button"
+                          type="button"
+                          disabled={setup.saving}
+                          onClick={() => setMultisigSetup((current) => current && ({
+                            ...current,
+                            step: 'options',
+                            keys: [current.originalKey],
+                            scanning: false,
+                            error: '',
+                          }))}
+                        >
+                          Back
+                        </button>
+                        <button
+                          className="secondary-button"
+                          type="button"
+                          disabled={setup.saving}
+                          onClick={() => setMultisigSetup(null)}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                      {setup.scanning && (
+                        <div className="qr-scanner-overlay">
+                          <QrScanner
+                            prefix="HVTX1-PUB:"
+                            subject="public key"
+                            pasteFallback={false}
+                            onScan={handleMultisigKeyScanned}
+                            onClose={() => setMultisigSetup((current) => current && ({
+                              ...current,
+                              scanning: false,
+                            }))}
+                            showStopButton={false}
+                          />
+                        </div>
+                      )}
+                    </>
+                  )}
+                </section>
+              )
+            }
             return (
               <section
                 className={`vault-tab-panel wallet-tab-panel${openAccount ? ' account-open' : ''}`}
@@ -2280,11 +2561,25 @@ function App() {
                   <dt>Key type</dt>
                   <dd>
                     {wallet.key_type === 'ecdsa' ? 'ECDSA (secp256k1)' : 'Ed25519'}
-                    {wallet.secret_kind === 'watchonly'
+                    {wallet.multisig_policy
+                      ? `(Ed25519), watch-only multisig, ${wallet.multisig_policy.threshold} of ${wallet.multisig_policy.keys.length} keys`
+                      : wallet.secret_kind === 'watchonly'
                       ? ', watch-only public key'
                       : wallet.secret_kind === 'privatekey' ? ', imported private key' : ', recovery phrase'}
                   </dd>
-                  {walletKeys?.id === wallet.id && (
+                  {wallet.multisig_policy ? (
+                    <>
+                      <dt>Keys</dt>
+                      <dd className="multisig-wallet-keys">
+                        {wallet.multisig_policy.keys.map((key, index) => (
+                          <div key={key}>
+                            <strong>Key {String.fromCharCode(65 + index)}</strong>
+                            <span className="mono-value">{key}</span>
+                          </div>
+                        ))}
+                      </dd>
+                    </>
+                  ) : walletKeys?.id === wallet.id && (
                     <>
                       <dt>Public key</dt>
                       <dd className="mono-value">{walletKeys.keys.publicKey}</dd>

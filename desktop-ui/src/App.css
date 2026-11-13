@@ -679,6 +679,71 @@ h2.section-title,
   padding-top: 0;
 }
 
+.multisig-setup-panel {
+  position: relative;
+  max-width: 760px;
+  padding: 28px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.multisig-option-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 96px;
+  gap: 20px;
+  align-items: center;
+  margin: 18px 0;
+}
+
+.multisig-option-row label {
+  margin: 0;
+}
+
+.multisig-option-row select {
+  box-sizing: border-box;
+  width: 96px;
+  height: 40px;
+}
+
+.multisig-option-row.disabled {
+  color: var(--muted);
+}
+
+.multisig-option-row.disabled select {
+  color: var(--muted);
+  background: var(--brand-very-light);
+}
+
+.multisig-setup-actions {
+  flex-wrap: wrap;
+  margin-top: 20px;
+}
+
+.multisig-key-list {
+  display: grid;
+  gap: 8px;
+  margin: 18px 0;
+}
+
+.multisig-key-row,
+.multisig-wallet-keys > div {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+}
+
+.multisig-key-row .mono-value,
+.multisig-wallet-keys .mono-value {
+  overflow-wrap: anywhere;
+}
+
+.multisig-wallet-keys {
+  display: grid;
+  gap: 8px;
+}
+
 .wallet-date {
   margin: 12px 0 0;
   color: var(--muted);

@@ -30,6 +30,7 @@ export type WalletSummary = {
   accounts: WalletAccount[]
   secret_kind: 'mnemonic' | 'privatekey' | 'watchonly'
   key_type: 'ed25519' | 'ecdsa'
+  multisig_policy?: { threshold: number; keys: string[] } | null
   custody?: 'hot' | 'cold'
 }
 

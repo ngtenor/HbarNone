@@ -4,9 +4,9 @@ use crate::{
         parse_private_key, public_key_hex,
     },
     vault_container::{
-        AddressBookEntry, DEFAULT_AUTO_LOCK_SECONDS, Network, SharedAccount, VaultContainer,
-        VaultPayload, VaultWallet, WalletAccount, decrypt_wallet_secret, encrypt_wallet_secret,
-        validate_auto_lock_seconds,
+        AddressBookEntry, DEFAULT_AUTO_LOCK_SECONDS, MultisigPolicy, Network, SharedAccount,
+        VaultContainer, VaultPayload, VaultWallet, WalletAccount, decrypt_wallet_secret,
+        encrypt_wallet_secret, validate_auto_lock_seconds,
     },
     wallet::Wallet,
     wallet_store::WalletStore,
@@ -150,6 +150,7 @@ pub struct WalletSummary {
     pub accounts: Vec<AccountSummary>,
     pub secret_kind: SecretKind,
     pub key_type: KeyType,
+    pub multisig_policy: Option<MultisigPolicy>,
 }
 
 impl WalletSummary {
@@ -162,6 +163,7 @@ impl WalletSummary {
             accounts: wallet.accounts.iter().map(AccountSummary::from).collect(),
             secret_kind: wallet.secret_kind,
             key_type: wallet.key_type,
+            multisig_policy: wallet.multisig_policy.clone(),
         }
     }
 }
@@ -330,6 +332,7 @@ impl WalletService {
                         accounts: Vec::new(),
                         secret_kind: SecretKind::Mnemonic,
                         key_type: KeyType::Ed25519,
+                        multisig_policy: None,
                     })
                     .collect()
             })
@@ -482,6 +485,7 @@ impl WalletService {
                 account_id: None,
                 secret_kind: SecretKind::Mnemonic,
                 key_type: KeyType::Ed25519,
+                multisig_policy: None,
                 nonce,
                 ciphertext,
             });
@@ -656,6 +660,81 @@ impl WalletService {
         Ok(summarize(self.payload.as_ref().expect("checked unlocked")))
     }
 
+    /// Converts an empty Ed25519 watch-only wallet into a frozen threshold
+    /// policy. The first key must be the wallet's original public key.
+    pub fn convert_watch_only_to_multisig_and_save(
+        &mut self,
+        wallet_id: &str,
+        threshold: u8,
+        keys: &[String],
+        path: &str,
+    ) -> Result<WalletSummary, String> {
+        self.ensure_unlocked()?;
+        if !(2..=5).contains(&keys.len()) {
+            return Err("a multisig wallet must contain 2 to 5 keys".to_string());
+        }
+        if threshold == 0 || usize::from(threshold) > keys.len() {
+            return Err(
+                "the signature threshold must be between 1 and the number of keys".to_string(),
+            );
+        }
+
+        let current_payload = self.payload.as_ref().expect("checked unlocked");
+        let wallet = current_payload
+            .wallets
+            .iter()
+            .find(|wallet| wallet.id == wallet_id)
+            .ok_or_else(|| format!("wallet not found: {wallet_id}"))?;
+        if wallet.secret_kind != SecretKind::WatchOnly {
+            return Err("only a watch-only wallet can be converted to multisig".to_string());
+        }
+        if wallet.key_type != KeyType::Ed25519 {
+            return Err("multisig wallets currently support Ed25519 keys only".to_string());
+        }
+        if !wallet.accounts.is_empty() {
+            return Err(
+                "This wallet already contains Hedera accounts. Only empty wallets can be converted to multisig."
+                    .to_string(),
+            );
+        }
+        if wallet.multisig_policy.is_some() {
+            return Err("a multisig wallet's key policy cannot be changed".to_string());
+        }
+
+        let master_key = self.master_key.as_ref().expect("checked unlocked");
+        let secret = decrypt_wallet_secret(master_key, &wallet.nonce, &wallet.ciphertext)?;
+        let original_key =
+            wallet_public_key_from_secret(wallet.secret_kind, wallet.key_type, secret.as_str())?;
+
+        let mut normalized = Vec::with_capacity(keys.len());
+        let mut unique = HashSet::with_capacity(keys.len());
+        for key in keys {
+            let key = normalize_public_key(key, KeyType::Ed25519)?;
+            if !unique.insert(key.clone()) {
+                return Err("duplicate public keys are not allowed".to_string());
+            }
+            normalized.push(key);
+        }
+        if normalized.first() != Some(&original_key) {
+            return Err("the first key must be this wallet's original public key".to_string());
+        }
+
+        let mut next_payload = current_payload.clone();
+        let wallet = next_payload
+            .wallets
+            .iter_mut()
+            .find(|wallet| wallet.id == wallet_id)
+            .ok_or_else(|| format!("wallet not found: {wallet_id}"))?;
+        wallet.multisig_policy = Some(MultisigPolicy {
+            threshold,
+            keys: normalized,
+        });
+        wallet.updated_at = chrono::Utc::now().to_rfc3339();
+        let summary = WalletSummary::from_wallet(wallet);
+        self.persist_payload(next_payload, path)?;
+        Ok(summary)
+    }
+
     pub fn create_and_save_wallet(
         &mut self,
         name: &str,
@@ -785,6 +864,7 @@ impl WalletService {
             account_id: None,
             secret_kind: SecretKind::WatchOnly,
             key_type,
+            multisig_policy: None,
             nonce,
             ciphertext,
         };
@@ -848,6 +928,7 @@ impl WalletService {
             account_id: None,
             secret_kind,
             key_type: new_type,
+            multisig_policy: None,
             nonce,
             ciphertext,
         };
@@ -2422,6 +2503,126 @@ mod tests {
         assert_eq!(wallets[0].secret_kind, SecretKind::WatchOnly);
         assert_eq!(restored.wallet_public_key(&wallet.id).unwrap(), public_key);
         assert!(restored.with_wallet_key(&wallet.id, |_, _| Ok(())).is_err());
+    }
+
+    #[test]
+    fn multisig_conversion_requires_an_empty_watch_only_wallet_and_persists_policy() {
+        let (_directory, path) = temp_path();
+        let path = path.to_str().unwrap();
+        let first = Wallet::from_mnemonic(
+            "inmate flip alley wear offer often piece magnet surge toddler submit right radio absent pear floor belt raven price stove replace reduce plate home",
+        )
+        .unwrap()
+        .public_key;
+        let second = Wallet::from_mnemonic(
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        )
+        .unwrap()
+        .public_key;
+        let mut service = WalletService::new();
+        service.create_vault("vault password", path).unwrap();
+        let wallet = service
+            .import_watch_only_and_save(
+                "Cold monitor",
+                &first,
+                KeyType::Ed25519,
+                Network::Testnet,
+                path,
+            )
+            .unwrap();
+        let keys = vec![first.clone(), second.clone()];
+
+        let converted = service
+            .convert_watch_only_to_multisig_and_save(&wallet.id, 2, &keys, path)
+            .unwrap();
+        let policy = converted.multisig_policy.unwrap();
+        assert_eq!(policy.threshold, 2);
+        assert_eq!(policy.keys, keys);
+        assert_eq!(
+            service.list_wallets().unwrap()[0]
+                .multisig_policy
+                .as_ref()
+                .unwrap()
+                .keys,
+            vec![first, second]
+        );
+        let backup = service.export_backup().unwrap();
+        let (_restore_directory, restore_path) = temp_path();
+        let mut restored = WalletService::new();
+        let restored_wallets = restored
+            .restore_backup(&backup, "vault password", restore_path.to_str().unwrap())
+            .unwrap();
+        assert_eq!(
+            restored_wallets[0]
+                .multisig_policy
+                .as_ref()
+                .unwrap()
+                .threshold,
+            2
+        );
+        assert!(
+            service
+                .convert_watch_only_to_multisig_and_save(&wallet.id, 1, &keys, path)
+                .unwrap_err()
+                .contains("cannot be changed")
+        );
+    }
+
+    #[test]
+    fn multisig_conversion_rejects_accounts_duplicates_and_wrong_first_key() {
+        let (_directory, path) = temp_path();
+        let path = path.to_str().unwrap();
+        let first = Wallet::from_mnemonic(
+            "inmate flip alley wear offer often piece magnet surge toddler submit right radio absent pear floor belt raven price stove replace reduce plate home",
+        )
+        .unwrap()
+        .public_key;
+        let second = Wallet::from_mnemonic(
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        )
+        .unwrap()
+        .public_key;
+        let mut service = WalletService::new();
+        service.create_vault("vault password", path).unwrap();
+        let wallet = service
+            .import_watch_only_and_save(
+                "Cold monitor",
+                &first,
+                KeyType::Ed25519,
+                Network::Testnet,
+                path,
+            )
+            .unwrap();
+        let duplicate = vec![first.clone(), first.clone()];
+        assert!(
+            service
+                .convert_watch_only_to_multisig_and_save(&wallet.id, 1, &duplicate, path)
+                .unwrap_err()
+                .contains("duplicate")
+        );
+        let wrong_first = vec![second.clone(), first.clone()];
+        assert!(
+            service
+                .convert_watch_only_to_multisig_and_save(&wallet.id, 1, &wrong_first, path)
+                .unwrap_err()
+                .contains("first key")
+        );
+
+        service
+            .add_wallet_accounts_and_save(
+                &wallet.id,
+                Network::Testnet,
+                &["0.0.12345".to_string()],
+                path,
+            )
+            .unwrap();
+        let keys = vec![first, second];
+        assert!(
+            service
+                .convert_watch_only_to_multisig_and_save(&wallet.id, 1, &keys, path)
+                .unwrap_err()
+                .contains("Only empty wallets")
+        );
     }
 
     #[test]

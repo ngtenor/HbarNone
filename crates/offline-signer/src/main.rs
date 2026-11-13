@@ -267,7 +267,7 @@ fn read_request() -> Result<String, String> {
 fn run() -> Result<(), String> {
     println!("HBarNone offline signer (test build). Testnet only. Use disposable keys.");
     println!("Nothing here connects to a network.\n");
-    println!("What do you need?  1) sign a request   2) show a key's public key");
+    println!("What do you need?  1) sign a request   2) derive a public key");
     match ask("Choose 1 or 2 (Enter for 1): ")?.as_str() {
         "" | "1" => run_sign(),
         "2" => run_show_public_key(),

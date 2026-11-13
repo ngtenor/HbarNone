@@ -2796,6 +2796,21 @@ fn import_watch_only_wallet(
 }
 
 #[tauri::command]
+fn convert_watch_only_to_multisig(
+    wallet_id: String,
+    threshold: u8,
+    keys: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<WalletSummary, String> {
+    lock_service(&state)?.convert_watch_only_to_multisig_and_save(
+        &wallet_id,
+        threshold,
+        &keys,
+        &state.store_path.to_string_lossy(),
+    )
+}
+
+#[tauri::command]
 fn get_wallet_keys(wallet_id: String, state: State<'_, AppState>) -> Result<WalletKeys, String> {
     let mut service = lock_service(&state)?;
     Ok(WalletKeys {
@@ -2928,6 +2943,7 @@ fn main() {
             import_wallet,
             import_private_key,
             import_watch_only_wallet,
+            convert_watch_only_to_multisig,
             detect_private_key_type,
             get_wallet_keys,
             list_wallets,

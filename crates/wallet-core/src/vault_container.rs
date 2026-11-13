@@ -81,6 +81,13 @@ impl PartialEq for SharedAccount {
 
 impl Eq for SharedAccount {}
 
+/// A frozen, flat Ed25519 threshold policy attached to a watch-only wallet.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MultisigPolicy {
+    pub threshold: u8,
+    pub keys: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VaultWallet {
     pub id: String,
@@ -102,6 +109,10 @@ pub struct VaultWallet {
     pub secret_kind: crate::key_import::SecretKind,
     #[serde(default)]
     pub key_type: crate::key_import::KeyType,
+    /// Present only after an empty watch-only wallet is converted to
+    /// multisig. The original wallet key is always the first participant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub multisig_policy: Option<MultisigPolicy>,
     pub(crate) nonce: String,
     pub(crate) ciphertext: String,
 }
