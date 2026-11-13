@@ -4,6 +4,13 @@ Scope agreed 9 Nov and recorded in [TODO.md](./TODO.md) ("11–13 November:
 multisig" and the "Multisig" section of the cold-signer design notes). This
 plan turns that scope into concrete stages grounded in the current code.
 
+> **Revised 13 Nov:** the separate "shared accounts" presentation of stages
+> 3–4 is superseded by the wallet-first design in the
+> [revision section](#revision-13-nov-wallet-first-multisig) below. The
+> library, signer and signature-collection machinery of stages 1–4 is
+> retained unchanged; only the home-tab Shared accounts UI and its
+> vault entries are replaced.
+
 **Goal:** a 2-of-3 threshold Testnet account as the verified baseline, with
 the threshold logic generic (M-of-N, matching Hedera's `ThresholdKey`) so
 shapes such as 3-of-5 need no structural change. The desktop app is the
@@ -145,7 +152,11 @@ it holds).
 
 ## Stage 4: multisig account representation and transfer flow
 
-**Status: built 11 Nov, Testnet verification pending (stage 5)** — the vault
+**Status: built 11 Nov; UI superseded 13 Nov** — the signature-collection,
+threshold-progress and rejection machinery below is kept as the engine of
+the revised design; the home-tab "Shared accounts" section and the
+`shared_accounts` vault entries are replaced by multisig wallets (stages
+6–10) and removed. The vault
 payload gained `shared_accounts` (network, ID, optional name, key-structure
 hex; legacy vaults default to none), and the home tab a "Shared accounts"
 section: link with a full key-structure preview, create, convert, and an HBAR
@@ -185,6 +196,10 @@ unrelated ones are refused with specific messages.
 
 ## Stage 5: Testnet verification, docs, CI
 
+**Status: superseded 13 Nov before the manual run** — the run below was
+written for the Shared accounts UI; stage 10 rewrites it for the
+wallet-first flows. The automated-test and guard notes still apply.
+
 Manual run instructions: [MULTISIG-TESTING.md](./MULTISIG-TESTING.md)
 (prepared 11 Nov). A guard was added with them: a mirror key search that
 lists a shared account (the `account.publickey` filter matches keys inside
@@ -215,6 +230,149 @@ threshold structures) never links it to a wallet.
   session) and update TODO.md checkboxes and the README walkthrough.
 - `cargo fmt`, tests and the workspace check pass on Windows and Ubuntu CI.
 
+## Revision (13 Nov): wallet-first multisig
+
+Agreed 13 Nov: the multisig wallet is defined wallet-first, as a reusable
+**public-key signing policy**, and accounts are created or linked under that
+policy. This replaces the separate shared-account model of stage 4 while
+keeping its threshold-validation and signature-collection machinery
+(`collect_signatures`, `KeyTree::is_satisfied_by`, the reply rejection
+paths) unchanged.
+
+**Decisions recorded 13 Nov**
+
+- Public keys enter the app **only** by scanning a QR code produced by the
+  signer device; the typed/pasted public-key field is removed everywhere,
+  including Mainnet watch-only wallets. No camera means no watch-only
+  wallet — a deliberate custody rule.
+- The signer emits public keys as a prefixed payload,
+  `HVTX1-PUB:ed25519:<hex>`, so the app's scanner rejects arbitrary QR
+  codes and the payload carries its own key type.
+- Multisig wallets are **Ed25519-only** in this milestone; an ECDSA key is
+  rejected at scan time with a clear message.
+- Only a watch-only wallet with **no linked accounts** can be converted;
+  conversion freezes the policy locally — a multisig wallet can only be
+  deleted, never edited.
+- The **first** account of a multisig wallet is funded by a hot wallet in
+  the vault, which signs as payer automatically (Hedera requires only the
+  payer's signature on `CryptoCreate`); the participant-signature
+  collection before creation is kept as a proof-of-control ceremony. Later
+  accounts funded from one of the wallet's own accounts need y-of-x payer
+  signatures as a genuine network requirement — the same screen serves
+  both cases.
+- The home-tab **Shared accounts** UI is removed in the same change.
+  Legacy `shared_accounts` vault entries (a Testnet-only feature that never
+  shipped) are dropped; linking by ID is reincarnated under the multisig
+  wallet's account menu with an exact-structure match.
+- Immutability is local, not on-chain: on refresh the app compares each
+  account's mirror key to the wallet policy and flags an account whose key
+  was rotated elsewhere instead of treating it as controlled.
+- Deleting a multisig wallet removes only the local record; the user is
+  warned to preserve the public-key policy and account IDs.
+
+### Stage 6: signer public-key derivation
+
+- `offline-signer` gains a third startup option, "derive a public key":
+  reads the private key with hidden input (`ask_secret`), asks the key
+  type as `read_key` does, prints the public key and renders it as a
+  `HVTX1-PUB:<type>:<hex>` QR for the vault app to scan (the app itself
+  accepts only `ed25519`). Nothing is signed; the signer's "type yes to
+  confirm" conventions apply.
+- `signer-core` defines the `HVTX1-PUB:` prefix beside the existing
+  `HVTX1-REQ:`/`HVTX1-SIG:` constants, with parse/format round-trip tests.
+
+### Stage 7: scan-to-create watch-only wallet
+
+- Import-a-wallet screen: the "Public key (hex or DER)" label, text box and
+  key-type dropdown are removed (Testnet watch-only and Mainnet alike).
+- The submit button reads **Scan to create wallet**, greyed out until the
+  Wallet name field is non-empty. Clicking opens the camera overlay in the
+  same format and position as the Move-account screen; it closes on a
+  click anywhere else in the app. A scanned `HVTX1-PUB:` payload creates
+  the wallet immediately; a non-matching or ECDSA payload is rejected with
+  a message dismissed by clicking anywhere in the app.
+
+### Stage 8: convert to multisig
+
+- Wallet management (watch-only wallets only) gains **Convert to
+  multisig**, offered only while the wallet has no accounts. If a
+  conversion is attempted on a wallet with accounts the message reads:
+  "This wallet already contains Hedera accounts. Only empty wallets can be
+  converted to multisig." (dismissed by clicking anywhere in the app).
+- **Multisig options** screen (same width as the Move-account screen): a
+  "Choose the number of keys for this wallet" row with a narrow dropdown
+  (up to 5 keys) and, vertically aligned below it, "Choose the number of
+  signatures required" with a dropdown capped at the key count. The
+  threshold row is greyed and inoperable until the key count is chosen,
+  and clamps if the key count is reduced. Buttons: **Import public keys**
+  (continue) and **Cancel** (closes the screen).
+- **Import public keys** screen (same width): under the title, "You have
+  chosen x keys with a threshold of y signatures. Scan the public keys of
+  the signers using the buttons below:". The wallet's original key is
+  pre-filled as **Key A** (abbreviated as on the Move-account screen);
+  each scanned key is appended as Key B, Key C… with the instruction
+  "Scan x more keys" counting down, then "Scan completed". Duplicates are
+  compared on normalised key bytes and rejected with "Duplicate key
+  detected. Scan a different key" (dismissed by clicking anywhere).
+  Buttons: **Create multisig wallet** (greyed until all keys are
+  scanned), **Back** (returns to the options screen, discarding scanned
+  keys except Key A) and **Cancel** (closes the screen).
+- Vault model: the wallet record gains a frozen key policy (the stage-1
+  `KeyTree`, flat threshold of Ed25519 keys) following the versioned-
+  payload pattern; legacy vaults are unaffected.
+- Wallet view: below "Date added", the key type reads "(Ed25519), watch-
+  only multisig, y of x keys"; the "Public key" label becomes **Keys**
+  with the first public key beside it and the others listed below.
+
+### Stage 9: accounts and operations under the policy
+
+- Backend: generalise the watch-only request path from one wallet key to
+  the wallet policy — `prepare_unsigned_*` builders take the policy where
+  the account's key appears, and `submit_signed_request` accepts multiple
+  replies, verifying each against the body bytes, attributing it to a
+  participant key, rejecting duplicates/unrelated/invalid/mismatched
+  replies with the existing messages, and enabling submission only when
+  `satisfies(policy)` holds (plus the payer rule below).
+- **Create account**: the existing Create-account and Review screens are
+  reused; Review shows "Keys: x keys with a threshold of y". "Create
+  signing request" opens the signing screen (Move-account layout and
+  width): request QR on the left; on the right the lettered participant
+  keys, abbreviated, each with an empty checkbox that ticks when its
+  signature is scanned. Below: "Valid for xxx more seconds." with a live
+  "y of x signatures required" count. Buttons: **Scan signatures**
+  (opens the camera overlay; closes on an outside click; reopens on
+  demand; greys out once y signatures are collected), **Create account**
+  (greyed until y signatures are collected), **Back** (to Review) and
+  **Cancel**. The first account is funded by a chosen hot-wallet account,
+  which co-signs as payer automatically; later accounts may be funded
+  from the wallet's own accounts.
+- **Link account**: enter an account ID, fetch its key from the mirror,
+  and link only on an exact structure match with the wallet policy,
+  showing the full structure before anything is stored.
+- Discovery/refresh: a multisig wallet matches accounts by exact
+  structure; single-key wallets keep skipping threshold accounts (the
+  stage-5 guard). A linked account whose on-chain key no longer matches
+  the policy is flagged, not silently trusted.
+- **Operations** (HBAR send first): every multisig operation uses the same
+  signing screen; only the title, the operation summary (amount, from,
+  to…) shown just above the buttons, and the action button's label
+  ("Send HBAR" etc.) differ. Expiry of the 180-second window disables
+  everything except Back and Cancel.
+- Remove `SharedAccounts.tsx`, its Tauri commands and vault entries;
+  migrate or drop tests accordingly.
+
+### Stage 10: verification and docs
+
+- Rewrite [MULTISIG-TESTING.md](./MULTISIG-TESTING.md) for the new flows:
+  signer key derivation, scan-to-create, conversion, first-account
+  creation via hot funder, y-of-x funded creation, linking, HBAR send,
+  duplicate/unrelated/expired cases, mismatch flagging, and the note that
+  up to five devices must scan and reply within one 180-second window.
+- Frontend tests for the new screens and enable/disable rules; Rust tests
+  for the `HVTX1-PUB:` format, policy storage and multi-reply submission.
+- Update TODO.md and the README walkthrough; `cargo fmt`, tests and the
+  workspace check pass on Windows and Ubuntu CI.
+
 ## Order of work and fallback
 
 Stages 1 → 2 → 3 → 4 → 5; stages 1–2 are pure library work and merge safely
@@ -223,6 +381,11 @@ flow is: stage 1, mirror key display (stage 2), linking an existing
 externally created 2-of-3 account, and the stage-4 transfer with threshold
 checking — account *setup* through the app (stage 3) degrades gracefully to
 "create the account with external tooling, link and verify it here".
+
+The 13 Nov revision proceeds 6 → 7 → 8 → 9 → 10: the signer and
+scan-to-create changes (6–7) stand alone and merge safely before the
+conversion and account work. The old Shared accounts UI is removed in
+stage 9, when the wallet-first flows replace everything it offered.
 
 ## Out of scope (explicit)
 
